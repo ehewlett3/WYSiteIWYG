@@ -21,9 +21,41 @@ $siteBaseUrl = rtrim(str_replace('\\', '/', dirname($appUrl)), '/');
 $siteBaseUrl = $siteBaseUrl === '' ? '/' : $siteBaseUrl . '/';
 
 $cookiePath = $siteBaseUrl;
+$sessionName = 'wysite_session_v2';
 
 if (session_status() !== PHP_SESSION_ACTIVE) {
-    session_name('wysite_session');
+    $legacyCookies = [
+        ['name' => 'wysite_session', 'paths' => [$cookiePath, rtrim($appUrl, '/') . '/', '/edit/', '/'], 'skip_current_path' => false],
+        ['name' => $sessionName, 'paths' => [rtrim($appUrl, '/') . '/', '/edit/'], 'skip_current_path' => true],
+    ];
+
+    foreach ($legacyCookies as $legacyCookie) {
+        if (!isset($_COOKIE[$legacyCookie['name']])) {
+            continue;
+        }
+
+        foreach (array_values(array_unique($legacyCookie['paths'])) as $legacyPath) {
+            if (!is_string($legacyPath) || $legacyPath === '') {
+                continue;
+            }
+
+            if (!empty($legacyCookie['skip_current_path']) && $legacyPath === $cookiePath) {
+                continue;
+            }
+
+            setcookie($legacyCookie['name'], '', [
+                'expires' => time() - 42000,
+                'path' => $legacyPath,
+                'secure' => $https,
+                'httponly' => true,
+                'samesite' => 'Lax',
+            ]);
+        }
+    }
+}
+
+if (session_status() !== PHP_SESSION_ACTIVE) {
+    session_name($sessionName);
     session_set_cookie_params([
         'lifetime' => 0,
         'path' => $cookiePath,

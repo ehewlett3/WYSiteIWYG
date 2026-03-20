@@ -890,8 +890,31 @@ try {
         json_response(['ok' => false, 'message' => $error->getMessage()], 400);
     }
 
-    if (($auth->currentUser() ?? null) !== null) {
-        redirect($appUrl . '/index.php');
+    $currentUser = $auth->currentUser();
+    if ($currentUser !== null && $action !== 'login') {
+        ob_start();
+        ?>
+        <main class="wysite-dashboard">
+          <section class="wysite-panel">
+            <div class="wysite-panel__heading">
+              <div>
+                <p class="wysite-kicker">Editor Error</p>
+                <h2>WYSiteIWYG hit a problem before it could finish loading.</h2>
+              </div>
+            </div>
+            <p><?= h($error->getMessage()) ?></p>
+            <div class="wysite-hero-actions">
+              <a class="wysite-button" href="<?= h($appUrl) ?>/index.php">Return to dashboard</a>
+              <form method="post" action="<?= h($appUrl) ?>/index.php?action=logout">
+                <input type="hidden" name="csrf_token" value="<?= h(Csrf::token()) ?>">
+                <button type="submit" class="wysite-button wysite-button--ghost">Log out</button>
+              </form>
+            </div>
+          </section>
+        </main>
+        <?php
+        layout('Error', (string) ob_get_clean(), $appUrl, $siteTitle, $currentUser);
+        return;
     }
 
     redirect($appUrl . '/index.php?action=login');

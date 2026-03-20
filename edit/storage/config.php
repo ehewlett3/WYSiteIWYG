@@ -1,2 +1,4 @@
 <?php
-return ['theme' => 'wysite-cathedral'];
+return array (
+  'theme' => 'verdant-sanctuary',
+);

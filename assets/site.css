@@ -110,9 +110,8 @@ a { color: inherit; }
   pointer-events: none;
   transform: translateY(0);
   transition: opacity 160ms ease, transform 160ms ease;
-  z-index: 30;
 }
-.main-menu li:is(:hover, :focus-within) > ul {
+.main-menu li:hover > ul {
   opacity: 1;
   pointer-events: auto;
   transform: translateY(0);
@@ -132,7 +131,8 @@ a { color: inherit; }
   padding: clamp(28px, 6vw, 54px);
 }
 .hero__eyebrow,
-.blog-card__meta {
+.blog-card__meta,
+.content-block__eyebrow {
   margin: 0 0 14px;
   color: var(--site-accent);
   letter-spacing: 0.17em;
@@ -159,7 +159,9 @@ a { color: inherit; }
 .content-block { padding: clamp(24px, 4vw, 42px); }
 .content-stack,
 .post-body { display: grid; gap: 18px; }
-.feature-grid { flex-wrap: wrap; }
+.feature-grid {
+  flex-wrap: wrap;
+}
 .feature-card {
   flex: 1 1 220px;
   padding: 20px;

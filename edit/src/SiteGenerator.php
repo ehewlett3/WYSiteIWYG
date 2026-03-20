@@ -238,7 +238,7 @@ final class SiteGenerator
 
     public function applyTheme(string $themeId): void
     {
-        $this->themes->getTheme($themeId);
+        $this->themes->assertThemeIsValid($themeId);
         $this->publishThemeScaffold($themeId, $this->currentMenuHtml());
 
         foreach ($this->repository->listPages() as $pageInfo) {
@@ -340,6 +340,22 @@ final class SiteGenerator
     private function renderKind(string $kind, string $themeId, array $data, string $cssHref): string
     {
         $template = $this->themes->loadTemplate($themeId, $kind);
+        $pageContentBlocks = $data['page_content_blocks']
+            ?? array_values(
+                array_filter(
+                    [
+                        trim((string) ($data['page_content'] ?? '')),
+                        trim((string) ($data['page_content_2'] ?? '')),
+                        trim((string) ($data['page_content_3'] ?? '')),
+                    ],
+                    static fn(string $block): bool => $block !== ''
+                )
+            );
+
+        if ($kind === 'page') {
+            $template = $this->injectPageContentSlots($template, $pageContentBlocks);
+        }
+
         $replacements = [
             '{{THEME_CSS_HREF}}' => $cssHref,
             '{{TITLE}}' => $data['title'] ?? 'Untitled',
@@ -347,22 +363,11 @@ final class SiteGenerator
             '{{DATE}}' => $data['date'] ?? gmdate('Y-m-d'),
             '{{BODY_CLASS}}' => $this->bodyClass($data['path'] ?? 'index.html', $kind),
             '{{MAIN_MENU}}' => trim((string) ($data['main_menu'] ?? $this->currentMenuHtml())),
-            '{{PAGE_CONTENT_BLOCKS}}' => $this->renderPageContentBlocks(
-                $data['page_content_blocks']
-                    ?? array_values(
-                        array_filter(
-                            [
-                                trim((string) ($data['page_content'] ?? '')),
-                                trim((string) ($data['page_content_2'] ?? '')),
-                                trim((string) ($data['page_content_3'] ?? '')),
-                            ],
-                            static fn(string $block): bool => $block !== ''
-                        )
-                    )
-            ),
-            '{{PAGE_CONTENT}}' => trim((string) ($data['page_content'] ?? '')),
-            '{{PAGE_CONTENT_2}}' => trim((string) ($data['page_content_2'] ?? '')),
-            '{{PAGE_CONTENT_3}}' => trim((string) ($data['page_content_3'] ?? '')),
+            '{{PAGE_CONTENT_BLOCKS}}' => $kind === 'page' ? '' : $this->renderPageContentBlocks($pageContentBlocks),
+            '{{PAGE_CONTENT_BLOCK}}' => '',
+            '{{PAGE_CONTENT}}' => trim((string) ($pageContentBlocks[0] ?? $data['page_content'] ?? '')),
+            '{{PAGE_CONTENT_2}}' => trim((string) ($pageContentBlocks[1] ?? $data['page_content_2'] ?? '')),
+            '{{PAGE_CONTENT_3}}' => trim((string) ($pageContentBlocks[2] ?? $data['page_content_3'] ?? '')),
             '{{BLOG_POST_CONTENT}}' => trim((string) ($data['blog_post_content'] ?? '')),
             '{{BLOG_INDEX_CONTENT}}' => trim((string) ($data['blog_index_content'] ?? '')),
             '{{BLOG_ITEMS}}' => trim((string) ($data['blog_items'] ?? '')),
@@ -533,15 +538,75 @@ final class SiteGenerator
             $markup[] = '<section class="wysite-page-block">' .
                 '<article class="content-block">' .
                 '<div class="content-stack">' .
-                "\n" . '<!-- WYSITE:BEGIN name="' . $blockName . '" type="page" label="Page Content" -->' .
-                "\n" . $blockHtml .
-                "\n" . '<!-- WYSITE:END name="' . $blockName . '" -->' .
+                "\n" . $this->renderSinglePageContentBlock($blockName, $blockHtml) .
                 "\n" . '</div>' .
                 '</article>' .
                 '</section>';
         }
 
         return implode("\n\n", $markup);
+    }
+
+    private function injectPageContentSlots(string $template, array $blocks): string
+    {
+        $slotCount = substr_count($template, '{{PAGE_CONTENT_BLOCK}}');
+        if ($slotCount < 1) {
+            return str_replace('{{PAGE_CONTENT_BLOCKS}}', $this->renderPageContentBlocks($blocks), $template);
+        }
+
+        $distributedBlocks = $this->distributePageBlocksToSlots($blocks, $slotCount);
+        $slotIndex = 0;
+
+        $template = preg_replace_callback(
+            '/\{\{PAGE_CONTENT_BLOCK\}\}/',
+            function () use (&$slotIndex, $distributedBlocks): string {
+                $blockName = $slotIndex === 0 ? 'page-content' : 'page-content-' . ($slotIndex + 1);
+                $slotHtml = $distributedBlocks[$slotIndex] ?? '';
+                $slotIndex++;
+
+                return $this->renderSinglePageContentBlock($blockName, $slotHtml);
+            },
+            $template
+        ) ?? $template;
+
+        return str_replace('{{PAGE_CONTENT_BLOCKS}}', '', $template);
+    }
+
+    private function distributePageBlocksToSlots(array $blocks, int $slotCount): array
+    {
+        $normalizedBlocks = array_values(
+            array_filter(
+                array_map(
+                    static fn(string $block): string => trim($block),
+                    $blocks
+                ),
+                static fn(string $block): bool => $block !== ''
+            )
+        );
+
+        if ($normalizedBlocks === []) {
+            $normalizedBlocks = [$this->defaultPageContent()];
+        }
+
+        $slots = array_fill(0, $slotCount, '');
+        foreach ($normalizedBlocks as $index => $blockHtml) {
+            $slotIndex = min($index, $slotCount - 1);
+            if ($slots[$slotIndex] !== '') {
+                $slots[$slotIndex] .= "\n\n";
+            }
+            $slots[$slotIndex] .= $blockHtml;
+        }
+
+        return $slots;
+    }
+
+    private function renderSinglePageContentBlock(string $blockName, string $html): string
+    {
+        $html = trim($html);
+
+        return '<!-- WYSITE:BEGIN name="' . $blockName . '" type="page" label="Page Content" -->' .
+            ($html !== '' ? "\n" . $html . "\n" : "\n") .
+            '<!-- WYSITE:END name="' . $blockName . '" -->';
     }
 
     private function publicBridgeHtml(): string

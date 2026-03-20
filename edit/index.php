@@ -58,7 +58,7 @@ function layout(string $title, string $body, string $appUrl, string $siteTitle, 
     </header>
 
     <?php foreach ($flashes as $flash): ?>
-      <div class="wysite-flash wysite-flash--<?= h($flash['type']) ?>"><?= h($flash['message']) ?></div>
+      <div class="wysite-flash wysite-flash--<?= h($flash['type']) ?>"><?= render_flash_message((string) $flash['message']) ?></div>
     <?php endforeach; ?>
 
     <?= $body ?>
@@ -66,6 +66,38 @@ function layout(string $title, string $body, string $appUrl, string $siteTitle, 
 </body>
 </html>
     <?php
+}
+
+function render_flash_message(string $message): string
+{
+    $lines = array_values(
+        array_filter(
+            array_map(
+                static fn(string $line): string => trim($line),
+                preg_split('/\R/', $message) ?: []
+            ),
+            static fn(string $line): bool => $line !== ''
+        )
+    );
+
+    if (count($lines) <= 1) {
+        return h($message);
+    }
+
+    $title = array_shift($lines);
+    $items = array_map(
+        static fn(string $line): string => preg_replace('/^\-\s*/', '', $line) ?? $line,
+        $lines
+    );
+
+    $html = '<p class="wysite-flash__title">' . h($title) . '</p>';
+    $html .= '<ul class="wysite-flash__list">';
+    foreach ($items as $item) {
+        $html .= '<li>' . h($item) . '</li>';
+    }
+    $html .= '</ul>';
+
+    return $html;
 }
 
 function require_login($auth, string $appUrl): array
@@ -266,6 +298,7 @@ try {
         $previewTheme = trim((string) ($_GET['theme'] ?? ''));
 
         if ($previewTheme !== '') {
+            $themes->assertThemeIsValid($previewTheme);
             $theme = $themes->getTheme($previewTheme);
             $html = $generator->renderPageForTheme($path, $previewTheme, $themes->previewStylesheetHref($previewTheme, $appUrl));
             echo $repository->renderPreviewHtmlFromSource(

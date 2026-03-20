@@ -12,8 +12,8 @@
     <header class="site-header">
       <div class="site-header__inner">
         <a class="site-brand" href="/">
-          <span class="site-brand__kicker">Static Site Editing</span>
-          <span class="site-brand__title">WYSiteIWYG</span>
+          <span class="site-brand__kicker">WYSiteIWYG</span>
+          <span class="site-brand__title">Verdant Sanctuary</span>
         </a>
         <nav class="site-nav" aria-label="Primary">
           <!-- WYSITE:BEGIN name="main-menu" type="menu" label="Main Menu" -->
@@ -54,29 +54,29 @@
     <main>
       <section class="hero hero--page">
         <div class="hero__panel">
-          <p class="hero__eyebrow">Why WYSiteIWYG</p>
-          <h1>A small editor that tries not to get between you and the site.</h1>
-          <p>WYSiteIWYG keeps the content in static HTML files, keeps the auth layer in <code>/edit/</code>, and lets theme changes rewrite the site without abandoning that filesystem-first model.</p>
+          <p class="hero__eyebrow">Editable Page</p>
+          <h1>Why WYSiteIWYG</h1>
+          <p>Why WYSiteIWYG keeps content in HTML files instead of hiding it behind a CMS export step.</p>
         </div>
       </section>
 
-      <section class="content-wrap">
+      <section class="wysite-page-block">
         <article class="content-block">
           <div class="content-stack">
             <!-- WYSITE:BEGIN name="page-content" type="page" label="Page Content" -->
-            <h2>The core idea</h2>
+<h2>The core idea</h2>
             <p>WYSiteIWYG is designed for sites that want the simplicity of static HTML without giving up a practical browser-based editing workflow. The file on disk is the published output, not a generated export from a hidden database.</p>
             <p>That philosophy shapes everything else: the editor lives inside <code>/edit/</code>, marker comments define editable regions, and themes work by rewriting public pages and templates rather than taking over the whole content model.</p>
-            <!-- WYSITE:END name="page-content" -->
+<!-- WYSITE:END name="page-content" -->
           </div>
         </article>
       </section>
 
-      <section class="content-wrap">
+      <section class="wysite-page-block">
         <article class="content-block">
           <div class="content-stack">
             <!-- WYSITE:BEGIN name="page-content-2" type="page" label="Page Content" -->
-            <h2>How the site model is organized</h2>
+<h2>How the site model is organized</h2>
             <p>Static pages, shared navigation, tag-driven archives, and managed imports all coexist without introducing a traditional CMS database layer.</p>
             <table>
               <thead>
@@ -112,22 +112,22 @@
                 </tr>
               </tbody>
             </table>
-            <!-- WYSITE:END name="page-content-2" -->
+<!-- WYSITE:END name="page-content-2" -->
           </div>
         </article>
       </section>
 
-      <section class="content-wrap">
+      <section class="wysite-page-block">
         <article class="content-block">
           <div class="content-stack">
             <!-- WYSITE:BEGIN name="page-content-3" type="page" label="Page Content" -->
-            <h2>Where to go next</h2>
+<h2>Where to go next</h2>
             <ul>
               <li><a class="text-link" href="/features/">Feature Tour</a> expands on every major capability.</li>
               <li><a class="text-link" href="/installation/">Installation</a> outlines a typical deployment workflow.</li>
               <li><a class="text-link" href="/editorial-workflow/">Editorial Workflow</a> shows how editors use the system day to day.</li>
             </ul>
-            <!-- WYSITE:END name="page-content-3" -->
+<!-- WYSITE:END name="page-content-3" -->
           </div>
         </article>
       </section>
@@ -135,11 +135,10 @@
 
     <footer class="site-footer">
       <div class="site-footer__inner">
-        <p><a class="text-link" href="/edit/index.php">Open the editor dashboard</a></p>
+        <p>Published as static HTML and edited in place through <code>/edit/</code>.</p>
       </div>
     </footer>
   </div>
-  <script>window.WYSITE_PUBLIC_CONTEXT={appUrl:"/edit"};</script>
-  <script type="module" src="/edit/assets/live-edit-banner.js"></script>
+  <script>window.WYSITE_PUBLIC_CONTEXT={appUrl:"/edit"};</script><script type="module" src="/edit/assets/live-edit-banner.js"></script>
 </body>
 </html>

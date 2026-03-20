@@ -12,8 +12,8 @@
     <header class="site-header">
       <div class="site-header__inner">
         <a class="site-brand" href="/">
-          <span class="site-brand__kicker">Static Site Editing</span>
-          <span class="site-brand__title">WYSiteIWYG</span>
+          <span class="site-brand__kicker">WYSiteIWYG</span>
+          <span class="site-brand__title">Verdant Sanctuary</span>
         </a>
         <nav class="site-nav" aria-label="Primary">
           <!-- WYSITE:BEGIN name="main-menu" type="menu" label="Main Menu" -->
@@ -54,17 +54,17 @@
     <main>
       <section class="hero hero--page">
         <div class="hero__panel">
-          <p class="hero__eyebrow">Editorial Workflow</p>
-          <h1>What a normal editing session looks like.</h1>
-          <p>These are the tasks a church office, parish volunteer, or small-site editor is likely to do week to week.</p>
+          <p class="hero__eyebrow">Editable Page</p>
+          <h1>Editorial Workflow</h1>
+          <p>A walkthrough of how editors typically update pages, menus, metadata, and posts in day-to-day use.</p>
         </div>
       </section>
 
-      <section class="content-wrap">
+      <section class="wysite-page-block">
         <article class="content-block">
           <div class="content-stack">
             <!-- WYSITE:BEGIN name="page-content" type="page" label="Page Content" -->
-            <h2>Updating an existing page</h2>
+<h2>Updating an existing page</h2>
             <ol>
               <li>Sign in at <code>/edit/</code> or use the live-site banner if you are already browsing the page you want to change.</li>
               <li>Open the page preview and click the block badge for the exact section that needs revision.</li>
@@ -72,16 +72,16 @@
               <li>Use source mode when you need to adjust markup directly rather than through the toolbar.</li>
             </ol>
             <p>Because each page can contain multiple editable blocks, editors do not have to scroll through one huge monolithic content area for small changes.</p>
-            <!-- WYSITE:END name="page-content" -->
+<!-- WYSITE:END name="page-content" -->
           </div>
         </article>
       </section>
 
-      <section class="content-wrap">
+      <section class="wysite-page-block">
         <article class="content-block">
           <div class="content-stack">
             <!-- WYSITE:BEGIN name="page-content-2" type="page" label="Page Content" -->
-            <h2>Maintaining navigation and archives</h2>
+<h2>Maintaining navigation and archives</h2>
             <p>The main menu uses the same editing surface as page content, but it is intentionally presented as an unstyled nested list while editing so the hierarchy stays easy to understand.</p>
             <ul>
               <li>Edit the menu once and WYSiteIWYG syncs that shared block across pages and templates.</li>
@@ -89,16 +89,16 @@
               <li>Open the page details screen to update titles, excerpts, dates, and hashtags after the initial save.</li>
               <li>Generated tag landing pages update automatically from that metadata.</li>
             </ul>
-            <!-- WYSITE:END name="page-content-2" -->
+<!-- WYSITE:END name="page-content-2" -->
           </div>
         </article>
       </section>
 
-      <section class="content-wrap">
+      <section class="wysite-page-block">
         <article class="content-block">
           <div class="content-stack">
             <!-- WYSITE:BEGIN name="page-content-3" type="page" label="Page Content" -->
-            <h2>Common editorial patterns</h2>
+<h2>Common editorial patterns</h2>
             <div class="feature-grid">
               <section class="feature-card">
                 <h3>Announcements</h3>
@@ -114,7 +114,7 @@
               </section>
             </div>
             <p><a class="text-link" href="/blog/">Visit the journal</a></p>
-            <!-- WYSITE:END name="page-content-3" -->
+<!-- WYSITE:END name="page-content-3" -->
           </div>
         </article>
       </section>
@@ -122,11 +122,10 @@
 
     <footer class="site-footer">
       <div class="site-footer__inner">
-        <p>Small changes stay small because the editor opens only the block you choose.</p>
+        <p>Published as static HTML and edited in place through <code>/edit/</code>.</p>
       </div>
     </footer>
   </div>
-  <script>window.WYSITE_PUBLIC_CONTEXT={appUrl:"/edit"};</script>
-  <script type="module" src="/edit/assets/live-edit-banner.js"></script>
+  <script>window.WYSITE_PUBLIC_CONTEXT={appUrl:"/edit"};</script><script type="module" src="/edit/assets/live-edit-banner.js"></script>
 </body>
 </html>

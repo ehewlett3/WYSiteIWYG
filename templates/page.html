@@ -12,8 +12,8 @@
     <header class="site-header">
       <div class="site-header__inner">
         <a class="site-brand" href="/">
-          <span class="site-brand__kicker">Static Site Editing</span>
-          <span class="site-brand__title">WYSiteIWYG</span>
+          <span class="site-brand__kicker">WYSiteIWYG</span>
+          <span class="site-brand__title">Verdant Sanctuary</span>
         </a>
         <nav class="site-nav" aria-label="Primary">
           <!-- WYSITE:BEGIN name="main-menu" type="menu" label="Main Menu" -->
@@ -60,7 +60,29 @@
         </div>
       </section>
 
-      {{PAGE_CONTENT_BLOCKS}}
+      <section class="wysite-page-block">
+        <article class="content-block">
+          <div class="content-stack">
+            {{PAGE_CONTENT_BLOCK}}
+          </div>
+        </article>
+      </section>
+
+      <section class="wysite-page-block">
+        <article class="content-block">
+          <div class="content-stack">
+            {{PAGE_CONTENT_BLOCK}}
+          </div>
+        </article>
+      </section>
+
+      <section class="wysite-page-block">
+        <article class="content-block">
+          <div class="content-stack">
+            {{PAGE_CONTENT_BLOCK}}
+          </div>
+        </article>
+      </section>
     </main>
 
     <footer class="site-footer">

@@ -12,8 +12,8 @@
     <header class="site-header">
       <div class="site-header__inner">
         <a class="site-brand" href="/">
-          <span class="site-brand__kicker">Static Site Editing</span>
-          <span class="site-brand__title">WYSiteIWYG</span>
+          <span class="site-brand__kicker">WYSiteIWYG</span>
+          <span class="site-brand__title">Verdant Sanctuary</span>
         </a>
         <nav class="site-nav" aria-label="Primary">
           <!-- WYSITE:BEGIN name="main-menu" type="menu" label="Main Menu" -->
@@ -54,17 +54,17 @@
     <main>
       <section class="hero hero--page">
         <div class="hero__panel">
-          <p class="hero__eyebrow">Feature Tour</p>
-          <h1>A guided tour of what WYSiteIWYG can already do.</h1>
-          <p>This is the high-level product tour: what editors get, what administrators get, and what stays simple about the deployment model.</p>
+          <p class="hero__eyebrow">Editable Page</p>
+          <h1>Feature Tour</h1>
+          <p>A guided tour of the major publishing, editing, and administration features in WYSiteIWYG.</p>
         </div>
       </section>
 
-      <section class="content-wrap">
+      <section class="wysite-page-block">
         <article class="content-block">
           <div class="content-stack">
             <!-- WYSITE:BEGIN name="page-content" type="page" label="Page Content" -->
-            <h2>Editing that happens on the real page</h2>
+<h2>Editing that happens on the real page</h2>
             <p>The PHP app in <code>/edit/</code> loads the actual HTML file from the site root, injects edit controls, and writes saved changes straight back into that same file. There is no separate content database to keep in sync.</p>
             <div class="feature-grid">
               <section class="feature-card">
@@ -80,16 +80,16 @@
                 <p>Static HTML remains the canonical published format, which keeps deployment and backup simple.</p>
               </section>
             </div>
-            <!-- WYSITE:END name="page-content" -->
+<!-- WYSITE:END name="page-content" -->
           </div>
         </article>
       </section>
 
-      <section class="content-wrap">
+      <section class="wysite-page-block">
         <article class="content-block">
           <div class="content-stack">
             <!-- WYSITE:BEGIN name="page-content-2" type="page" label="Page Content" -->
-            <h2>Editing tools inside the ProseMirror drop-in</h2>
+<h2>Editing tools inside the ProseMirror drop-in</h2>
             <p>The editor now handles a broader range of styled HTML while still giving editors a practical toolbar instead of exposing only raw markup.</p>
             <table>
               <thead>
@@ -121,16 +121,16 @@
                 </tr>
               </tbody>
             </table>
-            <!-- WYSITE:END name="page-content-2" -->
+<!-- WYSITE:END name="page-content-2" -->
           </div>
         </article>
       </section>
 
-      <section class="content-wrap">
+      <section class="wysite-page-block">
         <article class="content-block">
           <div class="content-stack">
             <!-- WYSITE:BEGIN name="page-content-3" type="page" label="Page Content" -->
-            <h2>Publishing and administration features</h2>
+<h2>Publishing and administration features</h2>
             <p>WYSiteIWYG also acts as a lightweight static-site generator. Editors can create pages, create posts, manage hashtags, switch themes, import unmanaged HTML files, and maintain user accounts from the same dashboard.</p>
             <ul>
               <li>Shared menu editing happens through the same drop-in editor, but shown as a plain nested list so structure is easier to manage.</li>
@@ -140,7 +140,7 @@
               <li>User management remains inside <code>/edit/</code> with one-way password hashes rather than reversible encryption.</li>
             </ul>
             <p><a class="text-link" href="/installation/">Continue to the installation guide</a></p>
-            <!-- WYSITE:END name="page-content-3" -->
+<!-- WYSITE:END name="page-content-3" -->
           </div>
         </article>
       </section>
@@ -148,11 +148,10 @@
 
     <footer class="site-footer">
       <div class="site-footer__inner">
-        <p><a class="text-link" href="/editorial-workflow/">See the day-to-day editorial workflow</a></p>
+        <p>Published as static HTML and edited in place through <code>/edit/</code>.</p>
       </div>
     </footer>
   </div>
-  <script>window.WYSITE_PUBLIC_CONTEXT={appUrl:"/edit"};</script>
-  <script type="module" src="/edit/assets/live-edit-banner.js"></script>
+  <script>window.WYSITE_PUBLIC_CONTEXT={appUrl:"/edit"};</script><script type="module" src="/edit/assets/live-edit-banner.js"></script>
 </body>
 </html>

@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <!-- WYSITE:META title="{{TITLE}}" kind="blog" excerpt="{{EXCERPT}}" tag="{{TAG}}" generated="tag-index" -->
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{{TITLE}}</title>
+  <link rel="stylesheet" href="{{THEME_CSS_HREF}}">
+</head>
+<body class="{{BODY_CLASS}}">
+  <div class="parish-shell">
+    <header class="parish-header">
+      <div class="parish-header__inner">
+        <div class="parish-masthead">
+          <p class="parish-masthead__kicker">Orthodox Witness</p>
+          <h1 class="parish-masthead__title">St John Inspired</h1>
+          <p class="parish-masthead__subtitle">A more traditional, parish-style theme for WYSiteIWYG.</p>
+        </div>
+        <nav class="parish-nav" aria-label="Primary">
+          <!-- WYSITE:BEGIN name="main-menu" type="menu" label="Main Menu" -->
+          {{MAIN_MENU}}
+          <!-- WYSITE:END name="main-menu" -->
+        </nav>
+      </div>
+    </header>
+
+    <main class="parish-main">
+      <section class="parish-intro">
+        <p class="parish-intro__eyebrow">{{TAG_LABEL}}</p>
+        <h2>{{TITLE}}</h2>
+        <p>{{EXCERPT}}</p>
+      </section>
+
+      <section class="parish-content">
+        <article class="content-block">
+          <div class="content-stack">
+            <!-- WYSITE:BEGIN name="blog-index-content" type="blog" label="Blog Index Intro" -->
+            {{BLOG_INDEX_CONTENT}}
+            <!-- WYSITE:END name="blog-index-content" -->
+          </div>
+        </article>
+
+        <div class="parish-blog-roll">
+          {{BLOG_ITEMS}}
+        </div>
+      </section>
+    </main>
+  </div>
+  {{WYSITE_PUBLIC_BRIDGE}}
+</body>
+</html>

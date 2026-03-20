@@ -1,0 +1,68 @@
+body.wysite-live-banner-visible {
+  padding-top: 72px;
+}
+
+.wysite-live-banner {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  z-index: 1200;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 20px;
+  background: rgba(17, 23, 20, 0.92);
+  color: #f7f6f1;
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.18);
+  backdrop-filter: blur(18px);
+  font: 600 14px/1.4 system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+}
+
+.wysite-live-banner__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.wysite-live-banner__button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 40px;
+  padding: 0 14px;
+  border-radius: 999px;
+  border: 1px solid rgba(255, 255, 255, 0.22);
+  background: rgba(255, 255, 255, 0.08);
+  color: #f7f6f1;
+  text-decoration: none;
+  font-weight: 700;
+}
+
+.wysite-live-banner__button:hover,
+.wysite-live-banner__button:focus {
+  background: rgba(255, 255, 255, 0.14);
+}
+
+.wysite-live-banner__button--primary {
+  background: rgba(247, 246, 241, 0.96);
+  border-color: transparent;
+  color: #17231c;
+}
+
+.wysite-live-banner__button--primary:hover,
+.wysite-live-banner__button--primary:focus {
+  background: #ffffff;
+}
+
+@media (max-width: 720px) {
+  body.wysite-live-banner-visible {
+    padding-top: 108px;
+  }
+
+  .wysite-live-banner {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+}

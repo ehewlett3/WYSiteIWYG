@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <!-- WYSITE:META title="{{TITLE}}" kind="page" excerpt="{{EXCERPT}}" -->
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{{TITLE}}</title>
+  <link rel="stylesheet" href="{{THEME_CSS_HREF}}">
+</head>
+<body class="{{BODY_CLASS}}">
+  <div class="site-shell">
+    <header class="site-header">
+      <div class="site-header__inner">
+        <a class="site-brand" href="/">
+          <span class="site-brand__kicker">WYSiteIWYG</span>
+          <span class="site-brand__title">Verdant Sanctuary</span>
+        </a>
+        <nav class="site-nav" aria-label="Primary">
+          <!-- WYSITE:BEGIN name="main-menu" type="menu" label="Main Menu" -->
+          {{MAIN_MENU}}
+          <!-- WYSITE:END name="main-menu" -->
+        </nav>
+      </div>
+    </header>
+
+    <main>
+      <section class="hero hero--page">
+        <div class="hero__panel">
+          <p class="hero__eyebrow">Editable Page</p>
+          <h1>{{TITLE}}</h1>
+          <p>{{EXCERPT}}</p>
+        </div>
+      </section>
+
+      {{PAGE_CONTENT_BLOCKS}}
+    </main>
+
+    <footer class="site-footer">
+      <div class="site-footer__inner">
+        <p>Published as static HTML and edited in place through <code>/edit/</code>.</p>
+      </div>
+    </footer>
+  </div>
+  {{WYSITE_PUBLIC_BRIDGE}}
+</body>
+</html>

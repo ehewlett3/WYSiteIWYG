@@ -1,0 +1,512 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>St John Parish Theme — Preview</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=IM+Fell+English:ital@0;1&family=Cinzel:wght@400;600;700;900&family=Crimson+Pro:ital,wght@0,300;0,400;0,600;1,300;1,400&display=swap" rel="stylesheet">
+  <style>
+    /* ─── Tokens ─────────────────────────────────────────────── */
+    :root {
+      --bg:           #0f0c08;
+      --bg-warm:      #18120c;
+      --parchment:    #f5efd8;
+      --parchment-2:  #ede5c8;
+      --ink:          #1a1208;
+      --ink-soft:     #3d2e18;
+      --muted:        #7a6145;
+      --gold:         #c9973a;
+      --gold-light:   #e3bf72;
+      --gold-pale:    #f4e4b8;
+      --crimson:      #7b1c2c;
+      --crimson-dark: #4e0f1a;
+      --navy:         #1a2744;
+      --line:         rgba(201,151,58,0.22);
+      --line-dark:    rgba(201,151,58,0.10);
+      --shadow:       0 20px 60px rgba(0,0,0,0.55);
+      --shadow-sm:    0 6px 24px rgba(0,0,0,0.35);
+    }
+
+    /* ─── Reset ──────────────────────────────────────────────── */
+    *,*::before,*::after{box-sizing:border-box}
+    html{scroll-behavior:smooth}
+    body{
+      margin:0;
+      font-family:"Crimson Pro",Georgia,serif;
+      font-size:18px;
+      line-height:1.7;
+      color:var(--parchment);
+      background-color:var(--bg);
+      background-image:
+        radial-gradient(ellipse 80% 60% at 50% -10%,rgba(201,151,58,.10) 0%,transparent 70%),
+        url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='120' height='120'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.75' numOctaves='4' stitchTiles='stitch'/%3E%3CfeColorMatrix type='saturate' values='0'/%3E%3C/filter%3E%3Crect width='120' height='120' filter='url(%23n)' opacity='.035'/%3E%3C/svg%3E");
+      -webkit-font-smoothing:antialiased;
+    }
+    a{color:inherit;text-decoration:none}
+    img{max-width:100%;height:auto;display:block}
+    p{margin:0 0 1em}
+    h1,h2,h3,h4{margin:0 0 .5em;font-family:"Cinzel",serif;font-weight:700;line-height:1.15}
+    ul,ol{padding-left:1.4em}
+    address{font-style:normal}
+
+    /* ─── Shell ──────────────────────────────────────────────── */
+    .site-shell{min-height:100vh;display:flex;flex-direction:column}
+
+    /* ─── Header ─────────────────────────────────────────────── */
+    .site-header{
+      position:sticky;top:0;z-index:100;
+      padding:0 24px;
+      background:rgba(12,9,5,.94);
+      border-bottom:1px solid var(--line);
+      backdrop-filter:blur(20px);
+    }
+    .site-header__inner{
+      max-width:1180px;margin:0 auto;
+      display:flex;align-items:center;justify-content:space-between;
+      height:70px;gap:24px;
+    }
+    .site-brand{display:flex;align-items:center;gap:14px;flex-shrink:0}
+    .site-brand__icon{width:42px;height:42px;flex-shrink:0}
+    .site-brand__text{display:grid;line-height:1.1}
+    .site-brand__kicker{font-family:"Cinzel",serif;font-size:.58rem;font-weight:600;letter-spacing:.22em;text-transform:uppercase;color:var(--gold)}
+    .site-brand__title{font-family:"IM Fell English",Georgia,serif;font-size:1.22rem;font-weight:400;color:var(--parchment)}
+    .site-nav{flex:1;display:flex;justify-content:flex-end}
+    .main-menu,.main-menu ul{list-style:none;margin:0;padding:0}
+    .site-nav .main-menu{display:flex;align-items:center;gap:2px;flex-wrap:wrap}
+    .main-menu li{position:relative}
+    .main-menu>li>:is(a,span,p),
+    .main-menu li ul li>:is(a,span,p){
+      display:inline-flex;align-items:center;min-height:40px;padding:0 13px;margin:0;
+      font-family:"Cinzel",serif;font-size:.72rem;font-weight:600;letter-spacing:.08em;text-transform:uppercase;
+      color:rgba(245,239,216,.72);border-radius:2px;
+      transition:color 160ms,background 160ms;white-space:nowrap;
+    }
+    .main-menu>li>:is(a,span,p):hover,
+    .main-menu li ul li>:is(a,span,p):hover{color:var(--gold-light);background:rgba(201,151,58,.10)}
+    .main-menu li ul{
+      position:absolute;top:calc(100% + 6px);right:0;min-width:210px;
+      display:grid;gap:2px;padding:8px;
+      background:rgba(18,13,8,.97);border:1px solid var(--line);border-radius:3px;box-shadow:var(--shadow);
+      opacity:0;pointer-events:none;transform:translateY(-6px);
+      transition:opacity 180ms ease,transform 180ms ease;
+    }
+    .main-menu li:hover>ul{opacity:1;pointer-events:auto;transform:translateY(0)}
+    .nav-toggle{
+      display:none;background:none;border:1px solid var(--line);border-radius:2px;
+      padding:8px 10px;cursor:pointer;color:var(--gold-light);font-size:1.2rem;line-height:1;flex-shrink:0;
+    }
+
+    /* ─── Hero ───────────────────────────────────────────────── */
+    .hero{padding:0 24px}
+    .hero__panel{
+      max-width:1180px;margin:36px auto 0;
+      padding:clamp(32px,6vw,60px);
+      background:linear-gradient(135deg,rgba(26,18,10,.92) 0%,rgba(78,15,26,.55) 100%);
+      border:1px solid var(--line);position:relative;overflow:hidden;
+    }
+    .hero__panel::before{
+      content:"";position:absolute;inset:0;
+      background:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='60' height='60'%3E%3Ccircle cx='30' cy='30' r='1' fill='rgba(201,151,58,.06)'/%3E%3Cpath d='M0 30h60M30 0v60' stroke='rgba(201,151,58,.04)' stroke-width='.5'/%3E%3C/svg%3E") repeat;
+      pointer-events:none;
+    }
+    .hero__eyebrow{
+      font-family:"Cinzel",serif;font-size:.68rem;font-weight:600;letter-spacing:.26em;text-transform:uppercase;
+      color:var(--gold);margin:0 0 18px;display:flex;align-items:center;gap:12px;
+    }
+    .hero__eyebrow::before,.hero__eyebrow::after{content:"";flex:none;width:28px;height:1px;background:var(--gold);opacity:.5}
+    .hero h1{
+      font-family:"IM Fell English",serif;font-size:clamp(2.4rem,5.5vw,4.8rem);font-weight:400;
+      line-height:1.05;color:var(--parchment);margin:0 0 20px;
+    }
+    .hero p{color:var(--parchment-2);max-width:620px;font-size:1.12rem;margin:0 0 10px;opacity:.85}
+    .hero__sub{font-size:.9rem!important;opacity:.6!important;font-style:italic}
+    .hero__actions{display:flex;gap:12px;flex-wrap:wrap;margin-top:20px}
+
+    /* ─── Two-column layout ──────────────────────────────────── */
+    .home-layout{
+      display:grid;grid-template-columns:1fr 340px;gap:32px;
+      max-width:1180px;margin:0 auto;padding:32px 24px 60px;align-items:start;
+    }
+    .home-main{display:grid;gap:28px;min-width:0}
+    .home-sidebar{display:grid;gap:22px}
+
+    /* ─── Main panels ────────────────────────────────────────── */
+    .panel{
+      background:rgba(24,18,10,.82);border:1px solid var(--line);
+      padding:28px 30px;position:relative;
+    }
+    .panel::before{
+      content:"";position:absolute;top:0;left:0;right:0;height:3px;
+      background:linear-gradient(90deg,var(--crimson),var(--gold),var(--crimson));opacity:.7;
+    }
+    .panel__eyebrow{
+      font-family:"Cinzel",serif;font-size:.6rem;font-weight:700;letter-spacing:.28em;text-transform:uppercase;
+      color:var(--gold);margin:0 0 16px;padding-bottom:14px;border-bottom:1px solid var(--line-dark);
+      display:flex;align-items:center;gap:10px;
+    }
+    .panel__eyebrow .orn{color:var(--crimson);opacity:.9;font-style:normal}
+    .panel h2{font-family:"IM Fell English",serif;font-weight:400;font-size:1.55rem;color:var(--parchment);margin:0 0 10px}
+    .panel h3{font-family:"IM Fell English",serif;font-weight:400;font-size:1.25rem;color:var(--parchment);margin:0 0 6px}
+    .panel p{color:rgba(245,239,216,.75);font-size:1rem}
+    .panel .post-meta{font-family:"Cinzel",serif;font-size:.65rem;letter-spacing:.12em;color:var(--gold);text-transform:uppercase;margin-bottom:8px}
+    .panel .read-more{
+      display:inline-flex;align-items:center;gap:8px;
+      font-family:"Cinzel",serif;font-size:.68rem;letter-spacing:.14em;font-weight:600;text-transform:uppercase;
+      color:var(--gold-light);margin-top:12px;padding-bottom:1px;border-bottom:1px solid rgba(201,151,58,.35);
+      transition:color 160ms,border-color 160ms;
+    }
+    .panel .read-more:hover{color:var(--gold);border-color:var(--gold)}
+    .panel .read-more::after{content:"→"}
+    /* stacked posts */
+    .post-item{padding-bottom:20px;margin-bottom:20px;border-bottom:1px solid var(--line-dark)}
+    .post-item:last-child{padding-bottom:0;margin-bottom:0;border-bottom:none}
+    /* blockquote */
+    blockquote{margin:14px 0;padding:14px 18px;border-left:3px solid var(--gold);background:rgba(201,151,58,.05);color:rgba(245,239,216,.8);font-style:italic}
+    blockquote cite{display:block;margin-top:6px;font-style:normal;font-family:"Cinzel",serif;font-size:.65rem;letter-spacing:.1em;color:var(--gold);text-transform:uppercase}
+
+    /* ─── Sidebar panels ─────────────────────────────────────── */
+    .sidebar-panel{
+      background:rgba(18,12,7,.88);border:1px solid var(--line);
+      padding:22px 22px 20px;position:relative;
+    }
+    .sidebar-panel::before{
+      content:"";position:absolute;top:0;left:0;right:0;height:2px;
+      background:linear-gradient(90deg,var(--crimson),var(--gold));opacity:.8;
+    }
+    .sidebar-panel__title{
+      font-family:"Cinzel",serif;font-size:.62rem;font-weight:700;letter-spacing:.24em;text-transform:uppercase;
+      color:var(--gold);margin:0 0 14px;padding-bottom:12px;border-bottom:1px solid var(--line-dark);
+    }
+    .sidebar-panel p{color:rgba(245,239,216,.75);font-size:.96rem;margin-bottom:10px}
+    .sidebar-panel a{color:var(--gold-light)}
+    .sidebar-panel a:hover{color:var(--gold)}
+    .service-list{list-style:none;margin:0;padding:0;display:grid;gap:8px}
+    .service-list li{
+      padding:8px 0;border-bottom:1px solid var(--line-dark);
+      display:grid;grid-template-columns:auto 1fr;gap:0 12px;
+    }
+    .service-list li:last-child{border-bottom:none}
+    .service-day{font-family:"Cinzel",serif;font-size:.62rem;font-weight:700;letter-spacing:.1em;text-transform:uppercase;color:var(--gold);padding-top:3px}
+    .service-name{color:rgba(245,239,216,.8);font-size:.96rem;line-height:1.4}
+    .service-time{grid-column:2;font-family:"Cinzel",serif;font-size:.6rem;color:var(--muted);letter-spacing:.08em}
+    .map-link{
+      display:inline-flex;align-items:center;gap:6px;margin-top:10px;
+      font-family:"Cinzel",serif;font-size:.62rem;font-weight:600;letter-spacing:.12em;text-transform:uppercase;
+      color:var(--gold-light);border-bottom:1px solid rgba(201,151,58,.3);
+    }
+    .donate-btn{
+      display:block;text-align:center;padding:10px 16px;margin-top:14px;
+      background:linear-gradient(135deg,var(--crimson-dark),var(--crimson));
+      border:1px solid rgba(201,151,58,.3);
+      font-family:"Cinzel",serif;font-size:.68rem;font-weight:700;letter-spacing:.14em;text-transform:uppercase;
+      color:var(--gold-pale);transition:background 180ms,box-shadow 180ms;
+    }
+    .donate-btn:hover{background:linear-gradient(135deg,var(--crimson),#9e2438);box-shadow:0 4px 20px rgba(123,28,44,.5)}
+    /* Contact sidebar */
+    .contact-list{list-style:none;margin:0;padding:0;display:grid;gap:10px}
+    .contact-list li{font-size:.94rem;color:rgba(245,239,216,.72);display:flex;gap:8px;align-items:flex-start}
+    .contact-list .icon{color:var(--gold);flex-shrink:0;margin-top:2px}
+
+    /* ─── About section ──────────────────────────────────────── */
+    .about-grid{display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-top:16px}
+    .about-card{
+      padding:16px 18px;background:rgba(10,7,3,.5);border:1px solid var(--line-dark);
+      border-left:3px solid var(--gold);
+    }
+    .about-card h4{font-family:"IM Fell English",serif;font-size:1.1rem;font-weight:400;color:var(--parchment);margin:0 0 6px}
+    .about-card p{font-size:.92rem;color:rgba(245,239,216,.62);margin:0}
+
+    /* ─── Buttons / links ────────────────────────────────────── */
+    .button-link{
+      display:inline-flex;align-items:center;min-height:44px;padding:0 22px;
+      font-family:"Cinzel",serif;font-size:.7rem;font-weight:700;letter-spacing:.14em;text-transform:uppercase;
+      background:linear-gradient(135deg,var(--crimson-dark),var(--crimson));
+      color:var(--gold-pale);border:1px solid rgba(201,151,58,.25);
+      transition:background 180ms,box-shadow 180ms;
+    }
+    .button-link:hover{background:linear-gradient(135deg,var(--crimson),#9e2438);box-shadow:0 6px 24px rgba(123,28,44,.45)}
+    .button-link--ghost{background:transparent;border-color:var(--line);color:var(--parchment)}
+    .button-link--ghost:hover{background:rgba(201,151,58,.08);box-shadow:none}
+    .tag-links{display:flex;flex-wrap:wrap;gap:10px;margin-top:16px}
+    .tag-chip{
+      font-family:"Cinzel",serif;font-size:.65rem;font-weight:600;letter-spacing:.12em;text-transform:uppercase;
+      padding:4px 14px;border:1px solid var(--gold);color:var(--gold-light);border-radius:1px;transition:background 180ms;
+    }
+    .tag-chip:hover,.tag-chip.is-active{background:var(--gold);color:var(--ink)}
+    .text-link{color:var(--gold-light);font-weight:600;border-bottom:1px solid rgba(201,151,58,.4);transition:color 160ms,border-color 160ms}
+    .text-link:hover{color:var(--gold);border-color:var(--gold)}
+
+    /* ─── Footer ─────────────────────────────────────────────── */
+    .site-footer{border-top:1px solid var(--line);padding:22px 24px 36px;margin-top:auto}
+    .site-footer__inner{
+      max-width:1180px;margin:0 auto;
+      display:flex;align-items:center;justify-content:space-between;gap:16px;flex-wrap:wrap;
+    }
+    .site-footer p{color:var(--muted);font-size:.9rem;margin:0}
+    .site-footer a{color:var(--gold)}
+    .site-footer a:hover{color:var(--gold-light)}
+    .footer-cross{font-size:1.4rem;color:var(--gold);opacity:.45}
+
+    /* ─── Mobile ─────────────────────────────────────────────── */
+    @media(max-width:860px){
+      .nav-toggle{display:flex}
+      .site-nav{
+        position:absolute;top:70px;left:0;right:0;
+        background:rgba(12,9,5,.97);border-bottom:1px solid var(--line);
+        padding:12px 20px 18px;display:none;
+      }
+      .site-nav.is-open{display:block}
+      .site-nav .main-menu{flex-direction:column;align-items:flex-start;gap:0}
+      .main-menu>li>:is(a,span,p){padding-left:4px}
+      .main-menu li ul{position:static;opacity:1;pointer-events:auto;transform:none;box-shadow:none;border:none;background:transparent;padding-left:16px;margin-bottom:6px}
+      .site-header{position:relative}
+      .home-layout{grid-template-columns:1fr}
+      .about-grid{grid-template-columns:1fr}
+      .hero__panel{margin-top:20px}
+    }
+    @media(max-width:480px){
+      .hero h1{font-size:2.2rem}
+      .panel,.sidebar-panel{padding:20px 18px}
+    }
+  </style>
+</head>
+<body>
+<div class="site-shell">
+
+  <!-- ══ HEADER ══════════════════════════════════════════════════════ -->
+  <header class="site-header">
+    <div class="site-header__inner">
+
+      <a class="site-brand" href="/">
+        <svg class="site-brand__icon" viewBox="0 0 42 42" fill="none" xmlns="http://www.w3.org/2000/svg">
+          <rect x="18" y="4" width="6" height="34" rx="1" fill="rgba(201,151,58,0.85)"/>
+          <rect x="6" y="14" width="30" height="5" rx="1" fill="rgba(201,151,58,0.85)"/>
+          <rect x="10" y="31" width="22" height="3.5" rx="1" transform="rotate(-12 10 31)" fill="rgba(201,151,58,0.6)"/>
+        </svg>
+        <span class="site-brand__text">
+          <span class="site-brand__kicker">Orthodox Church in America</span>
+          <span class="site-brand__title">St. John of Shanghai</span>
+        </span>
+      </a>
+
+      <button class="nav-toggle" aria-label="Toggle menu" onclick="this.closest('.site-header').querySelector('.site-nav').classList.toggle('is-open')">☰</button>
+
+      <nav class="site-nav" aria-label="Primary">
+        <ul class="main-menu">
+          <li><a href="#">Home</a></li>
+          <li><a href="#">About the Parish</a></li>
+          <li><a href="#">Calendar</a></li>
+          <li>
+            <span>Parish Life</span>
+            <ul>
+              <li><a href="#">News</a></li>
+              <li><a href="#">Teaching</a></li>
+            </ul>
+          </li>
+          <li><a href="#">About Orthodoxy</a></li>
+          <li><a href="#">Visit</a></li>
+          <li><a href="#">Contact</a></li>
+        </ul>
+      </nav>
+
+    </div>
+  </header>
+
+  <!-- ══ MAIN ════════════════════════════════════════════════════════ -->
+  <main>
+
+    <!-- Hero -->
+    <section class="hero">
+      <div class="hero__panel">
+        <p class="hero__eyebrow">✦ A parish-homepage theme with formal, icon-inspired styling</p>
+        <h1>St John Parish Theme</h1>
+        <p>This preview shows the theme as a reusable church-site foundation: reverent typography, a strong masthead, and room for worship times, pastoral contact, and parish news.</p>
+        <p class="hero__sub">Built from the visual language of St John of Shanghai while cleaned up into a more generic parish-theme base</p>
+        <div class="hero__actions">
+          <a class="button-link" href="#">Plan Your Visit</a>
+          <a class="button-link button-link--ghost" href="#">About Orthodoxy</a>
+        </div>
+      </div>
+    </section>
+
+    <!-- Two-column home layout -->
+    <div class="home-layout">
+      <div class="home-main">
+
+        <!-- ── Parish News ───────────────────────────── -->
+        <div class="panel">
+          <p class="panel__eyebrow"><em class="orn">✦</em> Parish News</p>
+          <div class="post-item">
+            <p class="post-meta">Preview content block</p>
+            <h2>How the homepage can feature one strong current announcement</h2>
+            <p>Use this lead panel for a feast-day notice, pastoral letter, parish update, or highlighted teaching resource without sacrificing the theme’s formal structure.</p>
+            <blockquote>
+              This theme is meant to feel settled and ecclesial while still leaving the actual parish details editable.
+              <cite>Theme preview note</cite>
+            </blockquote>
+            <a class="read-more" href="#">Read More</a>
+          </div>
+        </div>
+
+        <!-- ── Recent Writing ─────────────────────────────── -->
+        <div class="panel">
+          <p class="panel__eyebrow"><em class="orn">✦</em> Recent Writing</p>
+          <div class="post-item">
+            <p class="post-meta">Preview article</p>
+            <h2>A dignified place for parish updates</h2>
+            <p>Theme cards and archive listings can carry sermons, reflections, class notices, and practical announcements without feeling like a generic blog skin.</p>
+            <a class="read-more" href="#">Read More</a>
+          </div>
+          <div class="post-item">
+            <p class="post-meta">Preview article</p>
+            <h2>Teaching pages can still feel anchored in the parish site</h2>
+            <p>Long-form writing works comfortably here, with room for quotations, sidebars, and linked resources.</p>
+            <a class="read-more" href="#">Read More</a>
+          </div>
+          <div class="post-item">
+            <p class="post-meta">Preview article</p>
+            <h2>Pastoral and practical information can share one visual language</h2>
+            <p>Schedules, directions, clergy details, and parish-life content all live naturally within the same theme system.</p>
+            <a class="read-more" href="#">Read More</a>
+          </div>
+        </div>
+
+        <!-- ── Theme Character ────────────────────────── -->
+        <div class="panel">
+          <p class="panel__eyebrow"><em class="orn">✦</em> Theme Character</p>
+          <h2>A more generic parish-theme base</h2>
+          <p>The intention here is not to freeze one parish snapshot forever. It is to preserve the broad visual sensibility while keeping the actual content, clergy details, schedules, and messaging easy to replace.</p>
+          <div class="about-grid">
+            <div class="about-card">
+              <h4>Reverent masthead</h4>
+              <p>A strong header gives the site immediate church identity without overwhelming the content.</p>
+            </div>
+            <div class="about-card">
+              <h4>Layered sidebars</h4>
+              <p>Schedules, location details, support information, and clergy contact can live beside the main editorial stream.</p>
+            </div>
+            <div class="about-card">
+              <h4>Formal typography</h4>
+              <p>The palette and type choices aim for dignity rather than startup minimalism.</p>
+            </div>
+            <div class="about-card">
+              <h4>Flexible content blocks</h4>
+              <p>News, teaching, service times, visitor guidance, and parish support can all use the same theme scaffold.</p>
+            </div>
+          </div>
+          <div class="tag-links" style="margin-top:20px">
+            <a class="tag-chip" href="#">Worship</a>
+            <a class="tag-chip is-active" href="#">Parish Life</a>
+            <a class="tag-chip" href="#">Teaching</a>
+            <a class="tag-chip" href="#">Visitors</a>
+            <a class="tag-chip" href="#">Pastoral Care</a>
+          </div>
+        </div>
+
+      </div><!-- /home-main -->
+
+      <aside class="home-sidebar">
+
+        <!-- Services & Schedule -->
+        <div class="sidebar-panel">
+          <p class="sidebar-panel__title">⛪ Divine Services</p>
+          <ul class="service-list">
+            <li>
+              <span class="service-day">Sun</span>
+              <span class="service-name">Orthros &amp; Divine Liturgy</span>
+              <span class="service-time">9:00 AM</span>
+            </li>
+            <li>
+              <span class="service-day">Wed</span>
+              <span class="service-name">Akathist &amp; Vespers</span>
+              <span class="service-time">6:30 PM</span>
+            </li>
+            <li>
+              <span class="service-day">Fri</span>
+              <span class="service-name">Vespers</span>
+              <span class="service-time">6:30 PM</span>
+            </li>
+            <li>
+              <span class="service-day">Feast</span>
+              <span class="service-name">As announced on calendar</span>
+              <span class="service-time">—</span>
+            </li>
+          </ul>
+        </div>
+
+        <!-- Calendar -->
+        <div class="sidebar-panel">
+          <p class="sidebar-panel__title">📅 Seasonal Calendar</p>
+          <ul class="service-list">
+            <li>
+              <span class="service-day">Mar 25</span>
+              <span class="service-name">Annunciation of the Theotokos</span>
+              <span class="service-time">Great Feast</span>
+            </li>
+            <li>
+              <span class="service-day">Apr 13</span>
+              <span class="service-name">Palm Sunday</span>
+              <span class="service-time">Great Feast</span>
+            </li>
+            <li>
+              <span class="service-day">Apr 20</span>
+              <span class="service-name">Pascha (Easter)</span>
+              <span class="service-time">Feast of Feasts</span>
+            </li>
+            <li>
+              <span class="service-day">May 29</span>
+              <span class="service-name">Ascension of Our Lord</span>
+              <span class="service-time">Great Feast</span>
+            </li>
+          </ul>
+          <a class="map-link" href="#" style="margin-top:14px">Full Parish Calendar →</a>
+        </div>
+
+        <!-- Location -->
+        <div class="sidebar-panel">
+          <p class="sidebar-panel__title">☸ Location</p>
+          <address>
+            195 East Windsor Road<br>
+            North Vancouver, BC<br>
+            Canada
+          </address>
+          <a class="map-link" href="https://maps.google.com/?q=195+East+Windsor+Road+North+Vancouver" target="_blank" rel="noopener">View on Map →</a>
+        </div>
+
+        <!-- Donations -->
+        <div class="sidebar-panel">
+          <p class="sidebar-panel__title">✝ Support the Parish</p>
+          <p>Your generosity sustains our community and outreach. E-transfer is preferred.</p>
+          <p style="word-break:break-all"><a href="mailto:treasurer@stjohnofshanghai.org" style="color:var(--gold-light)">treasurer@stjohnofshanghai.org</a></p>
+          <a class="donate-btn" href="https://www.canadahelps.org/en/dn/12228" target="_blank" rel="noopener">Donate via CanadaHelps</a>
+        </div>
+
+        <!-- Contact -->
+        <div class="sidebar-panel">
+          <p class="sidebar-panel__title">✉ Contact Us</p>
+          <ul class="contact-list">
+            <li><span class="icon">✝</span><span>Fr. Justin Hewlett, Rector</span></li>
+            <li><span class="icon">✝</span><span>Fr. Lawrence Farley, Attached Priest</span></li>
+            <li><span class="icon">📍</span><span>195 East Windsor Rd, North Vancouver</span></li>
+          </ul>
+          <a class="map-link" href="#" style="margin-top:14px">Contact Form →</a>
+        </div>
+
+      </aside>
+    </div>
+
+  </main>
+
+  <!-- ══ FOOTER ══════════════════════════════════════════════════════ -->
+      <footer class="site-footer">
+    <div class="site-footer__inner">
+      <p>Published as static HTML and edited in place through <code>/edit/</code> · WYSiteIWYG</p>
+      <span class="footer-cross">☩</span>
+      <p><a href="/">St John Parish Theme · Preview scaffold</a></p>
+    </div>
+  </footer>
+
+</div>
+</body>
+</html>

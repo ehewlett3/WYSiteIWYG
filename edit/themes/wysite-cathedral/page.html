@@ -1,0 +1,100 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <!-- WYSITE:META title="{{TITLE}}" kind="page" excerpt="{{EXCERPT}}" -->
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{{TITLE}}</title>
+  <link rel="stylesheet" href="{{THEME_CSS_HREF}}">
+</head>
+<body class="{{BODY_CLASS}}">
+  <div class="site-shell">
+    <header class="site-header">
+      <div class="site-header__inner">
+        <a class="site-brand" href="/">
+          <svg class="site-brand__icon" viewBox="0 0 56 56" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+            <rect x="4" y="4" width="48" height="48" rx="12" fill="rgba(18,35,28,0.92)" stroke="rgba(213,177,96,0.7)"/>
+            <path d="M14 16l7 24 7-16 7 16 7-24" stroke="rgba(230,206,149,0.95)" stroke-width="3.2" stroke-linecap="round" stroke-linejoin="round"/>
+            <path d="M39 12l2.5 5 5 2.5-5 2.5-2.5 5-2.5-5-5-2.5 5-2.5 2.5-5z" fill="rgba(213,177,96,0.9)"/>
+          </svg>
+          <span class="site-brand__text">
+            <span class="site-brand__kicker">Static Site Editing</span>
+            <span class="site-brand__title">WYSiteIWYG</span>
+          </span>
+        </a>
+
+        <button class="nav-toggle" aria-label="Toggle menu" onclick="this.closest('.site-header').querySelector('.site-nav').classList.toggle('is-open')">☰</button>
+
+        <nav class="site-nav" aria-label="Primary">
+          <!-- WYSITE:BEGIN name="main-menu" type="menu" label="Main Menu" -->
+          {{MAIN_MENU}}
+          <!-- WYSITE:END name="main-menu" -->
+        </nav>
+      </div>
+    </header>
+
+    <main>
+      <section class="hero hero--page">
+        <div class="hero__panel">
+          <p class="hero__eyebrow">✦ Guide Page</p>
+          <h1>{{TITLE}}</h1>
+          <p>{{EXCERPT}}</p>
+        </div>
+      </section>
+
+      <div class="home-layout">
+        <div class="home-main">{{PAGE_CONTENT_BLOCKS}}</div>
+
+        <aside class="home-sidebar">
+          <div class="sidebar-panel">
+            <p class="sidebar-panel__title">Core Capabilities</p>
+            <ul class="service-list">
+              <li>
+                <span class="service-day">Edit</span>
+                <span class="service-name">Block-level editing directly on the live page</span>
+                <span class="service-time">Real HTML files on disk</span>
+              </li>
+              <li>
+                <span class="service-day">Menu</span>
+                <span class="service-name">Shared nested-list navigation synced across pages</span>
+                <span class="service-time">Styled by the active theme</span>
+              </li>
+              <li>
+                <span class="service-day">Source</span>
+                <span class="service-name">WYSIWYG controls plus raw HTML editing when needed</span>
+                <span class="service-time">Toolbar + source mode</span>
+              </li>
+              <li>
+                <span class="service-day">Tags</span>
+                <span class="service-name">Hashtag-driven archives built as static landing pages</span>
+                <span class="service-time">Root-level post files</span>
+              </li>
+            </ul>
+          </div>
+
+          <div class="sidebar-panel">
+            <p class="sidebar-panel__title">Deployment Model</p>
+            <p>Drop the editor into <code>/edit/</code>, keep the public site as plain HTML, and let authenticated users work directly against the published filesystem.</p>
+            <a class="map-link" href="/installation/">Read Installation →</a>
+          </div>
+
+          <div class="sidebar-panel">
+            <p class="sidebar-panel__title">Theme and Import Tools</p>
+            <p>Preview alternate looks, rewrite the active pages to match them, and import older unmanaged HTML into editable blocks without rebuilding the site by hand.</p>
+            <a class="donate-btn" href="/themes-and-imports/">Open Theme Guide</a>
+          </div>
+        </aside>
+      </div>
+    </main>
+
+    <footer class="site-footer">
+      <div class="site-footer__inner">
+        <p>Published as static HTML and edited in place through <code>/edit/</code>.</p>
+        <span class="footer-cross">✦</span>
+        <p><a href="/">WYSiteIWYG · Static HTML editing without a detached CMS database</a></p>
+      </div>
+    </footer>
+  </div>
+  {{WYSITE_PUBLIC_BRIDGE}}
+</body>
+</html>

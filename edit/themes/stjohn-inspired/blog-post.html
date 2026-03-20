@@ -1,0 +1,56 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <!-- WYSITE:META title="{{TITLE}}" kind="blog-post" date="{{DATE}}" excerpt="{{EXCERPT}}" hashtags="{{HASHTAGS}}" -->
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{{TITLE}}</title>
+  <link rel="stylesheet" href="{{THEME_CSS_HREF}}">
+</head>
+<body class="{{BODY_CLASS}}">
+  <div class="parish-shell">
+    <header class="parish-header">
+      <div class="parish-header__inner">
+        <div class="parish-masthead">
+          <p class="parish-masthead__kicker">Orthodox Witness</p>
+          <h1 class="parish-masthead__title">St John Inspired</h1>
+          <p class="parish-masthead__subtitle">A more traditional, parish-style theme for WYSiteIWYG.</p>
+        </div>
+        <nav class="parish-nav" aria-label="Primary">
+          <!-- WYSITE:BEGIN name="main-menu" type="menu" label="Main Menu" -->
+          {{MAIN_MENU}}
+          <!-- WYSITE:END name="main-menu" -->
+        </nav>
+      </div>
+    </header>
+
+    <main class="parish-main">
+      <section class="parish-intro">
+        <p class="parish-intro__eyebrow">Journal Entry</p>
+        <h2>{{TITLE}}</h2>
+        <p>{{EXCERPT}}</p>
+        {{TAG_LINKS}}
+      </section>
+
+      <div class="parish-layout">
+        <aside class="parish-sidebar">
+          <div class="parish-note">
+            <h3>Posted</h3>
+            <p>{{DATE}}</p>
+          </div>
+        </aside>
+        <section class="parish-content">
+          <article class="content-block">
+            <div class="post-body">
+              <!-- WYSITE:BEGIN name="blog-post-content" type="blog-post" label="Blog Post Content" -->
+              {{BLOG_POST_CONTENT}}
+              <!-- WYSITE:END name="blog-post-content" -->
+            </div>
+          </article>
+        </section>
+      </div>
+    </main>
+  </div>
+  {{WYSITE_PUBLIC_BRIDGE}}
+</body>
+</html>

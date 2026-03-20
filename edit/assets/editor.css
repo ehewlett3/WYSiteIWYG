@@ -1,0 +1,490 @@
+@import url("https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,500;9..144,700&family=Manrope:wght@400;500;700;800&display=swap");
+
+:root {
+  --wysite-bg: #edf5ef;
+  --wysite-surface: rgba(248, 252, 248, 0.94);
+  --wysite-ink: #173126;
+  --wysite-muted: #4d6b5d;
+  --wysite-line: rgba(23, 72, 49, 0.14);
+  --wysite-accent: #2e6b4f;
+  --wysite-accent-2: #5f8f72;
+  --wysite-shadow: 0 20px 60px rgba(26, 64, 47, 0.12);
+  --wysite-font-sans: "Manrope", "Avenir Next", "Segoe UI", sans-serif;
+  --wysite-font-serif: "Fraunces", "Iowan Old Style", Georgia, serif;
+}
+
+body.wysite-app-shell {
+  margin: 0;
+  min-height: 100vh;
+  font-family: var(--wysite-font-sans);
+  color: var(--wysite-ink);
+  background:
+    radial-gradient(circle at top left, rgba(95, 143, 114, 0.16), transparent 32%),
+    radial-gradient(circle at top right, rgba(46, 107, 79, 0.12), transparent 28%),
+    linear-gradient(180deg, #f7fbf8, var(--wysite-bg));
+}
+
+.wysite-shell {
+  max-width: 1180px;
+  margin: 0 auto;
+  padding: 32px 20px 64px;
+}
+
+.wysite-shell__header,
+.wysite-panel__heading,
+.wysite-user-chip,
+.wysite-hero-actions,
+.wysite-admin-bar,
+.wysite-admin-bar__meta,
+.wysite-admin-bar__actions,
+.wysite-grid,
+.wysite-table__actions {
+  display: flex;
+  gap: 12px;
+}
+
+.wysite-shell__header,
+.wysite-panel__heading,
+.wysite-admin-bar {
+  justify-content: space-between;
+  align-items: center;
+}
+
+.wysite-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  gap: 20px;
+}
+
+.wysite-panel,
+.wysite-auth-card {
+  background: var(--wysite-surface);
+  border: 1px solid var(--wysite-line);
+  border-radius: 24px;
+  box-shadow: var(--wysite-shadow);
+  backdrop-filter: blur(18px);
+}
+
+.wysite-panel {
+  padding: 24px;
+}
+
+.wysite-panel--hero {
+  display: grid;
+  grid-template-columns: 1.5fr 1fr;
+  gap: 20px;
+  align-items: end;
+}
+
+.wysite-auth-card {
+  width: min(560px, calc(100vw - 32px));
+  margin: 8vh auto 0;
+  padding: 28px;
+}
+
+.wysite-dashboard {
+  display: grid;
+  gap: 22px;
+}
+
+.wysite-kicker {
+  margin: 0 0 8px;
+  color: var(--wysite-accent);
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  font-size: 0.75rem;
+  font-weight: 800;
+}
+
+.wysite-panel h2,
+.wysite-panel h3,
+.wysite-auth-card h2,
+.wysite-shell h1 {
+  margin: 0 0 10px;
+  font-family: var(--wysite-font-serif);
+  line-height: 1.05;
+}
+
+.wysite-shell h1 {
+  font-size: clamp(2rem, 3vw, 3.1rem);
+}
+
+.wysite-form {
+  display: grid;
+  gap: 14px;
+}
+
+.wysite-form label {
+  display: grid;
+  gap: 8px;
+  color: var(--wysite-muted);
+}
+
+.wysite-form input,
+.wysite-form textarea,
+.wysite-theme-select {
+  width: 100%;
+  box-sizing: border-box;
+  border: 1px solid var(--wysite-line);
+  background: rgba(255, 255, 255, 0.74);
+  border-radius: 14px;
+  padding: 12px 14px;
+  font: inherit;
+  color: var(--wysite-ink);
+}
+
+.wysite-code-field {
+  min-height: 180px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.94rem;
+  line-height: 1.55;
+}
+
+.wysite-form input[type="checkbox"] {
+  width: auto;
+  padding: 0;
+  border-radius: 0;
+}
+
+.wysite-checkbox {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  color: var(--wysite-ink);
+}
+
+.wysite-form .wysite-checkbox {
+  display: flex;
+  grid-template-columns: none;
+}
+
+.wysite-form .wysite-checkbox input[type="checkbox"] {
+  flex: 0 0 auto;
+  margin: 0;
+}
+
+.wysite-form .wysite-checkbox span {
+  display: inline;
+}
+
+.wysite-button,
+.wysite-admin-link {
+  appearance: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  box-sizing: border-box;
+  border: 0;
+  border-radius: 999px;
+  cursor: pointer;
+  padding: 11px 16px;
+  font: inherit;
+  font-weight: 700;
+  line-height: 1.1;
+  text-align: center;
+  text-decoration: none;
+  transition: transform 160ms ease, background 160ms ease, color 160ms ease;
+}
+
+.wysite-button,
+.wysite-admin-link {
+  background: linear-gradient(135deg, var(--wysite-accent), #4f8b68);
+  color: white;
+}
+
+.wysite-button:hover,
+.wysite-admin-link:hover {
+  transform: translateY(-1px);
+}
+
+.wysite-button--ghost,
+.wysite-admin-link--button {
+  background: rgba(255, 255, 255, 0.8);
+  color: var(--wysite-ink);
+  border: 1px solid var(--wysite-line);
+}
+
+.wysite-user-chip {
+  align-items: center;
+  padding: 12px 14px;
+  border-radius: 18px;
+  background: rgba(255, 255, 255, 0.78);
+  border: 1px solid var(--wysite-line);
+}
+
+.wysite-flash {
+  margin: 0 0 20px;
+  padding: 14px 16px;
+  border-radius: 16px;
+  border: 1px solid var(--wysite-line);
+  background: rgba(255, 255, 255, 0.84);
+}
+
+.wysite-flash--error {
+  border-color: rgba(131, 49, 37, 0.24);
+  background: rgba(255, 237, 234, 0.94);
+}
+
+.wysite-flash--success {
+  border-color: rgba(46, 107, 79, 0.22);
+  background: rgba(235, 250, 242, 0.94);
+}
+
+.wysite-muted {
+  color: var(--wysite-muted);
+  font-size: 0.92rem;
+}
+
+.wysite-table-wrap {
+  overflow-x: auto;
+}
+
+.wysite-table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.wysite-table th,
+.wysite-table td {
+  text-align: left;
+  padding: 14px 10px;
+  border-top: 1px solid var(--wysite-line);
+  vertical-align: top;
+}
+
+.wysite-table__actions {
+  flex-wrap: wrap;
+  align-items: center;
+}
+
+.wysite-table__actions form {
+  margin: 0;
+}
+
+.wysite-preview-mode {
+  padding-top: 72px;
+}
+
+.wysite-admin-bar {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  z-index: 1100;
+  padding: 12px 20px;
+  color: white;
+  background: rgba(18, 40, 31, 0.92);
+  backdrop-filter: blur(18px);
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.18);
+}
+
+.wysite-admin-bar__meta,
+.wysite-admin-bar__actions {
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.wysite-edit-region,
+.wysite-edit-slot {
+  position: relative;
+}
+
+.wysite-edit-button {
+  position: absolute;
+  top: -18px;
+  right: 0;
+  z-index: 1000;
+  border: 0;
+  border-radius: 999px;
+  background: linear-gradient(135deg, #1f5a41, #4b8766);
+  color: white;
+  font: 700 12px/1 var(--wysite-font-sans);
+  letter-spacing: 0.02em;
+  padding: 10px 12px;
+  cursor: pointer;
+  box-shadow: 0 12px 28px rgba(31, 90, 65, 0.2);
+}
+
+.wysite-toast {
+  position: fixed;
+  right: 20px;
+  bottom: 20px;
+  z-index: 1200;
+  max-width: min(420px, calc(100vw - 40px));
+  border-radius: 18px;
+  padding: 14px 18px;
+  color: white;
+  background: rgba(18, 40, 31, 0.94);
+  box-shadow: var(--wysite-shadow);
+  opacity: 0;
+  pointer-events: none;
+  transform: translateY(10px);
+  transition: opacity 180ms ease, transform 180ms ease;
+}
+
+.wysite-toast.is-error {
+  background: rgba(131, 49, 37, 0.95);
+}
+
+.wysite-toast.is-visible {
+  opacity: 1;
+  transform: translateY(0);
+}
+
+.pm-dropin {
+  position: relative;
+  z-index: 1301;
+  background: transparent;
+  box-shadow: 0 16px 42px rgba(26, 64, 47, 0.16);
+}
+
+.pm-dropin .pm-toolbar,
+.pm-dropin .pm-footer {
+  background: transparent;
+}
+
+.pm-dropin .pm-btn {
+  border-color: rgba(31, 90, 65, 0.2);
+  background: rgba(255, 255, 255, 0.84);
+}
+
+.pm-dropin--menu .pm-editorHost {
+  background-color: var(--pm-menu-bg-color, rgba(18, 40, 31, 0.92));
+  background-image: var(--pm-menu-bg-image, none);
+  color: var(--pm-menu-ink, inherit);
+}
+
+.pm-dropin--menu,
+.pm-dropin--menu .pm-toolbar,
+.pm-dropin--menu .pm-footer,
+.pm-dropin--menu .pm-sourceHost,
+.pm-dropin--menu .pm-sourceEditor {
+  background-color: var(--pm-menu-bg-color, rgba(18, 40, 31, 0.92));
+  background-image: var(--pm-menu-bg-image, none);
+  color: var(--pm-menu-ink, inherit);
+}
+
+.pm-dropin--menu .pm-sourceEditor {
+  border-color: rgba(255, 255, 255, 0.18);
+}
+
+body.wysite-preview-mode .pm-dropin--menu,
+body.wysite-live-banner-visible .pm-dropin--menu {
+  margin-top: 16px;
+}
+
+.pm-dropin--menu .ProseMirror .main-menu,
+.pm-dropin--menu .ProseMirror .main-menu ul,
+.pm-dropin--menu .ProseMirror .site-nav__list,
+.pm-dropin--menu .ProseMirror .site-nav__list ul {
+  display: block;
+  position: static;
+  list-style: disc;
+  margin: 0;
+  padding-left: 1.4rem;
+  min-width: 0;
+  border: 0;
+  opacity: 1;
+  pointer-events: auto;
+  transform: none;
+  box-shadow: none;
+  background: transparent;
+}
+
+.pm-dropin--menu .ProseMirror li {
+  margin: 0.3rem 0;
+}
+
+.pm-dropin--menu .ProseMirror a {
+  display: inline;
+  min-height: 0;
+  padding: 0;
+  border-radius: 0;
+  font-weight: 700;
+  text-decoration: underline;
+}
+
+.wysite-theme-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: 18px;
+}
+
+.wysite-theme-card {
+  display: grid;
+  grid-template-rows: auto 1fr auto;
+  gap: 14px;
+  padding: 20px;
+  border: 1px solid var(--wysite-line);
+  border-radius: 20px;
+  background: rgba(255, 255, 255, 0.72);
+}
+
+.wysite-theme-card.is-current {
+  border-color: rgba(46, 107, 79, 0.4);
+  box-shadow: 0 0 0 2px rgba(46, 107, 79, 0.08);
+}
+
+.wysite-theme-chip {
+  display: inline-flex;
+  width: fit-content;
+  padding: 7px 10px;
+  border-radius: 999px;
+  background: rgba(46, 107, 79, 0.1);
+  color: var(--wysite-accent);
+  font-size: 0.8rem;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.wysite-theme-actions {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-auto-rows: 1fr;
+  gap: 10px;
+}
+
+.wysite-theme-actions > * {
+  min-width: 0;
+  height: 100%;
+}
+
+.wysite-theme-actions form {
+  margin: 0;
+  display: flex;
+}
+
+.wysite-theme-actions .wysite-button {
+  width: 100%;
+  height: 52px;
+}
+
+@media (max-width: 800px) {
+  .wysite-panel--hero {
+    grid-template-columns: 1fr;
+  }
+
+  .wysite-shell__header,
+  .wysite-admin-bar,
+  .wysite-admin-bar__actions,
+  .wysite-admin-bar__meta,
+  .wysite-user-chip {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+
+  .wysite-theme-actions {
+    grid-template-columns: 1fr;
+  }
+
+  body.wysite-preview-mode .pm-dropin--menu {
+    margin-top: 16px;
+  }
+}
+
+@media (max-width: 720px) {
+  body.wysite-live-banner-visible .pm-dropin--menu {
+    margin-top: 16px;
+  }
+}

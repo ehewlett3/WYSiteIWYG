@@ -1,0 +1,87 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <!-- WYSITE:META title="Welcome to WYSiteIWYG" kind="blog-post" date="2026-03-19" excerpt="An overview of the editing model, theme system, and tag-driven publishing workflow." hashtags="#blog #launch" -->
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Welcome to WYSiteIWYG</title>
+  <link rel="stylesheet" href="/assets/site.css">
+</head>
+<body class="blog-post-welcome-to-wysiteiwyg">
+  <div class="site-shell">
+    <header class="site-header">
+      <div class="site-header__inner">
+        <a class="site-brand" href="/">
+          <span class="site-brand__kicker">Static Site Editing</span>
+          <span class="site-brand__title">WYSiteIWYG</span>
+        </a>
+        <nav class="site-nav" aria-label="Primary">
+          <!-- WYSITE:BEGIN name="main-menu" type="menu" label="Main Menu" -->
+          <ul class="main-menu">
+            <li><a href="/">Home</a></li>
+            <li>
+              <span>Platform</span>
+              <ul>
+                <li><a href="/about/">Why WYSiteIWYG</a></li>
+                <li><a href="/features/">Feature Tour</a></li>
+                <li><a href="/installation/">Installation</a></li>
+                <li><a href="/editorial-workflow/">Editorial Workflow</a></li>
+                <li><a href="/themes-and-imports/">Themes &amp; Imports</a></li>
+              </ul>
+            </li>
+            <li>
+              <a href="/blog/">Journal</a>
+              <ul>
+                <li><a href="/welcome-to-wysiteiwyg/">Launch Overview</a></li>
+                <li><a href="/editing-in-place-without-a-cms/">Editing in Place</a></li>
+                <li><a href="/re-theming-and-importing-legacy-html/">Re-theming Legacy HTML</a></li>
+              </ul>
+            </li>
+            <li>
+              <span>Tags</span>
+              <ul>
+                <li><a href="/launch/">#launch</a></li>
+                <li><a href="/workflow/">#workflow</a></li>
+                <li><a href="/migration/">#migration</a></li>
+              </ul>
+            </li>
+          </ul>
+          <!-- WYSITE:END name="main-menu" -->
+        </nav>
+      </div>
+    </header>
+
+    <main>
+      <section class="hero hero--post">
+        <div class="hero__panel">
+          <p class="hero__eyebrow">Journal Entry</p>
+          <h1>Welcome to WYSiteIWYG</h1>
+          <p>An overview of the editing model, theme system, and tag-driven publishing workflow.</p>
+          <div class="tag-links"><a class="tag-chip" href="/blog/">#blog</a><a class="tag-chip" href="/launch/">#launch</a></div>
+        </div>
+      </section>
+
+      <section class="content-wrap">
+        <article class="content-block">
+          <div class="post-body">
+            <!-- WYSITE:BEGIN name="blog-post-content" type="blog-post" label="Blog Post Content" -->
+            <p>WYSiteIWYG is built around a simple promise: the published HTML file should still be the real site, not a generated export from some separate authoring database. The editor fits around that idea instead of replacing it.</p>
+            <p>Pages, posts, menus, and themes all work from the filesystem outward. Editors can sign in, open the exact block they need, and save directly back into the live page without breaking the static deployment model.</p>
+            <h2>Tag landing pages</h2>
+            <p>Add hashtags such as <code>#blog</code>, <code>#launch</code>, <code>#workflow</code>, or <code>#migration</code> in the page-details view and WYSiteIWYG rebuilds the matching landing pages automatically with links and excerpts.</p>
+            <!-- WYSITE:END name="blog-post-content" -->
+          </div>
+        </article>
+      </section>
+    </main>
+
+    <footer class="site-footer">
+      <div class="site-footer__inner">
+        <p><a class="text-link" href="/blog/">Back to the journal</a></p>
+      </div>
+    </footer>
+  </div>
+  <script>window.WYSITE_PUBLIC_CONTEXT={appUrl:"/edit"};</script>
+  <script type="module" src="/edit/assets/live-edit-banner.js"></script>
+</body>
+</html>

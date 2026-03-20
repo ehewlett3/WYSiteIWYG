@@ -1,0 +1,4 @@
+*.local.php
+!users.example.php
+!.htaccess
+!.gitignore

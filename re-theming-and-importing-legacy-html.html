@@ -1,0 +1,88 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <!-- WYSITE:META title="Re-theming and Importing Legacy HTML" kind="blog-post" date="2026-03-19" excerpt="How theme preview/apply and unmanaged-page imports work together when adopting an existing static site." hashtags="#blog #workflow #migration" -->
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Re-theming and Importing Legacy HTML</title>
+  <link rel="stylesheet" href="/assets/site.css">
+</head>
+<body class="blog-post-re-theming-and-importing-legacy-html">
+  <div class="site-shell">
+    <header class="site-header">
+      <div class="site-header__inner">
+        <a class="site-brand" href="/">
+          <span class="site-brand__kicker">Static Site Editing</span>
+          <span class="site-brand__title">WYSiteIWYG</span>
+        </a>
+        <nav class="site-nav" aria-label="Primary">
+          <!-- WYSITE:BEGIN name="main-menu" type="menu" label="Main Menu" -->
+          <ul class="main-menu">
+            <li><a href="/">Home</a></li>
+            <li>
+              <span>Platform</span>
+              <ul>
+                <li><a href="/about/">Why WYSiteIWYG</a></li>
+                <li><a href="/features/">Feature Tour</a></li>
+                <li><a href="/installation/">Installation</a></li>
+                <li><a href="/editorial-workflow/">Editorial Workflow</a></li>
+                <li><a href="/themes-and-imports/">Themes &amp; Imports</a></li>
+              </ul>
+            </li>
+            <li>
+              <a href="/blog/">Journal</a>
+              <ul>
+                <li><a href="/welcome-to-wysiteiwyg/">Launch Overview</a></li>
+                <li><a href="/editing-in-place-without-a-cms/">Editing in Place</a></li>
+                <li><a href="/re-theming-and-importing-legacy-html/">Re-theming Legacy HTML</a></li>
+              </ul>
+            </li>
+            <li>
+              <span>Tags</span>
+              <ul>
+                <li><a href="/launch/">#launch</a></li>
+                <li><a href="/workflow/">#workflow</a></li>
+                <li><a href="/migration/">#migration</a></li>
+              </ul>
+            </li>
+          </ul>
+          <!-- WYSITE:END name="main-menu" -->
+        </nav>
+      </div>
+    </header>
+
+    <main>
+      <section class="hero hero--post">
+        <div class="hero__panel">
+          <p class="hero__eyebrow">Journal Entry</p>
+          <h1>Re-theming and Importing Legacy HTML</h1>
+          <p>How theme preview/apply and unmanaged-page imports work together when adopting an existing static site.</p>
+          <div class="tag-links"><a class="tag-chip" href="/blog/">#blog</a><a class="tag-chip" href="/workflow/">#workflow</a><a class="tag-chip" href="/migration/">#migration</a></div>
+        </div>
+      </section>
+
+      <section class="content-wrap">
+        <article class="content-block">
+          <div class="post-body">
+            <!-- WYSITE:BEGIN name="blog-post-content" type="blog-post" label="Blog Post Content" -->
+            <p>Many static sites already have years of pages in place before anyone asks for better editing tools. WYSiteIWYG is designed for that reality. Instead of forcing a full rebuild first, it lets administrators preview a theme, import unmanaged HTML, and gradually convert old pages into editable blocks.</p>
+            <p>The theme workflow is intentionally cautious. Preview lets you inspect the homepage in another visual language before you commit. Apply then rewrites the active templates and managed pages while preserving shared structures such as the menu.</p>
+            <h2>Import only what you need</h2>
+            <p>The unmanaged-file scanner detects HTML outside <code>/edit/</code> and offers standard, bulk, or advanced import. Standard import wraps the main content in one block. Advanced placement lets you choose exactly which child elements should become separate editable regions.</p>
+            <p>That makes WYSiteIWYG a migration tool as much as an editor. Teams can keep publishing while they modernize the site in stages rather than freezing everything for a wholesale platform change.</p>
+            <!-- WYSITE:END name="blog-post-content" -->
+          </div>
+        </article>
+      </section>
+    </main>
+
+    <footer class="site-footer">
+      <div class="site-footer__inner">
+        <p><a class="text-link" href="/blog/">Back to the journal</a></p>
+      </div>
+    </footer>
+  </div>
+  <script>window.WYSITE_PUBLIC_CONTEXT={appUrl:"/edit"};</script>
+  <script type="module" src="/edit/assets/live-edit-banner.js"></script>
+</body>
+</html>

@@ -1,0 +1,74 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <!-- WYSITE:META title="{{TITLE}}" kind="page" excerpt="{{EXCERPT}}" -->
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{{TITLE}}</title>
+  <link rel="stylesheet" href="/assets/site.css">
+</head>
+<body class="{{BODY_CLASS}}">
+  <div class="site-shell">
+    <header class="site-header">
+      <div class="site-header__inner">
+        <a class="site-brand" href="/">
+          <span class="site-brand__kicker">Static Site Editing</span>
+          <span class="site-brand__title">WYSiteIWYG</span>
+        </a>
+        <nav class="site-nav" aria-label="Primary">
+          <!-- WYSITE:BEGIN name="main-menu" type="menu" label="Main Menu" -->
+          <ul class="main-menu">
+            <li><a href="/">Home</a></li>
+            <li>
+              <span>Platform</span>
+              <ul>
+                <li><a href="/about/">Why WYSiteIWYG</a></li>
+                <li><a href="/features/">Feature Tour</a></li>
+                <li><a href="/installation/">Installation</a></li>
+                <li><a href="/editorial-workflow/">Editorial Workflow</a></li>
+                <li><a href="/themes-and-imports/">Themes &amp; Imports</a></li>
+              </ul>
+            </li>
+            <li>
+              <a href="/blog/">Journal</a>
+              <ul>
+                <li><a href="/welcome-to-wysiteiwyg/">Launch Overview</a></li>
+                <li><a href="/editing-in-place-without-a-cms/">Editing in Place</a></li>
+                <li><a href="/re-theming-and-importing-legacy-html/">Re-theming Legacy HTML</a></li>
+              </ul>
+            </li>
+            <li>
+              <span>Tags</span>
+              <ul>
+                <li><a href="/launch/">#launch</a></li>
+                <li><a href="/workflow/">#workflow</a></li>
+                <li><a href="/migration/">#migration</a></li>
+              </ul>
+            </li>
+          </ul>
+          <!-- WYSITE:END name="main-menu" -->
+        </nav>
+      </div>
+    </header>
+
+    <main>
+      <section class="hero hero--page">
+        <div class="hero__panel">
+          <p class="hero__eyebrow">Editable Page</p>
+          <h1>{{TITLE}}</h1>
+          <p>{{EXCERPT}}</p>
+        </div>
+      </section>
+
+      {{PAGE_CONTENT_BLOCKS}}
+    </main>
+
+    <footer class="site-footer">
+      <div class="site-footer__inner">
+        <p>Published as static HTML and edited in place through <code>/edit/</code>.</p>
+      </div>
+    </footer>
+  </div>
+  {{WYSITE_PUBLIC_BRIDGE}}
+</body>
+</html>

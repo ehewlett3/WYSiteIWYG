@@ -1,0 +1,513 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>WYSite Cathedral Theme — Preview</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=IM+Fell+English:ital@0;1&family=Cinzel:wght@400;600;700;900&family=Crimson+Pro:ital,wght@0,300;0,400;0,600;1,300;1,400&display=swap" rel="stylesheet">
+  <style>
+    /* ─── Tokens ─────────────────────────────────────────────── */
+    :root {
+      --bg:           #081210;
+      --bg-warm:      #101d1a;
+      --parchment:    #f2ecda;
+      --parchment-2:  #dfd7c0;
+      --ink:          #101915;
+      --ink-soft:     #23332c;
+      --muted:        #7d8f86;
+      --gold:         #c8a158;
+      --gold-light:   #e7c982;
+      --gold-pale:    #f7e5b4;
+      --crimson:      #1d6d59;
+      --crimson-dark: #124739;
+      --navy:         #143241;
+      --line:         rgba(200,161,88,.20);
+      --line-dark:    rgba(200,161,88,.10);
+      --shadow:       0 24px 64px rgba(0,0,0,.45);
+      --shadow-sm:    0 8px 30px rgba(0,0,0,.30);
+    }
+
+    /* ─── Reset ──────────────────────────────────────────────── */
+    *,*::before,*::after{box-sizing:border-box}
+    html{scroll-behavior:smooth}
+    body{
+      margin:0;
+      font-family:"Crimson Pro",Georgia,serif;
+      font-size:18px;
+      line-height:1.7;
+      color:var(--parchment);
+      background-color:var(--bg);
+      background-image:
+        radial-gradient(ellipse 80% 60% at 50% -10%,rgba(201,151,58,.10) 0%,transparent 70%),
+        url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='120' height='120'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.75' numOctaves='4' stitchTiles='stitch'/%3E%3CfeColorMatrix type='saturate' values='0'/%3E%3C/filter%3E%3Crect width='120' height='120' filter='url(%23n)' opacity='.035'/%3E%3C/svg%3E");
+      -webkit-font-smoothing:antialiased;
+    }
+    a{color:inherit;text-decoration:none}
+    img{max-width:100%;height:auto;display:block}
+    p{margin:0 0 1em}
+    h1,h2,h3,h4{margin:0 0 .5em;font-family:"Cinzel",serif;font-weight:700;line-height:1.15}
+    ul,ol{padding-left:1.4em}
+    address{font-style:normal}
+
+    /* ─── Shell ──────────────────────────────────────────────── */
+    .site-shell{min-height:100vh;display:flex;flex-direction:column}
+
+    /* ─── Header ─────────────────────────────────────────────── */
+    .site-header{
+      position:sticky;top:0;z-index:100;
+      padding:0 24px;
+      background:rgba(12,9,5,.94);
+      border-bottom:1px solid var(--line);
+      backdrop-filter:blur(20px);
+    }
+    .site-header__inner{
+      max-width:1180px;margin:0 auto;
+      display:flex;align-items:center;justify-content:flex-start;
+      height:70px;gap:24px;
+    }
+    .site-brand{display:flex;align-items:center;gap:14px;flex-shrink:0;margin-left:auto;order:3;text-align:right}
+    .site-brand__icon{width:42px;height:42px;flex-shrink:0}
+    .site-brand__text{display:grid;line-height:1.1}
+    .site-brand__kicker{font-family:"Cinzel",serif;font-size:.58rem;font-weight:600;letter-spacing:.22em;text-transform:uppercase;color:var(--gold)}
+    .site-brand__title{font-family:"IM Fell English",Georgia,serif;font-size:1.22rem;font-weight:400;color:var(--parchment)}
+    .site-nav{display:flex;justify-content:flex-start;order:1}
+    .main-menu,.main-menu ul{list-style:none;margin:0;padding:0}
+    .site-nav .main-menu{display:flex;align-items:center;gap:2px;flex-wrap:wrap}
+    .main-menu li{position:relative}
+    .main-menu>li>:is(a,span,p),
+    .main-menu li ul li>:is(a,span,p){
+      display:inline-flex;align-items:center;min-height:40px;padding:0 13px;margin:0;
+      font-family:"Cinzel",serif;font-size:.72rem;font-weight:600;letter-spacing:.08em;text-transform:uppercase;
+      color:rgba(245,239,216,.72);border-radius:2px;
+      transition:color 160ms,background 160ms;white-space:nowrap;
+    }
+    .main-menu>li>:is(a,span,p):hover,
+    .main-menu li ul li>:is(a,span,p):hover{color:var(--gold-light);background:rgba(201,151,58,.10)}
+    .main-menu li ul{
+      position:absolute;top:100%;left:0;min-width:210px;
+      display:grid;gap:2px;padding:8px;
+      background:rgba(18,13,8,.97);border:1px solid var(--line);border-radius:3px;box-shadow:var(--shadow);
+      opacity:0;pointer-events:none;transform:translateY(0);z-index:30;
+      transition:opacity 180ms ease,transform 180ms ease;
+    }
+    .main-menu li:is(:hover,:focus-within)>ul{opacity:1;pointer-events:auto;transform:translateY(0)}
+    .nav-toggle{
+      display:none;background:none;border:1px solid var(--line);border-radius:2px;
+      padding:8px 10px;cursor:pointer;color:var(--gold-light);font-size:1.2rem;line-height:1;flex-shrink:0;order:2;
+    }
+
+    /* ─── Hero ───────────────────────────────────────────────── */
+    .hero{padding:0 24px}
+    .hero__panel{
+      max-width:1180px;margin:36px auto 0;
+      padding:clamp(32px,6vw,60px);
+      background:linear-gradient(135deg,rgba(26,18,10,.92) 0%,rgba(78,15,26,.55) 100%);
+      border:1px solid var(--line);position:relative;overflow:hidden;
+    }
+    .hero__panel::before{
+      content:"";position:absolute;inset:0;
+      background:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='60' height='60'%3E%3Ccircle cx='30' cy='30' r='1' fill='rgba(201,151,58,.06)'/%3E%3Cpath d='M0 30h60M30 0v60' stroke='rgba(201,151,58,.04)' stroke-width='.5'/%3E%3C/svg%3E") repeat;
+      pointer-events:none;
+    }
+    .hero__eyebrow{
+      font-family:"Cinzel",serif;font-size:.68rem;font-weight:600;letter-spacing:.26em;text-transform:uppercase;
+      color:var(--gold);margin:0 0 18px;display:flex;align-items:center;gap:12px;
+    }
+    .hero__eyebrow::before,.hero__eyebrow::after{content:"";flex:none;width:28px;height:1px;background:var(--gold);opacity:.5}
+    .hero h1{
+      font-family:"IM Fell English",serif;font-size:clamp(2.4rem,5.5vw,4.8rem);font-weight:400;
+      line-height:1.05;color:var(--parchment);margin:0 0 20px;
+    }
+    .hero p{color:var(--parchment-2);max-width:620px;font-size:1.12rem;margin:0 0 10px;opacity:.85}
+    .hero__sub{font-size:.9rem!important;opacity:.6!important;font-style:italic}
+    .hero__actions{display:flex;gap:12px;flex-wrap:wrap;margin-top:20px}
+
+    /* ─── Two-column layout ──────────────────────────────────── */
+    .home-layout{
+      display:grid;grid-template-columns:1fr 340px;gap:32px;
+      max-width:1180px;margin:0 auto;padding:32px 24px 60px;align-items:start;
+    }
+    .home-main{display:grid;gap:28px;min-width:0}
+    .home-sidebar{display:grid;gap:22px}
+
+    /* ─── Main panels ────────────────────────────────────────── */
+    .panel{
+      background:rgba(24,18,10,.82);border:1px solid var(--line);
+      padding:28px 30px;position:relative;
+    }
+    .panel::before{
+      content:"";position:absolute;top:0;left:0;right:0;height:3px;
+      background:linear-gradient(90deg,var(--crimson),var(--gold),var(--crimson));opacity:.7;
+    }
+    .panel__eyebrow{
+      font-family:"Cinzel",serif;font-size:.6rem;font-weight:700;letter-spacing:.28em;text-transform:uppercase;
+      color:var(--gold);margin:0 0 16px;padding-bottom:14px;border-bottom:1px solid var(--line-dark);
+      display:flex;align-items:center;gap:10px;
+    }
+    .panel__eyebrow .orn{color:var(--crimson);opacity:.9;font-style:normal}
+    .panel h2{font-family:"IM Fell English",serif;font-weight:400;font-size:1.55rem;color:var(--parchment);margin:0 0 10px}
+    .panel h3{font-family:"IM Fell English",serif;font-weight:400;font-size:1.25rem;color:var(--parchment);margin:0 0 6px}
+    .panel p{color:rgba(245,239,216,.75);font-size:1rem}
+    .panel .post-meta{font-family:"Cinzel",serif;font-size:.65rem;letter-spacing:.12em;color:var(--gold);text-transform:uppercase;margin-bottom:8px}
+    .panel .read-more{
+      display:inline-flex;align-items:center;gap:8px;
+      font-family:"Cinzel",serif;font-size:.68rem;letter-spacing:.14em;font-weight:600;text-transform:uppercase;
+      color:var(--gold-light);margin-top:12px;padding-bottom:1px;border-bottom:1px solid rgba(201,151,58,.35);
+      transition:color 160ms,border-color 160ms;
+    }
+    .panel .read-more:hover{color:var(--gold);border-color:var(--gold)}
+    .panel .read-more::after{content:"→"}
+    /* stacked posts */
+    .post-item{padding-bottom:20px;margin-bottom:20px;border-bottom:1px solid var(--line-dark)}
+    .post-item:last-child{padding-bottom:0;margin-bottom:0;border-bottom:none}
+    /* blockquote */
+    blockquote{margin:14px 0;padding:14px 18px;border-left:3px solid var(--gold);background:rgba(201,151,58,.05);color:rgba(245,239,216,.8);font-style:italic}
+    blockquote cite{display:block;margin-top:6px;font-style:normal;font-family:"Cinzel",serif;font-size:.65rem;letter-spacing:.1em;color:var(--gold);text-transform:uppercase}
+
+    /* ─── Sidebar panels ─────────────────────────────────────── */
+    .sidebar-panel{
+      background:rgba(18,12,7,.88);border:1px solid var(--line);
+      padding:22px 22px 20px;position:relative;
+    }
+    .sidebar-panel::before{
+      content:"";position:absolute;top:0;left:0;right:0;height:2px;
+      background:linear-gradient(90deg,var(--crimson),var(--gold));opacity:.8;
+    }
+    .sidebar-panel__title{
+      font-family:"Cinzel",serif;font-size:.62rem;font-weight:700;letter-spacing:.24em;text-transform:uppercase;
+      color:var(--gold);margin:0 0 14px;padding-bottom:12px;border-bottom:1px solid var(--line-dark);
+    }
+    .sidebar-panel p{color:rgba(245,239,216,.75);font-size:.96rem;margin-bottom:10px}
+    .sidebar-panel a{color:var(--gold-light)}
+    .sidebar-panel a:hover{color:var(--gold)}
+    .service-list{list-style:none;margin:0;padding:0;display:grid;gap:8px}
+    .service-list li{
+      padding:8px 0;border-bottom:1px solid var(--line-dark);
+      display:grid;grid-template-columns:auto 1fr;gap:0 12px;
+    }
+    .service-list li:last-child{border-bottom:none}
+    .service-day{font-family:"Cinzel",serif;font-size:.62rem;font-weight:700;letter-spacing:.1em;text-transform:uppercase;color:var(--gold);padding-top:3px}
+    .service-name{color:rgba(245,239,216,.8);font-size:.96rem;line-height:1.4}
+    .service-time{grid-column:2;font-family:"Cinzel",serif;font-size:.6rem;color:var(--muted);letter-spacing:.08em}
+    .map-link{
+      display:inline-flex;align-items:center;gap:6px;margin-top:10px;
+      font-family:"Cinzel",serif;font-size:.62rem;font-weight:600;letter-spacing:.12em;text-transform:uppercase;
+      color:var(--gold-light);border-bottom:1px solid rgba(201,151,58,.3);
+    }
+    .donate-btn{
+      display:block;text-align:center;padding:10px 16px;margin-top:14px;
+      background:linear-gradient(135deg,var(--crimson-dark),var(--crimson));
+      border:1px solid rgba(201,151,58,.3);
+      font-family:"Cinzel",serif;font-size:.68rem;font-weight:700;letter-spacing:.14em;text-transform:uppercase;
+      color:var(--gold-pale);transition:background 180ms,box-shadow 180ms;
+    }
+    .donate-btn:hover{background:linear-gradient(135deg,var(--crimson),#9e2438);box-shadow:0 4px 20px rgba(123,28,44,.5)}
+    /* Contact sidebar */
+    .contact-list{list-style:none;margin:0;padding:0;display:grid;gap:10px}
+    .contact-list li{font-size:.94rem;color:rgba(245,239,216,.72);display:flex;gap:8px;align-items:flex-start}
+    .contact-list .icon{color:var(--gold);flex-shrink:0;margin-top:2px}
+
+    /* ─── About section ──────────────────────────────────────── */
+    .about-grid{display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-top:16px}
+    .about-card{
+      padding:16px 18px;background:rgba(10,7,3,.5);border:1px solid var(--line-dark);
+      border-left:3px solid var(--gold);
+    }
+    .about-card h4{font-family:"IM Fell English",serif;font-size:1.1rem;font-weight:400;color:var(--parchment);margin:0 0 6px}
+    .about-card p{font-size:.92rem;color:rgba(245,239,216,.62);margin:0}
+
+    /* ─── Buttons / links ────────────────────────────────────── */
+    .button-link{
+      display:inline-flex;align-items:center;min-height:44px;padding:0 22px;
+      font-family:"Cinzel",serif;font-size:.7rem;font-weight:700;letter-spacing:.14em;text-transform:uppercase;
+      background:linear-gradient(135deg,var(--crimson-dark),var(--crimson));
+      color:var(--gold-pale);border:1px solid rgba(201,151,58,.25);
+      transition:background 180ms,box-shadow 180ms;
+    }
+    .button-link:hover{background:linear-gradient(135deg,var(--crimson),#9e2438);box-shadow:0 6px 24px rgba(123,28,44,.45)}
+    .button-link--ghost{background:transparent;border-color:var(--line);color:var(--parchment)}
+    .button-link--ghost:hover{background:rgba(201,151,58,.08);box-shadow:none}
+    .tag-links{display:flex;flex-wrap:wrap;gap:10px;margin-top:16px}
+    .tag-chip{
+      font-family:"Cinzel",serif;font-size:.65rem;font-weight:600;letter-spacing:.12em;text-transform:uppercase;
+      padding:4px 14px;border:1px solid var(--gold);color:var(--gold-light);border-radius:1px;transition:background 180ms;
+    }
+    .tag-chip:hover,.tag-chip.is-active{background:var(--gold);color:var(--ink)}
+    .text-link{color:var(--gold-light);font-weight:600;border-bottom:1px solid rgba(201,151,58,.4);transition:color 160ms,border-color 160ms}
+    .text-link:hover{color:var(--gold);border-color:var(--gold)}
+
+    /* ─── Footer ─────────────────────────────────────────────── */
+    .site-footer{border-top:1px solid var(--line);padding:22px 24px 36px;margin-top:auto}
+    .site-footer__inner{
+      max-width:1180px;margin:0 auto;
+      display:flex;align-items:center;justify-content:space-between;gap:16px;flex-wrap:wrap;
+    }
+    .site-footer p{color:var(--muted);font-size:.9rem;margin:0}
+    .site-footer a{color:var(--gold)}
+    .site-footer a:hover{color:var(--gold-light)}
+    .footer-cross{font-size:1.4rem;color:var(--gold);opacity:.45}
+
+    /* ─── Mobile ─────────────────────────────────────────────── */
+    @media(max-width:860px){
+      .nav-toggle{display:flex;margin-left:auto}
+      .site-brand{order:1;margin-left:0;text-align:left}
+      .site-nav{
+        position:absolute;top:70px;left:0;right:0;
+        background:rgba(12,9,5,.97);border-bottom:1px solid var(--line);
+        padding:12px 20px 18px;display:none;order:3;
+      }
+      .site-nav.is-open{display:block}
+      .site-nav .main-menu{flex-direction:column;align-items:flex-start;gap:0}
+      .main-menu>li>:is(a,span,p){padding-left:4px}
+      .main-menu li ul{position:static;opacity:1;pointer-events:auto;transform:none;box-shadow:none;border:none;background:transparent;padding-left:16px;margin-bottom:6px}
+      .site-header{position:relative}
+      .home-layout{grid-template-columns:1fr}
+      .about-grid{grid-template-columns:1fr}
+      .hero__panel{margin-top:20px}
+    }
+    @media(max-width:480px){
+      .hero h1{font-size:2.2rem}
+      .panel,.sidebar-panel{padding:20px 18px}
+    }
+  </style>
+</head>
+<body>
+<div class="site-shell">
+
+  <!-- ══ HEADER ══════════════════════════════════════════════════════ -->
+  <header class="site-header">
+    <div class="site-header__inner">
+
+      <a class="site-brand" href="/">
+        <svg class="site-brand__icon" viewBox="0 0 42 42" fill="none" xmlns="http://www.w3.org/2000/svg">
+          <rect x="18" y="4" width="6" height="34" rx="1" fill="rgba(201,151,58,0.85)"/>
+          <rect x="6" y="14" width="30" height="5" rx="1" fill="rgba(201,151,58,0.85)"/>
+          <rect x="10" y="31" width="22" height="3.5" rx="1" transform="rotate(-12 10 31)" fill="rgba(201,151,58,0.6)"/>
+        </svg>
+        <span class="site-brand__text">
+          <span class="site-brand__kicker">Static Site Editing</span>
+          <span class="site-brand__title">WYSiteIWYG</span>
+        </span>
+      </a>
+
+      <button class="nav-toggle" aria-label="Toggle menu" onclick="this.closest('.site-header').querySelector('.site-nav').classList.toggle('is-open')">☰</button>
+
+      <nav class="site-nav" aria-label="Primary">
+        <ul class="main-menu">
+          <li><a href="#">Home</a></li>
+          <li><a href="#">Platform</a></li>
+          <li><a href="#">Installation</a></li>
+          <li>
+            <span>Journal</span>
+            <ul>
+              <li><a href="#">Launch Notes</a></li>
+              <li><a href="#">Migration Stories</a></li>
+            </ul>
+          </li>
+          <li><a href="#">Themes</a></li>
+          <li><a href="#">Pricing Model</a></li>
+          <li><a href="#">Documentation</a></li>
+        </ul>
+      </nav>
+
+    </div>
+  </header>
+
+  <!-- ══ MAIN ════════════════════════════════════════════════════════ -->
+  <main>
+
+    <!-- Hero -->
+    <section class="hero">
+      <div class="hero__panel">
+        <p class="hero__eyebrow">✦ Filesystem-first publishing with an editorial layer</p>
+        <h1>Edit static HTML in place without moving the site into a database CMS.</h1>
+        <p>WYSiteIWYG keeps the public site as ordinary files, gives logged-in editors a transparent ProseMirror-based workflow, and rewrites pages when themes or tag archives change.</p>
+        <p class="hero__sub">PHP in <code>/edit/</code> · Static files at the site root · Live block editing on the actual page</p>
+        <div class="hero__actions">
+          <a class="button-link" href="#">Open Dashboard</a>
+          <a class="button-link button-link--ghost" href="#">Read Installation Guide</a>
+        </div>
+      </div>
+    </section>
+
+    <!-- Two-column home layout -->
+    <div class="home-layout">
+      <div class="home-main">
+
+        <!-- ── Live Editing ───────────────────────────── -->
+        <div class="panel">
+          <p class="panel__eyebrow"><em class="orn">✦</em> Live Editing</p>
+          <div class="post-item">
+            <p class="post-meta">Transparent editing on the published file</p>
+            <h2>Edit the exact section you mean to change</h2>
+            <p>Each marker block gets its own badge on the live page, so editors can open only the relevant region, work with styled content in place, and save directly back into the HTML already being served.</p>
+            <blockquote>
+              The goal is not to recreate a giant CMS. The goal is to let a static site stay static while still being practical to maintain.
+              <cite>WYSiteIWYG design principle</cite>
+            </blockquote>
+            <a class="read-more" href="#">Explore Editing Tools</a>
+          </div>
+        </div>
+
+        <!-- ── Product Journal ─────────────────────────────── -->
+        <div class="panel">
+          <p class="panel__eyebrow"><em class="orn">✦</em> Product Journal</p>
+          <div class="post-item">
+            <p class="post-meta">Launch update</p>
+            <h2>Theme switching now previews before it rewrites</h2>
+            <p>Administrators can inspect a new public look first, then apply it across templates and pages once the direction is approved.</p>
+            <a class="read-more" href="#">Read More</a>
+          </div>
+          <div class="post-item">
+            <p class="post-meta">Workflow note</p>
+            <h2>Root-level HTML posts now drive tag archives</h2>
+            <p>Entries live alongside ordinary pages, while hashtags generate static landing pages such as <code>/launch/</code> and <code>/workflow/</code>.</p>
+            <a class="read-more" href="#">Read More</a>
+          </div>
+          <div class="post-item">
+            <p class="post-meta">Migration guide</p>
+            <h2>Unmanaged HTML can be pulled into editable blocks</h2>
+            <p>Legacy pages can be themed and imported without forcing a full rebuild first, including advanced placement for multi-section layouts.</p>
+            <a class="read-more" href="#">Read More</a>
+          </div>
+        </div>
+
+        <!-- ── Why Teams Pick It ────────────────────────── -->
+        <div class="panel">
+          <p class="panel__eyebrow"><em class="orn">✦</em> Why Teams Pick It</p>
+          <h2>Editing convenience without changing the deployment model</h2>
+          <p>WYSiteIWYG is built for organizations that like simple hosting, straightforward backups, and human-readable files, but still need menus, posts, user accounts, theme changes, and block-level editing.</p>
+          <div class="about-grid">
+            <div class="about-card">
+              <h4>Direct HTML ownership</h4>
+              <p>The published file remains the source of truth instead of being a generated export from a hidden database.</p>
+            </div>
+            <div class="about-card">
+              <h4>Shared navigation</h4>
+              <p>The main menu stays editable as a plain nested list while themes handle the visual dropdown treatment on the front end.</p>
+            </div>
+            <div class="about-card">
+              <h4>Theme rewrites</h4>
+              <p>Switch between theme families and let the generator rewrite the site into the new presentation.</p>
+            </div>
+            <div class="about-card">
+              <h4>Import tooling</h4>
+              <p>Adopt older unmanaged HTML files gradually instead of hand-rebuilding every page before launch.</p>
+            </div>
+          </div>
+          <div class="tag-links" style="margin-top:20px">
+            <a class="tag-chip is-active" href="#">#launch</a>
+            <a class="tag-chip" href="#">#workflow</a>
+            <a class="tag-chip" href="#">#migration</a>
+            <a class="tag-chip" href="#">#themes</a>
+            <a class="tag-chip" href="#">#statichtml</a>
+          </div>
+        </div>
+
+      </div><!-- /home-main -->
+
+      <aside class="home-sidebar">
+
+        <!-- Capabilities -->
+        <div class="sidebar-panel">
+          <p class="sidebar-panel__title">✦ Key Capabilities</p>
+          <ul class="service-list">
+            <li>
+              <span class="service-day">Edit</span>
+              <span class="service-name">Block badges on the live page</span>
+              <span class="service-time">Real HTML files on disk</span>
+            </li>
+            <li>
+              <span class="service-day">Menu</span>
+              <span class="service-name">Nested-list navigation editing</span>
+              <span class="service-time">Theme-styled dropdowns</span>
+            </li>
+            <li>
+              <span class="service-day">Source</span>
+              <span class="service-name">HTML source mode inside the editor</span>
+              <span class="service-time">Useful for exact cleanup</span>
+            </li>
+            <li>
+              <span class="service-day">Tags</span>
+              <span class="service-name">Static archive pages from hashtags</span>
+              <span class="service-time">No post database required</span>
+            </li>
+          </ul>
+        </div>
+
+        <!-- Deployment -->
+        <div class="sidebar-panel">
+          <p class="sidebar-panel__title">✦ Typical Deployment</p>
+          <ul class="service-list">
+            <li>
+              <span class="service-day">1</span>
+              <span class="service-name">Upload the site with the editor at <code>/edit/</code></span>
+              <span class="service-time">PHP + writable files</span>
+            </li>
+            <li>
+              <span class="service-day">2</span>
+              <span class="service-name">Create the first administrator and preview themes</span>
+              <span class="service-time">Pick a visual direction</span>
+            </li>
+            <li>
+              <span class="service-day">3</span>
+              <span class="service-name">Import legacy pages or create new ones</span>
+              <span class="service-time">Split into editable blocks</span>
+            </li>
+            <li>
+              <span class="service-day">4</span>
+              <span class="service-name">Hand the site to editors for routine publishing</span>
+              <span class="service-time">No detached authoring backend</span>
+            </li>
+          </ul>
+          <a class="map-link" href="#" style="margin-top:14px">Read the setup guide →</a>
+        </div>
+
+        <!-- Filesystem model -->
+        <div class="sidebar-panel">
+          <p class="sidebar-panel__title">✦ Filesystem Model</p>
+          <address>
+            Public pages remain plain HTML<br>
+            Posts live at the site root<br>
+            Tags build static landing pages
+          </address>
+          <a class="map-link" href="#" style="margin-top:14px">See tagged publishing →</a>
+        </div>
+
+        <!-- Theme switching -->
+        <div class="sidebar-panel">
+          <p class="sidebar-panel__title">✦ Theme Switching</p>
+          <p>Preview a new design first, then rewrite the public pages and active templates to match once the choice is settled.</p>
+          <p style="word-break:break-all"><a href="#" style="color:var(--gold-light)">Theme previews, apply flow, and safe menu sync</a></p>
+          <a class="donate-btn" href="#">Open Theme Dashboard</a>
+        </div>
+
+        <!-- Admin model -->
+        <div class="sidebar-panel">
+          <p class="sidebar-panel__title">✦ Admin Model</p>
+          <ul class="contact-list">
+            <li><span class="icon">🔐</span><span>One-way password hashes for users</span></li>
+            <li><span class="icon">🛡</span><span>Authenticated editor routes under <code>/edit/</code></span></li>
+            <li><span class="icon">📝</span><span>Dashboard tools for pages, posts, tags, and imports</span></li>
+          </ul>
+          <a class="map-link" href="#" style="margin-top:14px">Review the feature tour →</a>
+        </div>
+
+      </aside>
+    </div>
+
+  </main>
+
+  <!-- ══ FOOTER ══════════════════════════════════════════════════════ -->
+  <footer class="site-footer">
+    <div class="site-footer__inner">
+      <p>Published as static HTML and edited in place through <code>/edit/</code> · WYSiteIWYG</p>
+      <span class="footer-cross">☩</span>
+      <p><a href="/">WYSite Cathedral · Product theme preview</a></p>
+    </div>
+  </footer>
+
+</div>
+</body>
+</html>

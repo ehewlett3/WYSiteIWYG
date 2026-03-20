@@ -22,6 +22,9 @@ $siteBaseUrl = $siteBaseUrl === '' ? '/' : $siteBaseUrl . '/';
 
 $cookiePath = $siteBaseUrl;
 $sessionName = 'wysite_session_v2';
+$expireCookie = static function (string $name, string $path, bool $secure): void {
+    setcookie($name, '', time() - 42000, $path, '', $secure, true);
+};
 
 if (session_status() !== PHP_SESSION_ACTIVE) {
     $legacyCookies = [
@@ -43,26 +46,15 @@ if (session_status() !== PHP_SESSION_ACTIVE) {
                 continue;
             }
 
-            setcookie($legacyCookie['name'], '', [
-                'expires' => time() - 42000,
-                'path' => $legacyPath,
-                'secure' => $https,
-                'httponly' => true,
-                'samesite' => 'Lax',
-            ]);
+            $expireCookie($legacyCookie['name'], $legacyPath, $https);
         }
     }
 }
 
 if (session_status() !== PHP_SESSION_ACTIVE) {
     session_name($sessionName);
-    session_set_cookie_params([
-        'lifetime' => 0,
-        'path' => $cookiePath,
-        'secure' => $https,
-        'httponly' => true,
-        'samesite' => 'Lax',
-    ]);
+    ini_set('session.cookie_samesite', 'Lax');
+    session_set_cookie_params(0, $cookiePath, '', $https, true);
     session_start();
 }
 

@@ -22,6 +22,9 @@ $rootPath = $app['rootPath'];
 $siteBaseUrl = $app['siteBaseUrl'];
 $siteTitle = $app['siteTitle'];
 
+// CSS variable overrides for the chosen dashboard theme (empty = built-in look).
+$GLOBALS['WYSITE_DASHBOARD_CSS'] = $themes->dashboardCssVariables();
+
 $action = $_GET['action'] ?? 'dashboard';
 
 if (!$auth->isInstalled() && $action !== 'install') {
@@ -39,6 +42,7 @@ function layout(string $title, string $body, string $appUrl, string $siteTitle, 
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title><?= h($title) ?> | <?= h($siteTitle) ?></title>
   <link rel="stylesheet" href="<?= h($appUrl) ?>/assets/editor.css">
+  <?php if (!empty($GLOBALS['WYSITE_DASHBOARD_CSS'])): ?><style><?= $GLOBALS['WYSITE_DASHBOARD_CSS'] ?></style><?php endif; ?>
 </head>
 <body class="wysite-app-shell">
   <div class="wysite-shell">
@@ -151,6 +155,12 @@ try {
             $auth->bootstrapAdmin(trim((string) ($data['username'] ?? '')), (string) ($data['password'] ?? ''));
             $auth->attempt(trim((string) ($data['username'] ?? '')), (string) ($data['password'] ?? ''));
             Flash::push('success', 'WYSiteIWYG is ready. Your admin account has been created.');
+
+            if (!empty($data['install_demo'])) {
+                $created = $generator->deployDemoSite(require __DIR__ . '/docs/content.php');
+                Flash::push('success', 'Deployed the demo site with ' . $created . ' documentation page(s). Delete it anytime from the dashboard.');
+            }
+
             redirect($appUrl . '/index.php');
         }
 
@@ -171,6 +181,10 @@ try {
             <label>
               <span>Password</span>
               <input type="password" name="password" required minlength="10">
+            </label>
+            <label class="wysite-checkbox">
+              <input type="checkbox" name="install_demo" value="1" checked>
+              <span>Also install the demo site — the built-in documentation pages, deployed to the site root as editable content. Leave unchecked if you are dropping <code>/edit/</code> into an existing site.</span>
             </label>
             <button class="wysite-button" type="submit">Create administrator</button>
           </form>
@@ -512,6 +526,23 @@ try {
         redirect($appUrl . '/index.php');
     }
 
+    if ($action === 'set-dashboard-theme') {
+        require_admin($user);
+        if (!is_post() || !Csrf::validate($_POST['csrf_token'] ?? null)) {
+            throw new RuntimeException('The dashboard appearance request was rejected.');
+        }
+
+        $themeId = trim((string) ($_POST['dashboard_theme'] ?? ''));
+        $themes->setDashboardTheme($themeId);
+        Flash::push(
+            'success',
+            $themeId === '' || $themeId === 'default'
+                ? 'Dashboard appearance reset to the built-in default.'
+                : 'Dashboard now uses the ' . $themes->getTheme($themeId)['name'] . ' appearance.'
+        );
+        redirect($appUrl . '/index.php');
+    }
+
     if ($action === 'external-template-fetch') {
         require_admin($user);
         if (!is_post() || !Csrf::validate($_POST['csrf_token'] ?? null)) {
@@ -781,6 +812,79 @@ try {
         redirect($appUrl . '/index.php');
     }
 
+    if ($action === 'docs') {
+        $demoContent = require __DIR__ . '/docs/content.php';
+
+        // Map a page/post slug to its on-page anchor id.
+        $docAnchor = static fn(string $slug): string =>
+            'doc-' . ($slug === '' || $slug === 'index' ? 'index' : trim(str_replace('/', '-', strtolower($slug)), '-'));
+
+        // The documentation renders every page/post on one screen, so rewrite the
+        // content's site links (e.g. /features/, /blog/) to in-page anchors. This
+        // keeps the docs navigable whether or not the demo site is deployed.
+        $docLinks = static function (string $html) use ($docAnchor): string {
+            return preg_replace_callback(
+                '#href="/([^"]*)"#i',
+                static fn(array $m): string => 'href="#' . $docAnchor(trim($m[1], '/')) . '"',
+                $html
+            ) ?? $html;
+        };
+
+        ob_start();
+        ?>
+        <main class="wysite-dashboard wysite-docs">
+          <section class="wysite-panel wysite-panel--hero">
+            <div>
+              <p class="wysite-kicker">Documentation</p>
+              <h2>How WYSiteIWYG works</h2>
+              <p>This is the built-in documentation. The same pages can be deployed to the site root as an editable demo site from the dashboard.</p>
+            </div>
+            <div class="wysite-hero-actions">
+              <a class="wysite-button wysite-button--ghost" href="<?= h($appUrl) ?>/index.php">Back to dashboard</a>
+            </div>
+          </section>
+          <?php foreach ($demoContent['pages'] as $docPage): ?>
+          <article class="wysite-panel" id="<?= h($docAnchor($docPage['slug'])) ?>">
+            <h3><?= h($docPage['title']) ?></h3>
+            <p class="wysite-muted"><?= h($docPage['excerpt']) ?></p>
+            <?php foreach ($docPage['blocks'] as $docBlock): ?>
+            <div class="wysite-doc-block"><?= $docLinks($docBlock) ?></div>
+            <?php endforeach; ?>
+          </article>
+          <?php endforeach; ?>
+          <article class="wysite-panel" id="doc-blog">
+            <h3>Journal</h3>
+            <p class="wysite-muted">Blog-style posts. When the demo site is deployed these become the journal at <code>/blog/</code>.</p>
+          </article>
+          <?php foreach ($demoContent['posts'] as $docPost): ?>
+          <article class="wysite-panel" id="<?= h($docAnchor($docPost['slug'])) ?>">
+            <h3><?= h($docPost['title']) ?> <span class="wysite-muted">· Journal</span></h3>
+            <p class="wysite-muted"><?= h($docPost['excerpt']) ?></p>
+            <div class="wysite-doc-block"><?= $docLinks($docPost['content']) ?></div>
+          </article>
+          <?php endforeach; ?>
+        </main>
+        <?php
+        layout('Documentation', (string) ob_get_clean(), $appUrl, $siteTitle, $user);
+        return;
+    }
+
+    if ($action === 'deploy-demo') {
+        require_admin($user);
+        if (!is_post() || !Csrf::validate($_POST['csrf_token'] ?? null)) {
+            throw new RuntimeException('The deploy-demo request was rejected.');
+        }
+
+        $created = $generator->deployDemoSite(require __DIR__ . '/docs/content.php');
+        Flash::push(
+            'success',
+            $created > 0
+                ? 'Deployed the demo site with ' . $created . ' documentation page(s).'
+                : 'The demo site was refreshed from the documentation.'
+        );
+        redirect($appUrl . '/index.php');
+    }
+
     if ($action === 'delete-demo') {
         require_admin($user);
         if (!is_post() || !Csrf::validate($_POST['csrf_token'] ?? null)) {
@@ -803,6 +907,7 @@ try {
     $users = $user['is_admin'] ? $auth->allUsers() : [];
     $availableThemes = $generator->availableThemes();
     $currentTheme = $generator->currentTheme();
+    $dashboardThemeId = $themes->dashboardThemeId();
 
     ob_start();
     ?>
@@ -814,8 +919,15 @@ try {
           <p>Editable sections are delimited with HTML comments, so the output stays static and the editing system stays simple.</p>
         </div>
         <div class="wysite-hero-actions">
+          <a class="wysite-button wysite-button--ghost" href="<?= h($appUrl) ?>/index.php?action=docs">View documentation</a>
           <a class="wysite-button" href="<?= h($appUrl) ?>/index.php?action=preview&path=index.html">Open homepage preview</a>
           <a class="wysite-button wysite-button--ghost" href="<?= h($siteBaseUrl) ?>" target="_blank" rel="noreferrer">Open live site</a>
+          <?php if ($user['is_admin'] && !$hasDemoContent): ?>
+          <form method="post" action="<?= h($appUrl) ?>/index.php?action=deploy-demo">
+            <input type="hidden" name="csrf_token" value="<?= h(Csrf::token()) ?>">
+            <button class="wysite-button" type="submit">Deploy demo site</button>
+          </form>
+          <?php endif; ?>
           <?php if ($hasDemoContent): ?>
           <form method="post" action="<?= h($appUrl) ?>/index.php?action=delete-demo" onsubmit="return window.confirm('Delete all demo pages and posts? This removes every page flagged as demo content and cannot be undone.');">
             <input type="hidden" name="csrf_token" value="<?= h(Csrf::token()) ?>">
@@ -904,6 +1016,35 @@ try {
             </article>
           <?php endforeach; ?>
         </div>
+      </section>
+
+      <section class="wysite-panel">
+        <div class="wysite-panel__heading">
+          <div>
+            <p class="wysite-kicker">Dashboard appearance</p>
+            <h3>Choose a theme for the editor itself</h3>
+          </div>
+          <p class="wysite-muted">This restyles only the dashboard/editor UI. It is separate from "Apply Theme", which rewrites your public site.</p>
+        </div>
+        <?php if ($user['is_admin']): ?>
+        <form method="post" action="<?= h($appUrl) ?>/index.php?action=set-dashboard-theme" class="wysite-form">
+          <input type="hidden" name="csrf_token" value="<?= h(Csrf::token()) ?>">
+          <label>
+            <span>Dashboard theme</span>
+            <select name="dashboard_theme" class="wysite-theme-select">
+              <option value="default"<?= $dashboardThemeId === '' ? ' selected' : '' ?>>Default (built-in)</option>
+              <?php foreach ($availableThemes as $theme): ?>
+                <?php if (!empty($theme['has_dashboard'])): ?>
+                <option value="<?= h($theme['id']) ?>"<?= $theme['id'] === $dashboardThemeId ? ' selected' : '' ?>><?= h($theme['name']) ?></option>
+                <?php endif; ?>
+              <?php endforeach; ?>
+            </select>
+          </label>
+          <button class="wysite-button" type="submit">Save dashboard appearance</button>
+        </form>
+        <?php else: ?>
+        <p class="wysite-muted">Only administrators can change the dashboard appearance.</p>
+        <?php endif; ?>
       </section>
 
       <section class="wysite-panel">

@@ -1,0 +1,58 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <!-- WYSITE:META title="{{TITLE}}" kind="blog" excerpt="{{EXCERPT}}" tag="{{TAG}}" generated="tag-index" -->
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{{TITLE}}</title>
+  <link rel="stylesheet" href="{{THEME_CSS_HREF}}">
+</head>
+<body class="{{BODY_CLASS}}">
+  <div class="site-shell">
+    <header class="site-header">
+      <div class="site-header__inner">
+        <a class="site-brand" href="/">
+          <span class="site-brand__kicker">WYSiteIWYG</span>
+          <span class="site-brand__title">Vivid Nocturne</span>
+        </a>
+        <nav class="site-nav" aria-label="Primary">
+          <!-- WYSITE:BEGIN name="main-menu" type="menu" label="Main Menu" -->
+          {{MAIN_MENU}}
+          <!-- WYSITE:END name="main-menu" -->
+        </nav>
+      </div>
+    </header>
+
+    <main>
+      <section class="hero hero--blog">
+        <div class="hero__panel">
+          <p class="hero__eyebrow">{{TAG_LABEL}}</p>
+          <h1>{{TITLE}}</h1>
+          <p>{{EXCERPT}}</p>
+        </div>
+      </section>
+
+      <section class="content-wrap">
+        <article class="content-block">
+          <div class="content-stack">
+            <!-- WYSITE:BEGIN name="blog-index-content" type="blog" label="Blog Index Intro" -->
+            {{BLOG_INDEX_CONTENT}}
+            <!-- WYSITE:END name="blog-index-content" -->
+          </div>
+        </article>
+      </section>
+
+      <section class="blog-roll">
+        {{BLOG_ITEMS}}
+      </section>
+    </main>
+
+    <footer class="site-footer">
+      <div class="site-footer__inner">
+        <p>This listing is generated from hashtag metadata on the root-level post pages.</p>
+      </div>
+    </footer>
+  </div>
+  {{WYSITE_PUBLIC_BRIDGE}}
+</body>
+</html>

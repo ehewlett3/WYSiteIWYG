@@ -88,6 +88,7 @@ final class ThemeManager
                 'description' => $meta['description'] ?? '',
                 'inspiration' => $meta['inspiration'] ?? '',
                 'preview_blurb' => $meta['preview_blurb'] ?? '',
+                'has_dashboard' => isset($meta['dashboard']) && is_array($meta['dashboard']),
             ];
         }
 
@@ -134,6 +135,79 @@ final class ThemeManager
         $data = $this->load();
         $data['theme'] = $id;
         $this->save($data);
+    }
+
+    /**
+     * The theme whose palette styles the editor dashboard, or '' for the built-in
+     * default. This is independent of the active *site* theme (currentThemeId()).
+     */
+    public function dashboardThemeId(): string
+    {
+        $data = $this->load();
+        $id = (string) ($data['dashboard_theme'] ?? '');
+        if ($id === '') {
+            return '';
+        }
+
+        try {
+            $this->getTheme($id);
+            return $id;
+        } catch (RuntimeException) {
+            return '';
+        }
+    }
+
+    public function setDashboardTheme(string $id): void
+    {
+        $data = $this->load();
+        if ($id === '' || $id === 'default') {
+            unset($data['dashboard_theme']);
+        } else {
+            $this->getTheme($id);
+            $data['dashboard_theme'] = $id;
+        }
+        $this->save($data);
+    }
+
+    public function dashboardPalette(string $id): array
+    {
+        $palette = $this->themeMeta($id)['dashboard'] ?? null;
+        return is_array($palette) ? $palette : [];
+    }
+
+    /**
+     * CSS for the selected dashboard theme as a :root{} override of editor.css
+     * custom properties, or '' when the built-in default is in effect.
+     */
+    public function dashboardCssVariables(): string
+    {
+        $id = $this->dashboardThemeId();
+        if ($id === '') {
+            return '';
+        }
+
+        $declarations = [];
+        foreach ($this->dashboardPalette($id) as $key => $value) {
+            $name = preg_replace('/[^a-z0-9-]/i', '', (string) $key);
+            $clean = trim(str_replace(['{', '}', '<', '>'], '', (string) $value));
+            if ($name === '' || $clean === '') {
+                continue;
+            }
+            $declarations[] = '--wysite-' . $name . ': ' . $clean . ';';
+        }
+
+        return $declarations === [] ? '' : ':root{' . implode('', $declarations) . '}';
+    }
+
+    private function themeMeta(string $id): array
+    {
+        $file = $this->themePath($id) . '/theme.php';
+        if (!is_file($file)) {
+            return [];
+        }
+
+        $meta = require $file;
+        return is_array($meta) ? $meta : [];
     }
 
     public function assertThemeIsValid(string $id): void

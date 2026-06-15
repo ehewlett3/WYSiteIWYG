@@ -18,10 +18,10 @@ body.wysite-app-shell {
   min-height: 100vh;
   font-family: var(--wysite-font-sans);
   color: var(--wysite-ink);
-  background:
-    radial-gradient(circle at top left, rgba(95, 143, 114, 0.16), transparent 32%),
-    radial-gradient(circle at top right, rgba(46, 107, 79, 0.12), transparent 28%),
-    linear-gradient(180deg, #f7fbf8, var(--wysite-bg));
+  background: var(--wysite-app-bg,
+    radial-gradient(circle at top left, rgba(95, 143, 114, 0.16), transparent 32%)
+    , radial-gradient(circle at top right, rgba(46, 107, 79, 0.12), transparent 28%)
+    , linear-gradient(180deg, #f7fbf8, var(--wysite-bg)));
 }
 
 .wysite-shell {
@@ -658,4 +658,27 @@ body.wysite-live-banner-visible .pm-dropin--menu {
   body.wysite-live-banner-visible .pm-dropin--menu {
     margin-top: 16px;
   }
+}
+
+/* Built-in documentation view */
+.wysite-doc-block {
+  margin-top: 14px;
+}
+.wysite-doc-block:first-of-type {
+  margin-top: 8px;
+}
+.wysite-doc-block h2 {
+  font-size: 1.05rem;
+  margin: 18px 0 6px;
+}
+.wysite-doc-block ul {
+  margin: 6px 0;
+  padding-left: 20px;
+}
+.wysite-doc-block pre {
+  overflow: auto;
+  padding: 12px;
+  border-radius: 10px;
+  background: rgba(0, 0, 0, .06);
+  font: 13px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
 }

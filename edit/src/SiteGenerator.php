@@ -230,6 +230,130 @@ final class SiteGenerator
         );
     }
 
+    /**
+     * Deploy the documentation/demo content (see edit/docs/content.php) as real,
+     * editable, location-agnostic WYSite pages at the site root. Pages are flagged
+     * demo="1" so they can later be removed with deleteDemoContent(). Existing
+     * non-demo pages are not rebuilt, so dropping the editor into an existing site
+     * and then deploying the demo does not rewrite the user's own pages.
+     *
+     * @param array{menu?:string,pages?:array,posts?:array} $content
+     * @return int number of pages/posts newly created
+     */
+    public function deployDemoSite(array $content): int
+    {
+        $menu = (string) ($content['menu'] ?? '');
+        $created = 0;
+
+        $this->ensurePublishedStylesheet();
+
+        foreach (($content['pages'] ?? []) as $spec) {
+            $created += $this->deployDemoPage($spec, $menu);
+        }
+
+        foreach (($content['posts'] ?? []) as $spec) {
+            $created += $this->deployDemoPost($spec, $menu);
+        }
+
+        // Build the generated blog/tag landing pages from the demo posts. By now
+        // the demo pages carry the demo menu, so currentMenuHtml() feeds it in.
+        $this->rebuildTagPages();
+
+        // Flag demo content last: rebuilds/renders regenerate the META comment from
+        // the template and would otherwise drop the flag.
+        foreach (($content['pages'] ?? []) as $spec) {
+            $this->repository->updateMetadata($this->pagePathForSlug((string) $spec['slug']), ['demo' => '1']);
+        }
+        foreach (($content['posts'] ?? []) as $spec) {
+            $this->repository->updateMetadata($spec['slug'] . '.html', ['demo' => '1']);
+        }
+
+        return $created;
+    }
+
+    private function deployDemoPage(array $spec, string $menu): int
+    {
+        $slug = (string) $spec['slug'];
+        $path = $this->pagePathForSlug($slug);
+        $created = 0;
+
+        if (!is_file($this->rootPath . '/' . $path)) {
+            $this->createPage((string) $spec['title'], $slug);
+            $created = 1;
+        }
+
+        $this->repository->updateMetadata($path, [
+            'title' => (string) $spec['title'],
+            'excerpt' => (string) ($spec['excerpt'] ?? ''),
+        ]);
+
+        $names = ['page-content', 'page-content-2', 'page-content-3'];
+        foreach (array_values($spec['blocks'] ?? []) as $index => $html) {
+            if (isset($names[$index])) {
+                $this->repository->updateBlock($path, $names[$index], (string) $html);
+            }
+        }
+
+        if ($menu !== '') {
+            $this->repository->updateBlock($path, 'main-menu', $this->normalizeMenuHtml($menu));
+        }
+
+        // Re-render through the active template so the content and menu we just
+        // wrote raw are localized for the current deployment location.
+        Filesystem::atomicWrite($this->rootPath . '/' . $path, $this->renderPageForActiveTemplate($path));
+
+        return $created;
+    }
+
+    private function deployDemoPost(array $spec, string $menu): int
+    {
+        $slug = (string) $spec['slug'];
+        $path = $slug . '.html';
+        $created = 0;
+
+        if (!is_file($this->rootPath . '/' . $path)) {
+            $this->createBlogPost(
+                (string) $spec['title'],
+                $slug,
+                (string) ($spec['excerpt'] ?? ''),
+                (string) ($spec['hashtags'] ?? '#blog')
+            );
+            $created = 1;
+        }
+
+        $this->repository->updateMetadata($path, [
+            'title' => (string) $spec['title'],
+            'excerpt' => (string) ($spec['excerpt'] ?? ''),
+            'hashtags' => (string) ($spec['hashtags'] ?? '#blog'),
+        ]);
+        $this->repository->updateBlock($path, 'blog-post-content', (string) $spec['content']);
+
+        if ($menu !== '') {
+            $this->repository->updateBlock($path, 'main-menu', $this->normalizeMenuHtml($menu));
+        }
+
+        Filesystem::atomicWrite($this->rootPath . '/' . $path, $this->renderPageForActiveTemplate($path));
+
+        return $created;
+    }
+
+    private function pagePathForSlug(string $slug): string
+    {
+        return $slug === 'index' ? 'index.html' : $slug . '.html';
+    }
+
+    private function ensurePublishedStylesheet(): void
+    {
+        $target = $this->rootPath . '/assets/site.css';
+        if (is_file($target)) {
+            return;
+        }
+
+        $css = $this->themes->loadStylesheet($this->themes->currentThemeId());
+        Filesystem::ensureDirectory(dirname($target));
+        Filesystem::atomicWrite($target, $this->localizeStylesheet($css));
+    }
+
     public function hasDemoContent(): bool
     {
         foreach ($this->repository->listPages() as $page) {

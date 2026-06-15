@@ -56,8 +56,16 @@ function buildUI({ onSave, onCancel }) {
     .pm-btn:disabled { opacity: .55; cursor: not-allowed; }
     .pm-btn[aria-pressed="true"] { outline: 2px solid rgba(120,160,255,.55); }
     .pm-image-upload-placeholder { font-size: 12px; opacity: .85; }
-    .ProseMirror { outline: none; background: transparent; }
+    /* ProseMirror requires the editable surface to use pre-wrap for correct
+       caret/whitespace handling; scoped to the live editor only, so published
+       output (which has no .ProseMirror element) keeps the surrounding CSS. */
+    .ProseMirror { outline: none; background: transparent; white-space: pre-wrap; }
     .ProseMirror img { max-width: 100%; height: auto; }
+    /* A lone paragraph inside a list item / table cell is unwrapped on save, so
+       render it tight here too — the live editor then matches the published HTML. */
+    .ProseMirror li > p:only-of-type,
+    .ProseMirror td > p:only-of-type,
+    .ProseMirror th > p:only-of-type { margin: 0; }
 
     /* --- Table styling override (match site/output look) --- */
     .pm-dropin .ProseMirror table {
@@ -329,7 +337,33 @@ export const DropInWysiwyg = {
       const serializer = DOMSerializer.fromSchema(schema);
       const wrap = document.createElement("div");
       wrap.appendChild(serializer.serializeFragment(doc.content));
+      // The schema models list items and table cells as containing block content
+      // (so nested lists / multi-paragraph cells work), which means a plain
+      // <li>text</li> round-trips as <li><p>text</p></li>. To respect the kind of
+      // hand-authored HTML this editor targets, collapse a lone, attribute-free
+      // wrapping <p> back to inline content. Items with several paragraphs, or a
+      // styled paragraph, keep their structure.
+      unwrapSoleParagraph(wrap, "li, td, th");
       return wrap.innerHTML;
+    }
+
+    function unwrapSoleParagraph(container, selector) {
+      container.querySelectorAll(selector).forEach((host) => {
+        const paragraphs = Array.from(host.children).filter((child) => child.tagName === "P");
+        if (paragraphs.length !== 1) {
+          return;
+        }
+
+        const p = paragraphs[0];
+        if (p.attributes.length > 0) {
+          return;
+        }
+
+        while (p.firstChild) {
+          host.insertBefore(p.firstChild, p);
+        }
+        host.removeChild(p);
+      });
     }
 
     // ---------- Image placeholder plugin ----------
@@ -712,6 +746,13 @@ export const DropInWysiwyg = {
       plugins,
     });
 
+    // The exact markup we started from, and the parsed document it produced.
+    // If the user never changes the document, we save this back verbatim instead
+    // of a ProseMirror re-serialization, so untouched content (e.g. lists without
+    // <p> wrappers) is preserved exactly rather than normalized to the schema.
+    const initialSourceHTML = opts.initialHTML ?? originalHTML;
+    const initialDoc = state.doc;
+
     let view;
     let sourceMode = false;
 
@@ -944,7 +985,15 @@ export const DropInWysiwyg = {
       updateToolbar: null,
 
       async save() {
-        const html = sourceMode ? ui.sourceEditor.value : serializeToHTML(view.state.doc);
+        let html;
+        if (sourceMode) {
+          html = ui.sourceEditor.value;
+        } else if (view.state.doc.eq(initialDoc)) {
+          // Unedited: preserve the original markup exactly.
+          html = initialSourceHTML;
+        } else {
+          html = serializeToHTML(view.state.doc);
+        }
         el.innerHTML = html;
         await opts.onSave?.({ html, target: el });
         instance.destroy();

@@ -7,6 +7,10 @@ if (context) {
 
   const toast = createToast();
   let currentInstance = null;
+  // Synchronous lock so a second click (e.g. tapping the same badge again, or
+  // before mount() resolves) can never mount a second editor into a slot that
+  // already hosts one — which would serialize the editor's own DOM on save.
+  let opening = false;
 
   setupBlockBadges();
   setupSelectorMode();
@@ -34,52 +38,61 @@ if (context) {
   }
 
   async function openManagedBlockEditor(target, slot, blockName, blockType, useFrameAdapter = false) {
-    if (currentInstance && currentInstance.target !== target) {
-      toast("Finish or cancel the current editor first.", true);
+    if (currentInstance || opening) {
+      if (currentInstance && currentInstance.target !== target) {
+        toast("Finish or cancel the current editor first.", true);
+      }
       return;
     }
 
-    const frameAdapter = useFrameAdapter ? createFrameAdapter(slot, blockType) : null;
-    if (frameAdapter) {
-      slot.innerHTML = frameAdapter.initialHTML;
-    }
+    opening = true;
+    try {
+      const frameAdapter = useFrameAdapter ? createFrameAdapter(slot, blockType) : null;
+      if (frameAdapter) {
+        slot.innerHTML = frameAdapter.initialHTML;
+      }
 
-    currentInstance = await DropInWysiwyg.mount(target, {
-      initialHTML: frameAdapter?.initialHTML,
-      restoreHTML: frameAdapter?.restoreHTML ?? target.innerHTML,
-      rootClassName: blockType === "menu" ? "pm-dropin--menu" : "",
-      rootStyle: blockType === "menu" ? getMenuEditorStyle(slot) : null,
-      mountAfterTarget: blockType === "menu" ? getMenuMountAnchor(slot) : null,
-      uploadImage: uploadImageFile,
-      onError: (message) => {
-        toast(message || "The editor action failed.", true);
-      },
-      onSave: async ({ html, target: savedTarget }) => {
-        try {
-          if (frameAdapter) {
-            const wrappedHtml = frameAdapter.wrap(html);
-            if (savedTarget) {
-              savedTarget.innerHTML = wrappedHtml;
+      currentInstance = await DropInWysiwyg.mount(target, {
+        initialHTML: frameAdapter?.initialHTML,
+        restoreHTML: frameAdapter?.restoreHTML ?? target.innerHTML,
+        rootClassName: blockType === "menu" ? "pm-dropin--menu" : "",
+        rootStyle: blockType === "menu" ? getMenuEditorStyle(slot) : null,
+        mountAfterTarget: blockType === "menu" ? getMenuMountAnchor(slot) : null,
+        uploadImage: uploadImageFile,
+        onError: (message) => {
+          toast(message || "The editor action failed.", true);
+        },
+        onSave: async ({ html, target: savedTarget }) => {
+          try {
+            if (frameAdapter) {
+              const wrappedHtml = frameAdapter.wrap(html);
+              if (savedTarget) {
+                savedTarget.innerHTML = wrappedHtml;
+              }
             }
-          }
 
-          const payload = await saveBlock(blockName, slot.innerHTML);
-          toast(payload.message || "Saved.");
+            const payload = await saveBlock(blockName, slot.innerHTML);
+            toast(payload.message || "Saved.");
+            currentInstance = null;
+          } catch (error) {
+            toast(error.message || "Save failed.", true);
+            throw error;
+          }
+        },
+        onCancel: async () => {
           currentInstance = null;
-        } catch (error) {
-          toast(error.message || "Save failed.", true);
-          throw error;
-        }
-      },
-      onCancel: async () => {
-        currentInstance = null;
-      },
-    });
+        },
+      });
+    } finally {
+      opening = false;
+    }
   }
 
   async function openSelectedElementEditor(target) {
-    if (currentInstance && currentInstance.target !== target) {
-      toast("Finish or cancel the current editor first.", true);
+    if (currentInstance || opening) {
+      if (currentInstance && currentInstance.target !== target) {
+        toast("Finish or cancel the current editor first.", true);
+      }
       return;
     }
 
@@ -109,37 +122,42 @@ if (context) {
       return;
     }
 
-    currentInstance = await DropInWysiwyg.mount(target, {
-      restoreHTML: target.innerHTML,
-      uploadImage: uploadImageFile,
-      onError: (message) => {
-        toast(message || "The editor action failed.", true);
-      },
-      onSave: async ({ html }) => {
-        try {
-          const payload = await postJson(
-            `${context.appUrl}/index.php?action=save-selection`,
-            {
-              csrfToken: context.csrfToken,
-              path: context.pagePath,
-              kind: context.pageKind || "page",
-              scope,
-              domPath,
-              html,
-            }
-          );
+    opening = true;
+    try {
+      currentInstance = await DropInWysiwyg.mount(target, {
+        restoreHTML: target.innerHTML,
+        uploadImage: uploadImageFile,
+        onError: (message) => {
+          toast(message || "The editor action failed.", true);
+        },
+        onSave: async ({ html }) => {
+          try {
+            const payload = await postJson(
+              `${context.appUrl}/index.php?action=save-selection`,
+              {
+                csrfToken: context.csrfToken,
+                path: context.pagePath,
+                kind: context.pageKind || "page",
+                scope,
+                domPath,
+                html,
+              }
+            );
 
-          toast(payload.message || "Saved.");
+            toast(payload.message || "Saved.");
+            currentInstance = null;
+          } catch (error) {
+            toast(error.message || "Save failed.", true);
+            throw error;
+          }
+        },
+        onCancel: async () => {
           currentInstance = null;
-        } catch (error) {
-          toast(error.message || "Save failed.", true);
-          throw error;
-        }
-      },
-      onCancel: async () => {
-        currentInstance = null;
-      },
-    });
+        },
+      });
+    } finally {
+      opening = false;
+    }
   }
 
   function setupSelectorMode() {

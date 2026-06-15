@@ -781,7 +781,24 @@ try {
         redirect($appUrl . '/index.php');
     }
 
+    if ($action === 'delete-demo') {
+        require_admin($user);
+        if (!is_post() || !Csrf::validate($_POST['csrf_token'] ?? null)) {
+            throw new RuntimeException('The delete-demo request was rejected.');
+        }
+
+        $removed = $generator->deleteDemoContent();
+        Flash::push(
+            'success',
+            $removed > 0
+                ? 'Removed ' . $removed . ' demo page(s).'
+                : 'There was no demo content to remove.'
+        );
+        redirect($appUrl . '/index.php');
+    }
+
     $pages = $repository->listPages();
+    $hasDemoContent = $user['is_admin'] && $generator->hasDemoContent();
     $importCandidates = $user['is_admin'] ? $repository->listImportCandidates() : [];
     $users = $user['is_admin'] ? $auth->allUsers() : [];
     $availableThemes = $generator->availableThemes();
@@ -799,6 +816,12 @@ try {
         <div class="wysite-hero-actions">
           <a class="wysite-button" href="<?= h($appUrl) ?>/index.php?action=preview&path=index.html">Open homepage preview</a>
           <a class="wysite-button wysite-button--ghost" href="<?= h($siteBaseUrl) ?>" target="_blank" rel="noreferrer">Open live site</a>
+          <?php if ($hasDemoContent): ?>
+          <form method="post" action="<?= h($appUrl) ?>/index.php?action=delete-demo" onsubmit="return window.confirm('Delete all demo pages and posts? This removes every page flagged as demo content and cannot be undone.');">
+            <input type="hidden" name="csrf_token" value="<?= h(Csrf::token()) ?>">
+            <button class="wysite-button wysite-button--ghost" type="submit">Delete demo content</button>
+          </form>
+          <?php endif; ?>
         </div>
       </section>
 

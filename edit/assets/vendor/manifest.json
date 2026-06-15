@@ -1,0 +1,66 @@
+{
+  "prosemirror-model.mjs": {
+    "kind": "pkg",
+    "key": "prosemirror-model"
+  },
+  "prosemirror-state.mjs": {
+    "kind": "pkg",
+    "key": "prosemirror-state"
+  },
+  "prosemirror-view.mjs": {
+    "kind": "pkg",
+    "key": "prosemirror-view"
+  },
+  "prosemirror-schema-basic.mjs": {
+    "kind": "pkg",
+    "key": "prosemirror-schema-basic"
+  },
+  "prosemirror-schema-list.mjs": {
+    "kind": "pkg",
+    "key": "prosemirror-schema-list"
+  },
+  "prosemirror-commands.mjs": {
+    "kind": "pkg",
+    "key": "prosemirror-commands"
+  },
+  "prosemirror-history.mjs": {
+    "kind": "pkg",
+    "key": "prosemirror-history"
+  },
+  "prosemirror-keymap.mjs": {
+    "kind": "pkg",
+    "key": "prosemirror-keymap"
+  },
+  "prosemirror-inputrules.mjs": {
+    "kind": "pkg",
+    "key": "prosemirror-inputrules"
+  },
+  "prosemirror-tables.mjs": {
+    "kind": "pkg",
+    "key": "prosemirror-tables"
+  },
+  "prosemirror-dropcursor.mjs": {
+    "kind": "pkg",
+    "key": "prosemirror-dropcursor"
+  },
+  "prosemirror-gapcursor.mjs": {
+    "kind": "pkg",
+    "key": "prosemirror-gapcursor"
+  },
+  "orderedmap.mjs": {
+    "kind": "pkg",
+    "key": "orderedmap"
+  },
+  "prosemirror-transform.mjs": {
+    "kind": "pkg",
+    "key": "prosemirror-transform"
+  },
+  "rope-sequence.mjs": {
+    "kind": "pkg",
+    "key": "rope-sequence"
+  },
+  "w3c-keyname.mjs": {
+    "kind": "pkg",
+    "key": "w3c-keyname"
+  }
+}

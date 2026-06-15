@@ -71,6 +71,7 @@ final class BlockRepository
                 'tag' => $metadata['tag'] ?? '',
                 'generated' => $metadata['generated'] ?? '',
                 'exclude_template' => ($metadata['exclude_template'] ?? '') === '1',
+                'demo' => ($metadata['demo'] ?? '') === '1',
                 'blocks' => array_map(
                     static fn(array $block): array => [
                         'name' => $block['name'],
@@ -446,8 +447,18 @@ final class BlockRepository
         ];
         $context = array_merge($context, $extraContext);
 
-        $headInjection = '<base href="' . h($siteBaseUrl) . '">' .
-            '<link rel="stylesheet" href="' . h($appUrl) . '/assets/editor.css">' .
+        // Drop the page's own relative <base href> (baked for static serving) and
+        // place the preview's absolute base at the very top of <head>, before the
+        // page's own (now base-relative) stylesheet/asset links so they resolve.
+        $html = preg_replace('#\s*<base\b[^>]*>#i', '', $html) ?? $html;
+        $baseTag = '<base href="' . h($siteBaseUrl) . '">';
+        if (preg_match('#<head\b[^>]*>#i', $html) === 1) {
+            $html = preg_replace('#(<head\b[^>]*>)#i', '$1' . $baseTag, $html, 1) ?? $html;
+        } else {
+            $html = $baseTag . $html;
+        }
+
+        $headInjection = '<link rel="stylesheet" href="' . h($appUrl) . '/assets/editor.css">' .
             '<script>window.WYSITE_PREVIEW_CONTEXT = ' . json_encode($context, JSON_UNESCAPED_SLASHES) . ';</script>' .
             '<script type="module" src="' . h($appUrl) . '/assets/editor-shell.js"></script>';
 

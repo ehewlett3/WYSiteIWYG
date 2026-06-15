@@ -66,7 +66,7 @@ $editPath = __DIR__;
 $auth = new AuthManager(__DIR__ . '/storage/users.local.php');
 $repository = new BlockRepository($rootPath, $editPath);
 $themes = new ThemeManager(__DIR__ . '/storage/config.php', __DIR__ . '/themes');
-$generator = new SiteGenerator($rootPath, $repository, $themes);
+$generator = new SiteGenerator($rootPath, $repository, $themes, $siteBaseUrl);
 $externalImporter = new ExternalSiteImporter($rootPath, $editPath);
 
 return [

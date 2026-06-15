@@ -10,12 +10,15 @@ final class SiteGenerator
     private string $rootPath;
     private BlockRepository $repository;
     private ThemeManager $themes;
+    private string $siteBaseUrl;
 
-    public function __construct(string $rootPath, BlockRepository $repository, ThemeManager $themes)
+    public function __construct(string $rootPath, BlockRepository $repository, ThemeManager $themes, string $siteBaseUrl = '/')
     {
         $this->rootPath = rtrim($rootPath, '/');
         $this->repository = $repository;
         $this->themes = $themes;
+        $this->siteBaseUrl = '/' . trim($siteBaseUrl, '/');
+        $this->siteBaseUrl = $this->siteBaseUrl === '/' ? '/' : $this->siteBaseUrl . '/';
     }
 
     public function createPage(string $title, string $slug): string
@@ -227,6 +230,68 @@ final class SiteGenerator
         );
     }
 
+    public function hasDemoContent(): bool
+    {
+        foreach ($this->repository->listPages() as $page) {
+            if (!empty($page['demo'])) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * Remove every page that was generated as demo content (flagged demo="1"),
+     * along with the generated tag/blog landing pages those demo posts produced.
+     * Landing pages are regenerated afterwards only if real posts remain.
+     */
+    public function deleteDemoContent(): int
+    {
+        $removed = 0;
+        $dirs = [];
+
+        foreach ($this->repository->listPages() as $page) {
+            $isDemo = !empty($page['demo']);
+            $isGeneratedLanding = ($page['generated'] ?? '') === 'tag-index';
+            if (!$isDemo && !$isGeneratedLanding) {
+                continue;
+            }
+
+            $full = $this->rootPath . '/' . ltrim((string) $page['path'], '/');
+            if (is_file($full) && @unlink($full)) {
+                $dirs[dirname($full)] = true;
+                if ($isDemo) {
+                    $removed++;
+                }
+            }
+        }
+
+        foreach (array_keys($dirs) as $dir) {
+            if ($dir !== $this->rootPath && is_dir($dir) && $this->isEmptyDirectory($dir)) {
+                @rmdir($dir);
+            }
+        }
+
+        // Only rebuild landing pages if genuine (non-demo) posts still exist;
+        // otherwise we would resurrect an empty blog index.
+        if ($this->repository->listBlogPosts() !== []) {
+            $this->rebuildTagPages();
+        }
+
+        return $removed;
+    }
+
+    private function isEmptyDirectory(string $dir): bool
+    {
+        $entries = @scandir($dir);
+        if ($entries === false) {
+            return false;
+        }
+
+        return array_values(array_diff($entries, ['.', '..'])) === [];
+    }
+
     public function rebuildPagesUsingTemplate(string $kind): int
     {
         $updated = 0;
@@ -380,7 +445,32 @@ final class SiteGenerator
             Filesystem::atomicWrite($this->rootPath . '/' . $target, $rendered);
         }
 
-        Filesystem::atomicWrite($this->rootPath . '/assets/site.css', $this->themes->loadStylesheet($themeId));
+        Filesystem::atomicWrite(
+            $this->rootPath . '/assets/site.css',
+            $this->localizeStylesheet($this->themes->loadStylesheet($themeId))
+        );
+    }
+
+    /**
+     * Localize url(...) references in the published stylesheet. The file is
+     * served from <site-root>/assets/site.css, so site-internal absolute URLs
+     * become relative to that location (one directory below the site root).
+     */
+    private function localizeStylesheet(string $css): string
+    {
+        return preg_replace_callback(
+            '#url\(\s*(["\']?)([^"\')]+)\1\s*\)#i',
+            function (array $m): string {
+                $url = trim($m[2]);
+                if ($url === '' || $url[0] !== '/' || str_starts_with($url, '//')) {
+                    return $m[0];
+                }
+                $rel = $this->toBaseRelative($url);
+                $rel = $rel === './' ? '../' : '../' . $rel;
+                return 'url(' . $m[1] . $rel . $m[1] . ')';
+            },
+            $css
+        ) ?? $css;
     }
 
     private function syncMenuIntoActiveTemplates(string $menuHtml): void
@@ -439,7 +529,9 @@ final class SiteGenerator
             '{{WYSITE_PUBLIC_BRIDGE}}' => $this->publicBridgeHtml(),
         ];
 
-        return str_replace(array_keys($replacements), array_values($replacements), $template);
+        $html = str_replace(array_keys($replacements), array_values($replacements), $template);
+
+        return $this->localizeUrls($html, (string) ($data['path'] ?? 'index.html'));
     }
 
     private function loadActiveTemplateOrTheme(string $kind, string $themeId): string
@@ -681,7 +773,117 @@ final class SiteGenerator
 
     private function publicBridgeHtml(): string
     {
-        return '<script>window.WYSITE_PUBLIC_CONTEXT={appUrl:"/edit"};</script><script type="module" src="/edit/assets/live-edit-banner.js"></script>';
+        // Base-relative paths so the public live-edit banner resolves against the
+        // page's own <base href>, working from any deployment subdirectory.
+        return '<script>window.WYSITE_PUBLIC_CONTEXT={appUrl:"edit"};</script><script type="module" src="edit/assets/live-edit-banner.js"></script>';
+    }
+
+    /**
+     * Make a generated page location-agnostic: convert site-internal absolute
+     * URLs to base-relative ones and inject a per-page relative <base href> so
+     * the static output works whether deployed at the domain root or in any
+     * subdirectory, over http or https.
+     */
+    private function localizeUrls(string $html, string $relativePath): string
+    {
+        $prefix = $this->relativePrefix($relativePath);
+
+        // Drop any <base> we (or a previous build) injected, so rebuilds stay idempotent.
+        $html = preg_replace('#\s*<base\b[^>]*>#i', '', $html) ?? $html;
+
+        // Rewrite URL-bearing attributes.
+        $html = preg_replace_callback(
+            '#\b(href|src|action|poster)\s*=\s*(["\'])([^"\']*)\2#i',
+            fn(array $m): string => $m[1] . '=' . $m[2] . $this->toBaseRelative($m[3]) . $m[2],
+            $html
+        ) ?? $html;
+
+        // Rewrite each candidate inside srcset attributes.
+        $html = preg_replace_callback(
+            '#\bsrcset\s*=\s*(["\'])([^"\']*)\1#i',
+            function (array $m): string {
+                $candidates = array_map(
+                    function (string $candidate): string {
+                        $candidate = trim($candidate);
+                        if ($candidate === '') {
+                            return $candidate;
+                        }
+                        $parts = preg_split('/\s+/', $candidate, 2) ?: [$candidate];
+                        $parts[0] = $this->toBaseRelative($parts[0]);
+                        return implode(' ', $parts);
+                    },
+                    explode(',', $m[2])
+                );
+                return 'srcset=' . $m[1] . implode(', ', $candidates) . $m[1];
+            },
+            $html
+        ) ?? $html;
+
+        // Rewrite CSS url(...) references in inline styles / <style> blocks.
+        $html = preg_replace_callback(
+            '#url\(\s*(["\']?)([^"\')]+)\1\s*\)#i',
+            fn(array $m): string => 'url(' . $m[1] . $this->toBaseRelative($m[2]) . $m[1] . ')',
+            $html
+        ) ?? $html;
+
+        // Inject a relative <base href> at the top of <head>.
+        $baseTag = '<base href="' . h($prefix) . '">';
+        if (preg_match('#<head\b[^>]*>#i', $html) === 1) {
+            $html = preg_replace('#(<head\b[^>]*>)#i', '$1' . $baseTag, $html, 1) ?? $html;
+        }
+
+        return $html;
+    }
+
+    /**
+     * Convert a single site-internal absolute URL to a base-relative one. Leaves
+     * external URLs, protocol-relative URLs, fragments, data: URIs, and
+     * already-relative URLs untouched.
+     */
+    private function toBaseRelative(string $url): string
+    {
+        $url = trim($url);
+        if ($url === '') {
+            return $url;
+        }
+
+        // Skip schemes, protocol-relative, fragments, queries, and existing relatives.
+        if ($url[0] !== '/' || str_starts_with($url, '//')) {
+            return $url;
+        }
+
+        // Strip the deployment base prefix if present, otherwise the leading slash.
+        if ($this->siteBaseUrl !== '/' && str_starts_with($url . '/', $this->siteBaseUrl)) {
+            $rest = substr($url, strlen($this->siteBaseUrl) - 1);
+        } else {
+            $rest = $url;
+        }
+        $rest = ltrim($rest, '/');
+
+        return $rest === '' ? './' : $rest;
+    }
+
+    /**
+     * Relative prefix that points at the site root from a generated page's
+     * canonical (clean-URL, trailing-slash) served location.
+     */
+    private function relativePrefix(string $relativePath): string
+    {
+        $path = trim(str_replace('\\', '/', $relativePath), '/');
+
+        if ($path === '' || $path === 'index.html') {
+            $depth = 0;
+        } else {
+            if (str_ends_with($path, '/index.html')) {
+                $served = substr($path, 0, -strlen('/index.html'));
+            } else {
+                $served = preg_replace('/\.html?$/i', '', $path) ?? $path;
+            }
+            $served = trim($served, '/');
+            $depth = $served === '' ? 0 : substr_count($served, '/') + 1;
+        }
+
+        return $depth === 0 ? './' : str_repeat('../', $depth);
     }
 
     private function normalizePageBlockContent(?string $html): string

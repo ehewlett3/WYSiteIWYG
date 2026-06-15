@@ -3,11 +3,13 @@ declare(strict_types=1);
 
 use WYSiteIWYG\AuthManager;
 use WYSiteIWYG\BlockRepository;
+use WYSiteIWYG\ExternalSiteImporter;
 use WYSiteIWYG\SiteGenerator;
 use WYSiteIWYG\ThemeManager;
 
 require_once __DIR__ . '/src/Support.php';
 require_once __DIR__ . '/src/BlockRepository.php';
+require_once __DIR__ . '/src/ExternalSiteImporter.php';
 require_once __DIR__ . '/src/SiteGenerator.php';
 require_once __DIR__ . '/src/ThemeManager.php';
 
@@ -65,11 +67,13 @@ $auth = new AuthManager(__DIR__ . '/storage/users.local.php');
 $repository = new BlockRepository($rootPath, $editPath);
 $themes = new ThemeManager(__DIR__ . '/storage/config.php', __DIR__ . '/themes');
 $generator = new SiteGenerator($rootPath, $repository, $themes);
+$externalImporter = new ExternalSiteImporter($rootPath, $editPath);
 
 return [
     'auth' => $auth,
     'repository' => $repository,
     'generator' => $generator,
+    'externalImporter' => $externalImporter,
     'themes' => $themes,
     'rootPath' => $rootPath,
     'editPath' => $editPath,

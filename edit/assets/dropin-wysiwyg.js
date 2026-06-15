@@ -22,10 +22,10 @@ function buildUI({ onSave, onCancel }) {
   const footer = document.createElement("div");
   footer.className = "pm-footer";
 
-  const btn = (label, title, onClick) => {
+  const btn = (label, title, onClick, className = "") => {
     const b = document.createElement("button");
     b.type = "button";
-    b.className = "pm-btn";
+    b.className = ["pm-btn", className].filter(Boolean).join(" ");
     b.textContent = label;
     b.title = title;
     b.addEventListener("click", onClick);
@@ -33,8 +33,8 @@ function buildUI({ onSave, onCancel }) {
   };
 
   footer.append(
-    btn("Save", "Save HTML back into the page", onSave),
-    btn("Cancel", "Discard changes", onCancel)
+    btn("Save", "Save HTML back into the page", onSave, "pm-btn--save"),
+    btn("Cancel", "Discard changes", onCancel, "pm-btn--cancel")
   );
 
   root.append(toolbar, editorHost, sourceHost, footer);
@@ -49,6 +49,10 @@ function buildUI({ onSave, onCancel }) {
     .pm-sourceEditor { width: 100%; min-height: 320px; box-sizing: border-box; border: 1px solid rgba(0,0,0,.16); border-radius: 12px; padding: 12px; font: 13px/1.55 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; background: transparent; color: inherit; resize: vertical; }
     .pm-footer { display:flex; justify-content:flex-end; gap:8px; padding:10px; border-top: 1px solid rgba(0,0,0,.10); background: transparent; }
     .pm-btn { border: 1px solid rgba(0,0,0,.18); background: rgba(255,255,255,.08); padding: 6px 10px; border-radius: 10px; cursor: pointer; min-height: 34px; line-height: 1.2; }
+    .pm-dropin .pm-btn.pm-btn--save { border-color: rgba(22, 101, 52, .35); background: rgba(34, 197, 94, .18); color: #14532d; font-weight: 700; }
+    .pm-dropin .pm-btn.pm-btn--save:hover { background: rgba(34, 197, 94, .26); }
+    .pm-dropin .pm-btn.pm-btn--cancel { border-color: rgba(153, 27, 27, .3); background: rgba(239, 68, 68, .14); color: #7f1d1d; font-weight: 700; }
+    .pm-dropin .pm-btn.pm-btn--cancel:hover { background: rgba(239, 68, 68, .22); }
     .pm-btn:disabled { opacity: .55; cursor: not-allowed; }
     .pm-btn[aria-pressed="true"] { outline: 2px solid rgba(120,160,255,.55); }
     .pm-image-upload-placeholder { font-size: 12px; opacity: .85; }

@@ -1,4 +1,5 @@
 *.local.php
+external-imports/
 !users.example.php
 !.htaccess
 !.gitignore

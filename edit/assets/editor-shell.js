@@ -8,72 +8,238 @@ if (context) {
   const toast = createToast();
   let currentInstance = null;
 
-  document.querySelectorAll(".wysite-edit-button").forEach((button) => {
-    button.addEventListener("click", async () => {
-      try {
-        const blockName = button.dataset.wysiteBlock;
-        const blockType = button.dataset.wysiteType;
+  setupBlockBadges();
+  setupSelectorMode();
 
-        if (!blockName || !blockType) return;
+  function setupBlockBadges() {
+    document.querySelectorAll(".wysite-edit-button").forEach((button) => {
+      button.addEventListener("click", async () => {
+        try {
+          const blockName = button.dataset.wysiteBlock;
+          const blockType = button.dataset.wysiteType;
 
-        const slot = document.querySelector(
-          `[data-wysite-edit-slot="${cssEscape(blockName)}"]`
-        );
-        if (!slot || slot.__pmDropInMounted) return;
+          if (!blockName || !blockType) return;
 
-        if (currentInstance && currentInstance.target !== slot) {
-          toast("Finish or cancel the current editor first.", true);
-          return;
+          const slot = document.querySelector(
+            `[data-wysite-edit-slot="${cssEscape(blockName)}"]`
+          );
+          if (!slot || slot.__pmDropInMounted) return;
+
+          await openManagedBlockEditor(slot, slot, blockName, blockType, true);
+        } catch (error) {
+          toast(error.message || "The editor could not be opened.", true);
         }
+      });
+    });
+  }
 
-        const frameAdapter = createFrameAdapter(slot, blockType);
-        if (frameAdapter) {
-          slot.innerHTML = frameAdapter.initialHTML;
-        }
+  async function openManagedBlockEditor(target, slot, blockName, blockType, useFrameAdapter = false) {
+    if (currentInstance && currentInstance.target !== target) {
+      toast("Finish or cancel the current editor first.", true);
+      return;
+    }
 
-        currentInstance = await DropInWysiwyg.mount(slot, {
-          initialHTML: frameAdapter?.initialHTML,
-          restoreHTML: frameAdapter?.restoreHTML,
-          rootClassName: blockType === "menu" ? "pm-dropin--menu" : "",
-          rootStyle: blockType === "menu" ? getMenuEditorStyle(slot) : null,
-          mountAfterTarget: blockType === "menu" ? getMenuMountAnchor(slot) : null,
-          uploadImage: uploadImageFile,
-          onError: (message) => {
-            toast(message || "The editor action failed.", true);
-          },
-          onSave: async ({ html, target }) => {
-            try {
-              const wrappedHtml = frameAdapter ? frameAdapter.wrap(html) : html;
-              if (target) {
-                target.innerHTML = wrappedHtml;
-              }
+    const frameAdapter = useFrameAdapter ? createFrameAdapter(slot, blockType) : null;
+    if (frameAdapter) {
+      slot.innerHTML = frameAdapter.initialHTML;
+    }
 
-              const payload = await postJson(
-                `${context.appUrl}/index.php?action=save-block`,
-                {
-                  csrfToken: context.csrfToken,
-                  path: context.pagePath,
-                  name: blockName,
-                  html: wrappedHtml,
-                }
-              );
-
-              toast(payload.message || "Saved.");
-              currentInstance = null;
-            } catch (error) {
-              toast(error.message || "Save failed.", true);
-              throw error;
+    currentInstance = await DropInWysiwyg.mount(target, {
+      initialHTML: frameAdapter?.initialHTML,
+      restoreHTML: frameAdapter?.restoreHTML ?? target.innerHTML,
+      rootClassName: blockType === "menu" ? "pm-dropin--menu" : "",
+      rootStyle: blockType === "menu" ? getMenuEditorStyle(slot) : null,
+      mountAfterTarget: blockType === "menu" ? getMenuMountAnchor(slot) : null,
+      uploadImage: uploadImageFile,
+      onError: (message) => {
+        toast(message || "The editor action failed.", true);
+      },
+      onSave: async ({ html, target: savedTarget }) => {
+        try {
+          if (frameAdapter) {
+            const wrappedHtml = frameAdapter.wrap(html);
+            if (savedTarget) {
+              savedTarget.innerHTML = wrappedHtml;
             }
-          },
-          onCancel: async () => {
-            currentInstance = null;
-          },
-        });
-      } catch (error) {
+          }
+
+          const payload = await saveBlock(blockName, slot.innerHTML);
+          toast(payload.message || "Saved.");
+          currentInstance = null;
+        } catch (error) {
+          toast(error.message || "Save failed.", true);
+          throw error;
+        }
+      },
+      onCancel: async () => {
+        currentInstance = null;
+      },
+    });
+  }
+
+  async function openSelectedElementEditor(target) {
+    if (currentInstance && currentInstance.target !== target) {
+      toast("Finish or cancel the current editor first.", true);
+      return;
+    }
+
+    const slot = target.closest("[data-wysite-edit-slot]");
+    if (slot) {
+      const blockName = slot.dataset.wysiteEditSlot;
+      const region = slot.closest(".wysite-edit-region");
+      const blockType = region?.dataset.wysiteType || "page";
+
+      if (!blockName) {
+        toast("That managed block could not be identified.", true);
+        return;
+      }
+
+      await openManagedBlockEditor(target, slot, blockName, blockType, target === slot);
+      return;
+    }
+
+    if (context.selectionSaveEnabled === false) {
+      toast("Selector edits are disabled while previewing an unapplied theme.", true);
+      return;
+    }
+
+    const domPath = buildDomPath(target);
+    const scope = defaultScopeForElement(target);
+    if (scope === "template" && !confirmTemplateEdit(target)) {
+      return;
+    }
+
+    currentInstance = await DropInWysiwyg.mount(target, {
+      restoreHTML: target.innerHTML,
+      uploadImage: uploadImageFile,
+      onError: (message) => {
+        toast(message || "The editor action failed.", true);
+      },
+      onSave: async ({ html }) => {
+        try {
+          const payload = await postJson(
+            `${context.appUrl}/index.php?action=save-selection`,
+            {
+              csrfToken: context.csrfToken,
+              path: context.pagePath,
+              kind: context.pageKind || "page",
+              scope,
+              domPath,
+              html,
+            }
+          );
+
+          toast(payload.message || "Saved.");
+          currentInstance = null;
+        } catch (error) {
+          toast(error.message || "Save failed.", true);
+          throw error;
+        }
+      },
+      onCancel: async () => {
+        currentInstance = null;
+      },
+    });
+  }
+
+  function setupSelectorMode() {
+    const actions = document.querySelector(".wysite-admin-bar__actions");
+    if (!actions) return;
+
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "wysite-admin-link wysite-admin-link--button";
+    button.textContent = "Select section";
+    actions.prepend(button);
+
+    const label = document.createElement("div");
+    label.className = "wysite-selector-label";
+    label.hidden = true;
+    document.body.appendChild(label);
+
+    let active = false;
+    let highlighted = null;
+
+    button.addEventListener("click", () => {
+      if (currentInstance) {
+        toast("Finish or cancel the current editor first.", true);
+        return;
+      }
+
+      setActive(!active);
+    });
+
+    document.addEventListener("mousemove", (event) => {
+      if (!active) return;
+
+      const target = resolveSelectableTarget(event.target);
+      if (target !== highlighted) {
+        clearHighlight();
+        highlighted = target;
+        if (highlighted) {
+          highlighted.classList.add("wysite-selector-highlight");
+          label.innerHTML = describeTarget(highlighted);
+          label.hidden = false;
+        } else {
+          label.hidden = true;
+        }
+      }
+
+      if (highlighted) {
+        positionLabel(label, event.clientX, event.clientY);
+      }
+    }, true);
+
+    document.addEventListener("click", (event) => {
+      if (!active) return;
+
+      const target = resolveSelectableTarget(event.target);
+      if (!target) return;
+
+      event.preventDefault();
+      event.stopPropagation();
+      setActive(false);
+      openSelectedElementEditor(target).catch((error) => {
         toast(error.message || "The editor could not be opened.", true);
+      });
+    }, true);
+
+    document.addEventListener("keydown", (event) => {
+      if (event.key === "Escape" && active) {
+        setActive(false);
       }
     });
-  });
+
+    function setActive(next) {
+      active = next;
+      document.body.classList.toggle("wysite-selector-active", active);
+      button.textContent = active ? "Cancel select" : "Select section";
+
+      if (!active) {
+        clearHighlight();
+        label.hidden = true;
+      }
+    }
+
+    function clearHighlight() {
+      if (highlighted) {
+        highlighted.classList.remove("wysite-selector-highlight");
+        highlighted = null;
+      }
+    }
+  }
+
+  function saveBlock(blockName, html) {
+    return postJson(
+      `${context.appUrl}/index.php?action=save-block`,
+      {
+        csrfToken: context.csrfToken,
+        path: context.pagePath,
+        name: blockName,
+        html,
+      }
+    );
+  }
 
   async function fetchJson(url, options = {}) {
     const response = await fetch(url, {
@@ -149,6 +315,160 @@ if (context) {
         el.classList.remove("is-visible");
       }, 3200);
     };
+  }
+
+  function resolveSelectableTarget(node) {
+    if (!(node instanceof Element) || isPreviewChrome(node)) {
+      return null;
+    }
+
+    const slot = node.closest("[data-wysite-edit-slot]");
+    if (slot && !isPreviewChrome(slot)) {
+      const selected = closestEditableContainer(node, slot);
+      return selected && slot.contains(selected) ? selected : slot;
+    }
+
+    if (node.closest(".wysite-edit-region")) {
+      return null;
+    }
+
+    const selected = closestEditableContainer(node, document.body);
+    if (!selected || selected === document.body || selected === document.documentElement) {
+      return null;
+    }
+
+    if (isPreviewChrome(selected) || selected.closest(".wysite-edit-region")) {
+      return null;
+    }
+
+    return selected;
+  }
+
+  function closestEditableContainer(node, boundary) {
+    const selector = "section, article, aside, nav, header, footer, main, div, ul, ol, table, blockquote, figure";
+    let current = node instanceof Element ? node : node.parentElement;
+
+    while (current && current !== boundary.parentElement) {
+      if (current.matches?.(selector) && !isPreviewChrome(current)) {
+        return current;
+      }
+
+      if (current === boundary) {
+        return boundary instanceof Element ? boundary : null;
+      }
+
+      current = current.parentElement;
+    }
+
+    return null;
+  }
+
+  function isPreviewChrome(element) {
+    return Boolean(
+      element.closest(
+        ".wysite-admin-bar, .wysite-toast, .wysite-selector-label, .pm-dropin"
+      )
+      || element.classList.contains("wysite-edit-button")
+    );
+  }
+
+  function isInjectedPreviewElement(element) {
+    return Boolean(
+      element.matches?.(".wysite-admin-bar, .wysite-toast, .wysite-selector-label, .pm-dropin")
+    );
+  }
+
+  function buildDomPath(element) {
+    const path = [];
+    let current = element;
+
+    while (current && current.nodeType === Node.ELEMENT_NODE) {
+      const tag = current.tagName.toLowerCase();
+      let index = 1;
+      let sibling = current.previousElementSibling;
+
+      while (sibling) {
+        if (!isInjectedPreviewElement(sibling) && sibling.tagName.toLowerCase() === tag) {
+          index += 1;
+        }
+        sibling = sibling.previousElementSibling;
+      }
+
+      path.unshift({ tag, index });
+      if (tag === "html") break;
+      current = current.parentElement;
+    }
+
+    return path;
+  }
+
+  function defaultScopeForElement(element) {
+    return element.closest("[data-wysite-edit-slot]") ? "page" : "template";
+  }
+
+  function confirmTemplateEdit(element) {
+    const templatePath = context.activeTemplatePath || "the active template";
+    const pageKind = context.pageKind || "page";
+    const label = element.tagName.toLowerCase();
+
+    return window.confirm(
+      `You selected a ${label} that belongs to ${templatePath}.\n\n` +
+      `Saving this edit will update the active ${pageKind} template and rebuild every page that uses that template.\n\n` +
+      "Continue?"
+    );
+  }
+
+  function describeTarget(element) {
+    const tag = element.tagName.toLowerCase();
+    const id = element.id ? `#${escapeHtml(element.id)}` : "";
+    const classes = element.classList.length
+      ? "." + Array.from(element.classList)
+        .filter((name) => name !== "wysite-selector-highlight")
+        .map(escapeHtml)
+        .join(".")
+      : "";
+    const rect = element.getBoundingClientRect();
+    const scope = element.closest("[data-wysite-edit-slot]")
+      ? "Managed block"
+      : defaultScopeForElement(element) === "template"
+        ? `Active template (${escapeHtml(context.activeTemplatePath || "template")})`
+        : "This page section";
+
+    return `
+      <div><strong>${escapeHtml(tag)}</strong>${id ? ` <span>${id}</span>` : ""}${classes ? ` <span>${classes}</span>` : ""}</div>
+      <div>${Math.round(rect.width)} x ${Math.round(rect.height)} · ${scope}</div>
+      <div>Click to edit this section</div>
+    `;
+  }
+
+  function positionLabel(label, x, y) {
+    const padding = 12;
+    const offset = 14;
+    let nextX = x + offset;
+    let nextY = y + offset;
+
+    label.style.left = "0";
+    label.style.top = "0";
+    label.style.transform = `translate(${nextX}px, ${nextY}px)`;
+
+    const rect = label.getBoundingClientRect();
+    if (nextX + rect.width + padding > window.innerWidth) {
+      nextX = x - rect.width - offset;
+    }
+    if (nextY + rect.height + padding > window.innerHeight) {
+      nextY = y - rect.height - offset;
+    }
+
+    label.style.transform = `translate(${Math.max(padding, nextX)}px, ${Math.max(padding, nextY)}px)`;
+  }
+
+  function escapeHtml(value) {
+    return String(value)
+      .replaceAll("&", "&amp;")
+      .replaceAll("<", "&lt;")
+      .replaceAll(">", "&gt;")
+      .replaceAll('"', "&quot;")
+      .replaceAll("'", "&#39;");
   }
 
   function getMenuEditorStyle(slot) {

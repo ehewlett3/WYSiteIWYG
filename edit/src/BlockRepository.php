@@ -10,6 +10,12 @@ use RuntimeException;
 
 final class BlockRepository
 {
+    private const ACTIVE_TEMPLATE_FILES = [
+        'page' => 'page.html',
+        'blog-post' => 'blog-post.html',
+        'blog' => 'blog-index.html',
+    ];
+
     private string $rootPath;
     private string $editPath;
 
@@ -64,6 +70,7 @@ final class BlockRepository
                 'tags' => $metadata['tags'] ?? [],
                 'tag' => $metadata['tag'] ?? '',
                 'generated' => $metadata['generated'] ?? '',
+                'exclude_template' => ($metadata['exclude_template'] ?? '') === '1',
                 'blocks' => array_map(
                     static fn(array $block): array => [
                         'name' => $block['name'],
@@ -248,7 +255,7 @@ final class BlockRepository
 
     public function updateBlockInRelativeFile(string $relativePath, string $blockName, string $newContent): void
     {
-        $fullPath = $this->resolvePath($relativePath);
+        $fullPath = $this->resolveManagedRelativeFilePath($relativePath);
         if (!is_file($fullPath)) {
             throw new RuntimeException('Template file not found: ' . $relativePath);
         }
@@ -267,6 +274,64 @@ final class BlockRepository
         }
 
         throw new RuntimeException('Editable block not found in ' . $relativePath);
+    }
+
+    private function resolveManagedRelativeFilePath(string $relativePath): string
+    {
+        $clean = trim(str_replace('\\', '/', $relativePath), '/');
+
+        if (str_starts_with($clean, 'edit/templates/')) {
+            $templatePath = substr($clean, strlen('edit/templates/'));
+            if ($templatePath === '' || str_contains($templatePath, '../')) {
+                throw new RuntimeException('Unsafe template path requested.');
+            }
+
+            return $this->editPath . '/templates/' . $templatePath;
+        }
+
+        return $this->resolvePath($clean);
+    }
+
+    public function activeTemplateRelativePath(string $kind): string
+    {
+        return 'edit/templates/' . $this->activeTemplateFilename($kind);
+    }
+
+    public function loadActiveTemplate(string $kind): string
+    {
+        $filename = $this->activeTemplateFilename($kind);
+        $path = $this->editPath . '/templates/' . $filename;
+
+        if (!is_file($path)) {
+            throw new RuntimeException('Active template file not found: edit/templates/' . $filename);
+        }
+
+        return (string) file_get_contents($path);
+    }
+
+    public function updateSelectedElement(string $relativePath, array $domPath, string $newInnerHtml): void
+    {
+        $this->updateElementInHtmlFile(
+            $this->resolveExistingPath($relativePath),
+            $domPath,
+            $newInnerHtml,
+            $relativePath
+        );
+    }
+
+    public function updateSelectedElementInActiveTemplate(string $kind, array $domPath, string $newInnerHtml): string
+    {
+        $filename = $this->activeTemplateFilename($kind);
+        $relativePath = 'edit/templates/' . $filename;
+        $fullPath = $this->editPath . '/templates/' . $filename;
+
+        if (!is_file($fullPath)) {
+            throw new RuntimeException('Active template file not found: ' . $relativePath);
+        }
+
+        $this->updateElementInHtmlFile($fullPath, $domPath, $newInnerHtml, $relativePath);
+
+        return $relativePath;
     }
 
     public function updateMetadata(string $relativePath, array $attributes): void
@@ -331,7 +396,19 @@ final class BlockRepository
     public function renderPreviewHtml(string $relativePath, string $appUrl, string $siteBaseUrl, string $csrfToken, string $username): string
     {
         $page = $this->getPage($relativePath);
-        return $this->renderPreviewHtmlFromSource($relativePath, $page['html'], $appUrl, $siteBaseUrl, $csrfToken, $username);
+        return $this->renderPreviewHtmlFromSource(
+            $relativePath,
+            $page['html'],
+            $appUrl,
+            $siteBaseUrl,
+            $csrfToken,
+            $username,
+            [
+                'pageKind' => $page['kind'],
+                'activeTemplatePath' => $this->activeTemplateRelativePath($page['kind']),
+                'selectionSaveEnabled' => true,
+            ]
+        );
     }
 
     public function renderPreviewHtmlFromSource(
@@ -433,7 +510,147 @@ final class BlockRepository
             return true;
         }
 
-        return str_starts_with($fullPath, $this->rootPath . '/templates/');
+        return false;
+    }
+
+    private function activeTemplateFilename(string $kind): string
+    {
+        $filename = self::ACTIVE_TEMPLATE_FILES[$kind] ?? null;
+        if ($filename === null) {
+            throw new RuntimeException('Unknown template kind: ' . $kind);
+        }
+
+        return $filename;
+    }
+
+    private function updateElementInHtmlFile(string $fullPath, array $domPath, string $newInnerHtml, string $label): void
+    {
+        if (!class_exists(\DOMDocument::class)) {
+            throw new RuntimeException('The DOM extension is required for selector-based editing.');
+        }
+
+        $html = (string) file_get_contents($fullPath);
+        $dom = new \DOMDocument('1.0', 'UTF-8');
+
+        libxml_use_internal_errors(true);
+        $loaded = $dom->loadHTML($this->htmlForDom($html));
+        libxml_clear_errors();
+
+        if (!$loaded) {
+            throw new RuntimeException('Unable to parse ' . $label . ' for selector-based editing.');
+        }
+
+        $element = $this->elementFromDomPath($dom, $domPath);
+        $this->replaceInnerHtml($dom, $element, $newInnerHtml);
+
+        $updated = $this->stripDomEncodingHack($dom->saveHTML() ?: '');
+        if (trim($updated) === '') {
+            throw new RuntimeException('Selector-based editing produced an empty document for ' . $label . '.');
+        }
+
+        Filesystem::atomicWrite($fullPath, $updated);
+    }
+
+    private function elementFromDomPath(\DOMDocument $dom, array $domPath): \DOMElement
+    {
+        $segments = array_values($domPath);
+        if ($segments === []) {
+            throw new RuntimeException('The selected element path was empty.');
+        }
+
+        $current = $dom->documentElement;
+        if (!$current instanceof \DOMElement) {
+            throw new RuntimeException('The selected element could not be resolved.');
+        }
+
+        $first = $this->normalizeDomPathSegment($segments[0]);
+        if ($first['tag'] === strtolower($current->tagName) && $first['index'] === 1) {
+            array_shift($segments);
+        }
+
+        foreach ($segments as $segment) {
+            $part = $this->normalizeDomPathSegment($segment);
+            $current = $this->nthElementChildByTag($current, $part['tag'], $part['index']);
+            if (!$current instanceof \DOMElement) {
+                throw new RuntimeException('The selected element no longer matches this file.');
+            }
+        }
+
+        return $current;
+    }
+
+    private function normalizeDomPathSegment(mixed $segment): array
+    {
+        if (!is_array($segment)) {
+            throw new RuntimeException('The selected element path was not valid.');
+        }
+
+        $tag = strtolower(trim((string) ($segment['tag'] ?? '')));
+        $index = (int) ($segment['index'] ?? 0);
+
+        if ($tag === '' || preg_match('/^[a-z][a-z0-9:-]*$/', $tag) !== 1 || $index < 1) {
+            throw new RuntimeException('The selected element path contained an invalid segment.');
+        }
+
+        return ['tag' => $tag, 'index' => $index];
+    }
+
+    private function nthElementChildByTag(\DOMElement $parent, string $tag, int $index): ?\DOMElement
+    {
+        $seen = 0;
+
+        foreach ($parent->childNodes as $child) {
+            if (!($child instanceof \DOMElement) || strtolower($child->tagName) !== $tag) {
+                continue;
+            }
+
+            $seen++;
+            if ($seen === $index) {
+                return $child;
+            }
+        }
+
+        return null;
+    }
+
+    private function replaceInnerHtml(\DOMDocument $owner, \DOMElement $element, string $html): void
+    {
+        while ($element->firstChild) {
+            $element->removeChild($element->firstChild);
+        }
+
+        $fragment = new \DOMDocument('1.0', 'UTF-8');
+        libxml_use_internal_errors(true);
+        $loaded = $fragment->loadHTML($this->htmlForDom('<!doctype html><html><body>' . $html . '</body></html>'));
+        libxml_clear_errors();
+
+        if (!$loaded) {
+            throw new RuntimeException('The selected element content could not be parsed.');
+        }
+
+        $body = $fragment->getElementsByTagName('body')->item(0);
+        if (!$body instanceof \DOMElement) {
+            return;
+        }
+
+        $children = [];
+        foreach ($body->childNodes as $child) {
+            $children[] = $child;
+        }
+
+        foreach ($children as $child) {
+            $element->appendChild($owner->importNode($child, true));
+        }
+    }
+
+    private function htmlForDom(string $html): string
+    {
+        return '<?xml encoding="UTF-8">' . $html;
+    }
+
+    private function stripDomEncodingHack(string $html): string
+    {
+        return preg_replace('/<\?xml\s+encoding=["\']UTF-8["\']\??>\s*/i', '', $html) ?? $html;
     }
 
     private function inferKind(string $relativePath, array $blockTypes, array $metadata = []): string
@@ -522,7 +739,7 @@ final class BlockRepository
         unset($metadata['tags']);
 
         $ordered = [];
-        foreach (['title', 'kind', 'date', 'excerpt', 'hashtags', 'tag', 'generated'] as $key) {
+        foreach (['title', 'kind', 'date', 'excerpt', 'hashtags', 'tag', 'generated', 'exclude_template'] as $key) {
             if (array_key_exists($key, $metadata)) {
                 $ordered[$key] = (string) $metadata[$key];
             }

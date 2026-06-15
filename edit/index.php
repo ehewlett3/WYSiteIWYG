@@ -15,6 +15,7 @@ $app = require __DIR__ . '/bootstrap.php';
 $auth = $app['auth'];
 $repository = $app['repository'];
 $generator = $app['generator'];
+$externalImporter = $app['externalImporter'];
 $themes = $app['themes'];
 $appUrl = $app['appUrl'];
 $rootPath = $app['rootPath'];
@@ -298,6 +299,7 @@ try {
         $previewTheme = trim((string) ($_GET['theme'] ?? ''));
 
         if ($previewTheme !== '') {
+            $page = $repository->getPage($path);
             $themes->assertThemeIsValid($previewTheme);
             $theme = $themes->getTheme($previewTheme);
             $html = $generator->renderPageForTheme($path, $previewTheme, $themes->previewStylesheetHref($previewTheme, $appUrl));
@@ -311,6 +313,9 @@ try {
                 [
                     'previewThemeId' => $previewTheme,
                     'previewThemeName' => $theme['name'],
+                    'pageKind' => $page['kind'],
+                    'activeTemplatePath' => $repository->activeTemplateRelativePath($page['kind']),
+                    'selectionSaveEnabled' => false,
                 ]
             );
         } else {
@@ -344,6 +349,38 @@ try {
         $html = $generator->normalizeEditableBlockHtml((string) ($block['type'] ?? ''), $html);
         $repository->updateBlock($path, $name, $html);
         json_response(['ok' => true, 'message' => 'The page was saved.']);
+    }
+
+    if ($action === 'save-selection') {
+        $data = request_data();
+        if (!Csrf::validate($data['csrfToken'] ?? null)) {
+            json_response(['ok' => false, 'message' => 'Invalid CSRF token.'], 419);
+        }
+
+        $path = (string) ($data['path'] ?? '');
+        $html = (string) ($data['html'] ?? '');
+        $domPath = $data['domPath'] ?? null;
+        $scope = (string) ($data['scope'] ?? 'page');
+        $page = $repository->getPage($path);
+        $kind = (string) ($page['kind'] ?? 'page');
+
+        if (!is_array($domPath)) {
+            json_response(['ok' => false, 'message' => 'The selected section path was invalid.'], 400);
+        }
+
+        if ($scope === 'template') {
+            $templatePath = $repository->updateSelectedElementInActiveTemplate($kind, $domPath, $html);
+            $updatedPages = $generator->rebuildPagesUsingTemplate($kind);
+            json_response([
+                'ok' => true,
+                'message' => 'The active template was saved and ' . $updatedPages . ' page(s) using it were rebuilt.',
+                'templatePath' => $templatePath,
+                'updatedPages' => $updatedPages,
+            ]);
+        }
+
+        $repository->updateSelectedElement($path, $domPath, $html);
+        json_response(['ok' => true, 'message' => 'The selected section was saved.']);
     }
 
     if ($action === 'create-page') {
@@ -408,6 +445,10 @@ try {
                 <span>Hashtags</span>
                 <input type="text" name="hashtags" placeholder="#blog #launch" value="<?= h((string) ($meta['hashtags'] ?? '')) ?>">
               </label>
+              <label class="wysite-checkbox">
+                <input type="checkbox" name="exclude_template" value="1" <?= (($meta['exclude_template'] ?? '') === '1') ? 'checked' : '' ?>>
+                <span>Exclude this page from template rebuilds and theme apply operations</span>
+              </label>
               <div class="wysite-hero-actions">
                 <button class="wysite-button" type="submit">Save details</button>
                 <a class="wysite-button wysite-button--ghost" href="<?= h($appUrl) ?>/index.php">Back to dashboard</a>
@@ -450,6 +491,7 @@ try {
                 'kind' => $kind,
                 'tag' => (string) ($existingMeta['tag'] ?? ''),
                 'generated' => (string) ($existingMeta['generated'] ?? ''),
+                'exclude_template' => !empty($_POST['exclude_template']) ? '1' : '',
             ]
         );
 
@@ -467,6 +509,143 @@ try {
         $themeId = trim((string) ($_POST['theme'] ?? ''));
         $generator->applyTheme($themeId);
         Flash::push('success', 'Applied the ' . $themes->getTheme($themeId)['name'] . ' theme across the site.');
+        redirect($appUrl . '/index.php');
+    }
+
+    if ($action === 'external-template-fetch') {
+        require_admin($user);
+        if (!is_post() || !Csrf::validate($_POST['csrf_token'] ?? null)) {
+            throw new RuntimeException('The external template import request was rejected.');
+        }
+
+        $source = $externalImporter->cacheTemplateSource(
+            (string) ($_POST['url'] ?? ''),
+            (string) ($_POST['kind'] ?? 'page')
+        );
+
+        redirect($appUrl . '/index.php?action=external-template-preview&id=' . rawurlencode((string) $source['id']));
+    }
+
+    if ($action === 'external-template-preview') {
+        require_admin($user);
+        $source = $externalImporter->getCachedTemplateSource((string) ($_GET['id'] ?? ''));
+        echo $externalImporter->renderTemplateDesignerHtml($source, $appUrl, Csrf::token(), $user['username']);
+        return;
+    }
+
+    if ($action === 'external-template-save') {
+        require_admin($user);
+        $data = request_data();
+        if (!Csrf::validate($data['csrfToken'] ?? null)) {
+            json_response(['ok' => false, 'message' => 'Invalid CSRF token.'], 419);
+        }
+
+        $kind = (string) ($data['kind'] ?? 'page');
+        $templatePath = $externalImporter->promoteCachedTemplate(
+            (string) ($data['importId'] ?? ''),
+            $kind,
+            is_array($data['selections'] ?? null) ? $data['selections'] : []
+        );
+        $updatedPages = $generator->rebuildPagesUsingTemplate($kind);
+
+        json_response([
+            'ok' => true,
+            'message' => 'Created ' . $templatePath . ' and rebuilt ' . $updatedPages . ' page(s) that use it.',
+            'templatePath' => $templatePath,
+            'updatedPages' => $updatedPages,
+        ]);
+    }
+
+    if ($action === 'external-site-import') {
+        require_admin($user);
+        if (!is_post() || !Csrf::validate($_POST['csrf_token'] ?? null)) {
+            throw new RuntimeException('The external site import request was rejected.');
+        }
+
+        if (!empty($_POST['progress_stream'])) {
+            if (session_status() === PHP_SESSION_ACTIVE) {
+                session_write_close();
+            }
+
+            while (ob_get_level() > 0) {
+                @ob_end_flush();
+            }
+
+            header('Content-Type: application/x-ndjson; charset=utf-8');
+            header('Cache-Control: no-cache, no-store, must-revalidate');
+            header('X-Accel-Buffering: no');
+
+            $sendProgress = static function (array $event): void {
+                echo json_encode($event, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE) . "\n";
+                @ob_flush();
+                flush();
+            };
+
+            try {
+                $results = $externalImporter->importSite(
+                    (string) ($_POST['url'] ?? ''),
+                    (int) ($_POST['max_pages'] ?? 50),
+                    !empty($_POST['overwrite']),
+                    $sendProgress
+                );
+                $sendProgress(['type' => 'done', 'result' => $results]);
+            } catch (Throwable $error) {
+                $sendProgress(['type' => 'fatal', 'message' => $error->getMessage()]);
+            }
+            return;
+        }
+
+        $results = $externalImporter->importSite(
+            (string) ($_POST['url'] ?? ''),
+            (int) ($_POST['max_pages'] ?? 50),
+            !empty($_POST['overwrite'])
+        );
+
+        $message = 'External site import finished.' .
+            "\n- Saved HTML pages: " . count($results['saved']) .
+            "\n- Non-HTML resources saved: " . count($results['resources_saved'] ?? []) .
+            "\n- Skipped existing: " . count($results['skipped']) .
+            "\n- Skipped duplicate URLs: " . count($results['duplicates'] ?? []) .
+            "\n- Skipped after page limit: " . count($results['limit_skipped'] ?? []) .
+            "\n- Non-essential WordPress endpoints skipped: " . count($results['nonessential_skipped'] ?? []) .
+            "\n- Assets mirrored: " . count($results['assets_saved'] ?? []) .
+            "\n- /wp-content assets mirrored: " . (int) ($results['wp_content_assets_saved'] ?? 0) .
+            "\n- Imported asset permissions repaired: " . (int) (($results['asset_permissions_fixed']['files'] ?? 0) + ($results['asset_permissions_fixed']['directories'] ?? 0)) .
+            "\n- Assets skipped or failed: " . count($results['assets_failed'] ?? []) .
+            "\n- Failed: " . count($results['failed']);
+        if (($results['assets_failed'] ?? []) !== []) {
+            $message .= "\n- " . implode("\n- ", array_slice($results['assets_failed'], 0, 5));
+        }
+        if (($results['nonessential_skipped'] ?? []) !== []) {
+            $message .= "\n- Non-essential: " . implode("\n- Non-essential: ", array_slice($results['nonessential_skipped'], 0, 5));
+        }
+        if ($results['failed'] !== []) {
+            $message .= "\n- " . implode("\n- ", array_slice($results['failed'], 0, 5));
+        }
+
+        Flash::push($results['failed'] === [] && ($results['assets_failed'] ?? []) === [] ? 'success' : 'error', $message);
+        redirect($appUrl . '/index.php');
+    }
+
+    if ($action === 'external-assets-import') {
+        require_admin($user);
+        if (!is_post() || !Csrf::validate($_POST['csrf_token'] ?? null)) {
+            throw new RuntimeException('The external asset import request was rejected.');
+        }
+
+        $assetUrls = preg_split('/\r\n|\r|\n/', (string) ($_POST['asset_urls'] ?? '')) ?: [];
+        $results = $externalImporter->importAssetUrls($assetUrls);
+
+        $message = 'External asset import finished.' .
+            "\n- Assets mirrored: " . count($results['assets_saved']) .
+            "\n- Assets skipped or failed: " . count($results['assets_failed']) .
+            "\n- Imported asset permissions repaired: " . (int) (($results['asset_permissions_fixed']['files'] ?? 0) + ($results['asset_permissions_fixed']['directories'] ?? 0)) .
+            "\n- Files updated: " . (int) $results['updated_files'];
+        if ($results['assets_failed'] !== []) {
+            $message .= "\n- " . implode("\n- ", array_slice($results['assets_failed'], 0, 5));
+        }
+
+        Flash::push($results['assets_failed'] === [] ? 'success' : 'error', $message);
         redirect($appUrl . '/index.php');
     }
 
@@ -718,6 +897,7 @@ try {
               <tr>
                 <th>Page</th>
                 <th>Type</th>
+                <th>Template</th>
                 <th>Hashtags</th>
                 <th>Blocks</th>
                 <th></th>
@@ -731,6 +911,7 @@ try {
                     <div class="wysite-muted"><?= h($page['path']) ?></div>
                   </td>
                   <td><?= h($page['kind']) ?></td>
+                  <td><?= !empty($page['exclude_template']) ? 'Excluded' : 'Included' ?></td>
                   <td><?= h($page['hashtags'] !== '' ? $page['hashtags'] : '—') ?></td>
                   <td><?= h(implode(', ', array_map(static fn(array $block): string => $block['label'], $page['blocks']))) ?></td>
                   <td class="wysite-table__actions">
@@ -745,6 +926,262 @@ try {
           </table>
         </div>
       </section>
+
+      <?php if ($user['is_admin']): ?>
+        <section class="wysite-panel">
+          <div class="wysite-panel__heading">
+            <div>
+              <p class="wysite-kicker">External migration tools</p>
+              <h3>Import templates or crawl a static copy of another site</h3>
+            </div>
+          </div>
+          <div class="wysite-grid">
+            <article>
+              <h3>Build a template from a URL</h3>
+              <p class="wysite-muted">Fetch one external page, select the menu and content regions in the browser, and promote those selections into an active template file in <code>/edit/templates/</code>.</p>
+              <form method="post" action="<?= h($appUrl) ?>/index.php?action=external-template-fetch" class="wysite-form">
+                <input type="hidden" name="csrf_token" value="<?= h(Csrf::token()) ?>">
+                <label>
+                  <span>Source URL</span>
+                  <input type="url" name="url" required placeholder="https://example.com/about/">
+                </label>
+                <label>
+                  <span>Template type</span>
+                  <select name="kind" class="wysite-theme-select">
+                    <option value="page">Page template</option>
+                    <option value="blog-post">Blog post template</option>
+                    <option value="blog">Blog / archive template</option>
+                  </select>
+                </label>
+                <button class="wysite-button" type="submit">Fetch and Select Sections</button>
+              </form>
+            </article>
+
+            <article>
+              <h3>Import an external site</h3>
+              <p class="wysite-muted">Crawl source-site HTML pages from a starting URL, save feeds and other static resources locally, rewrite source-domain page links, and mirror referenced assets and feed media into <code>/assets/imported/</code>. This is intended as a first migration pass for WordPress-style sites before importing pages into WYSite blocks.</p>
+              <form method="post" action="<?= h($appUrl) ?>/index.php?action=external-site-import" class="wysite-form" data-wysite-external-import-form="1" onsubmit="return window.confirm('Import HTML pages, feeds, and referenced assets from this external site? Existing local files will only be replaced if overwrite is checked.');">
+                <input type="hidden" name="csrf_token" value="<?= h(Csrf::token()) ?>">
+                <label>
+                  <span>Starting URL</span>
+                  <input type="url" name="url" required placeholder="https://example.com/">
+                </label>
+                <label>
+                  <span>Maximum pages</span>
+                  <input type="number" name="max_pages" min="1" max="500" value="50">
+                </label>
+                <label class="wysite-checkbox">
+                  <input type="checkbox" name="overwrite" value="1">
+                  <span>Overwrite existing local HTML files</span>
+                </label>
+                <button class="wysite-button" type="submit">Import Site</button>
+              </form>
+              <div class="wysite-import-progress" data-wysite-external-import-progress hidden>
+                <div class="wysite-import-progress__bar"><span data-wysite-import-progress-bar></span></div>
+                <p class="wysite-muted" data-wysite-import-progress-status>Preparing import...</p>
+                <pre class="wysite-import-progress__log" data-wysite-import-progress-log></pre>
+              </div>
+            </article>
+
+            <article>
+              <h3>Backfill specific assets</h3>
+              <p class="wysite-muted">Use this as a repair pass for individual media URLs that were blocked, discovered later, or listed in an import report. Assets are streamed into <code>/assets/imported/</code>, then matching references in local HTML/CSS/JS files are rewritten.</p>
+              <form method="post" action="<?= h($appUrl) ?>/index.php?action=external-assets-import" class="wysite-form">
+                <input type="hidden" name="csrf_token" value="<?= h(Csrf::token()) ?>">
+                <label>
+                  <span>Asset URLs</span>
+                  <textarea name="asset_urls" rows="7" placeholder="https://example.com/wp-content/uploads/audio.m4a"></textarea>
+                </label>
+                <button class="wysite-button" type="submit">Backfill Assets</button>
+              </form>
+            </article>
+          </div>
+        </section>
+        <script>
+        (() => {
+          const form = document.querySelector('[data-wysite-external-import-form]');
+          const panel = document.querySelector('[data-wysite-external-import-progress]');
+          if (!form || !panel || !window.fetch || !window.TextDecoder) {
+            return;
+          }
+
+          const status = panel.querySelector('[data-wysite-import-progress-status]');
+          const log = panel.querySelector('[data-wysite-import-progress-log]');
+          const bar = panel.querySelector('[data-wysite-import-progress-bar]');
+          const button = form.querySelector('button[type="submit"]');
+          const defaultButtonText = button ? button.textContent : '';
+          const largeAssetBytes = 5 * 1024 * 1024;
+
+          form.addEventListener('submit', async (event) => {
+            if (event.defaultPrevented) {
+              return;
+            }
+
+            event.preventDefault();
+            const data = new FormData(form);
+            data.append('progress_stream', '1');
+            panel.hidden = false;
+            log.textContent = '';
+            setProgress(0);
+            setStatus('Starting import...');
+            if (button) {
+              button.disabled = true;
+              button.textContent = 'Importing...';
+            }
+
+            try {
+              const response = await fetch(form.action, {
+                method: 'POST',
+                credentials: 'same-origin',
+                body: data,
+                headers: { Accept: 'application/x-ndjson' }
+              });
+              if (!response.ok || !response.body) {
+                throw new Error('Import request failed.');
+              }
+
+              const reader = response.body.getReader();
+              const decoder = new TextDecoder();
+              let buffer = '';
+              while (true) {
+                const chunk = await reader.read();
+                if (chunk.done) {
+                  break;
+                }
+
+                buffer += decoder.decode(chunk.value, { stream: true });
+                const lines = buffer.split('\n');
+                buffer = lines.pop() || '';
+                lines.forEach(readLine);
+              }
+
+              if (buffer.trim() !== '') {
+                readLine(buffer);
+              }
+            } catch (error) {
+              appendLog('Error: ' + (error.message || 'Import failed.'));
+              setStatus('Import stopped before it could finish.');
+            } finally {
+              if (button) {
+                button.disabled = false;
+                button.textContent = defaultButtonText;
+              }
+            }
+          });
+
+          function readLine(line) {
+            const trimmed = line.trim();
+            if (trimmed === '') {
+              return;
+            }
+
+            try {
+              handleEvent(JSON.parse(trimmed));
+            } catch (error) {
+              appendLog(trimmed);
+            }
+          }
+
+          function handleEvent(event) {
+            updateCounts(event);
+
+            if (event.type === 'page_start') {
+              appendLog('Fetching ' + event.url);
+            } else if (event.type === 'page_saved') {
+              appendLog('Saved page ' + event.path);
+            } else if (event.type === 'resource_saved') {
+              appendLog('Saved resource ' + event.path);
+            } else if (event.type === 'page_skipped_nonessential') {
+              appendLog('Skipped non-essential ' + event.url);
+            } else if (event.type === 'page_skipped_limit') {
+              appendLog('Skipped extra page after limit ' + event.url);
+            } else if (event.type === 'asset_start') {
+              appendLog('Mirroring asset ' + event.url);
+            } else if (event.type === 'asset_saved') {
+              const size = Number(event.bytes || 0);
+              appendLog((size >= largeAssetBytes ? 'Mirrored large asset ' : 'Mirrored asset ') + event.path + (size > 0 ? ' (' + formatBytes(size) + ')' : ''));
+            } else if (event.type === 'asset_progress') {
+              const total = Number(event.total_bytes || 0);
+              setStatus('Downloading ' + event.url + ': ' + formatBytes(Number(event.bytes || 0)) + (total > 0 ? ' / ' + formatBytes(total) : ''));
+            } else if (event.type === 'queued_asset_saved') {
+              appendLog('Mirrored resource ' + event.path);
+            } else if (event.type === 'asset_permissions_repaired') {
+              appendLog('Repaired imported asset permissions: ' + Number(event.files || 0) + ' file(s), ' + Number(event.directories || 0) + ' folder(s)');
+            } else if (event.type === 'asset_failed') {
+              appendLog('Asset failed ' + event.url + ': ' + event.message);
+            } else if (event.type === 'page_failed') {
+              appendLog('Failed ' + event.url + ': ' + event.message);
+            } else if (event.type === 'complete' || event.type === 'done') {
+              const result = event.result || {};
+              setProgress(100);
+              setStatus(
+                'Finished. Pages: ' + count(result.saved) +
+                ', resources: ' + count(result.resources_saved) +
+                ', assets: ' + count(result.assets_saved) +
+                ', /wp-content assets: ' + Number(result.wp_content_assets_saved || 0) +
+                ', failed: ' + count(result.failed) +
+                ', page-limit skipped: ' + count(result.limit_skipped) +
+                ', non-essential skipped: ' + count(result.nonessential_skipped)
+              );
+            } else if (event.type === 'fatal') {
+              appendLog('Error: ' + event.message);
+              setStatus('Import failed.');
+            }
+          }
+
+          function updateCounts(event) {
+            if (event.type === 'complete' || event.type === 'done' || event.type === 'fatal') {
+              return;
+            }
+            if (!Object.prototype.hasOwnProperty.call(event, 'visited') && !Object.prototype.hasOwnProperty.call(event, 'max_pages')) {
+              return;
+            }
+
+            const visited = Number(event.visited || 0);
+            const maxPages = Number(event.max_pages || 0);
+            if (maxPages > 0) {
+              setProgress(Math.min(98, Math.round((visited / maxPages) * 100)));
+            }
+
+            setStatus(
+              'Visited ' + visited + '/' + maxPages +
+              ', queued ' + Number(event.queued || 0) +
+              ', pages ' + Number(event.saved || 0) +
+              ', resources ' + Number(event.resources_saved || 0) +
+              ', assets ' + Number(event.assets_saved || 0) +
+              ', /wp-content assets ' + Number(event.wp_content_assets_saved || 0) +
+              ', page-limit skipped ' + Number(event.skipped_limit || 0) +
+              ', failed ' + Number(event.failed || 0)
+            );
+          }
+
+          function appendLog(message) {
+            log.textContent += (log.textContent === '' ? '' : '\n') + message;
+            log.scrollTop = log.scrollHeight;
+          }
+
+          function setStatus(message) {
+            status.textContent = message;
+          }
+
+          function setProgress(value) {
+            bar.style.width = Math.max(0, Math.min(100, value)) + '%';
+          }
+
+          function count(value) {
+            return Array.isArray(value) ? value.length : 0;
+          }
+
+          function formatBytes(bytes) {
+            if (bytes >= 1024 * 1024) {
+              return (bytes / 1024 / 1024).toFixed(1) + ' MB';
+            }
+            return Math.round(bytes / 1024) + ' KB';
+          }
+        })();
+        </script>
+
+      <?php endif; ?>
 
       <?php if ($user['is_admin']): ?>
         <section class="wysite-panel">
@@ -886,7 +1323,14 @@ try {
 } catch (Throwable $error) {
     Flash::push('error', $error->getMessage());
 
-    if (($_SERVER['HTTP_ACCEPT'] ?? '') && str_contains($_SERVER['HTTP_ACCEPT'], 'application/json')) {
+    $accept = (string) ($_SERVER['HTTP_ACCEPT'] ?? '');
+    if ($accept !== '' && str_contains($accept, 'application/x-ndjson')) {
+        header('Content-Type: application/x-ndjson; charset=utf-8');
+        echo json_encode(['type' => 'fatal', 'message' => $error->getMessage()], JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE) . "\n";
+        return;
+    }
+
+    if ($accept !== '' && str_contains($accept, 'application/json')) {
         json_response(['ok' => false, 'message' => $error->getMessage()], 400);
     }
 

@@ -194,7 +194,7 @@ final class SiteGenerator
             }
         }
 
-        $this->publishThemeScaffold($this->themes->currentThemeId(), $menuHtml);
+        $this->syncMenuIntoActiveTemplates($menuHtml);
     }
 
     public function availableThemes(): array
@@ -208,6 +208,47 @@ final class SiteGenerator
     }
 
     public function renderPageForTheme(string $relativePath, string $themeId, string $cssHref): string
+    {
+        $page = $this->repository->getPage($relativePath);
+        return $this->renderPage(
+            $relativePath,
+            $themeId,
+            $cssHref,
+            $this->themes->loadTemplate($themeId, $page['kind'])
+        );
+    }
+
+    public function renderPageForActiveTemplate(string $relativePath): string
+    {
+        return $this->renderPage(
+            $relativePath,
+            $this->themes->currentThemeId(),
+            '/assets/site.css'
+        );
+    }
+
+    public function rebuildPagesUsingTemplate(string $kind): int
+    {
+        $updated = 0;
+
+        foreach ($this->repository->listPages() as $pageInfo) {
+            if (($pageInfo['kind'] ?? '') !== $kind) {
+                continue;
+            }
+
+            if (!empty($pageInfo['exclude_template'])) {
+                continue;
+            }
+
+            $html = $this->renderPageForActiveTemplate($pageInfo['path']);
+            Filesystem::atomicWrite($this->rootPath . '/' . $pageInfo['path'], $html);
+            $updated++;
+        }
+
+        return $updated;
+    }
+
+    private function renderPage(string $relativePath, string $themeId, string $cssHref, ?string $template = null): string
     {
         $page = $this->repository->getPage($relativePath);
         $meta = $page['meta'];
@@ -232,7 +273,8 @@ final class SiteGenerator
                 'blog_items' => $this->renderBlogItems($tag !== '' ? $tag : 'blog'),
                 'tag_links' => $this->renderTagLinks($tags),
             ],
-            $cssHref
+            $cssHref,
+            $template
         );
     }
 
@@ -242,6 +284,10 @@ final class SiteGenerator
         $this->publishThemeScaffold($themeId, $this->currentMenuHtml());
 
         foreach ($this->repository->listPages() as $pageInfo) {
+            if (!empty($pageInfo['exclude_template'])) {
+                continue;
+            }
+
             $html = $this->renderPageForTheme($pageInfo['path'], $themeId, '/assets/site.css');
             Filesystem::atomicWrite($this->rootPath . '/' . $pageInfo['path'], $html);
         }
@@ -319,9 +365,9 @@ final class SiteGenerator
     private function publishThemeScaffold(string $themeId, string $menuHtml): void
     {
         $templateTargets = [
-            'page' => 'templates/page.html',
-            'blog-post' => 'templates/blog-post.html',
-            'blog' => 'templates/blog-index.html',
+            'page' => $this->repository->activeTemplateRelativePath('page'),
+            'blog-post' => $this->repository->activeTemplateRelativePath('blog-post'),
+            'blog' => $this->repository->activeTemplateRelativePath('blog'),
         ];
 
         foreach ($templateTargets as $kind => $target) {
@@ -337,9 +383,24 @@ final class SiteGenerator
         Filesystem::atomicWrite($this->rootPath . '/assets/site.css', $this->themes->loadStylesheet($themeId));
     }
 
-    private function renderKind(string $kind, string $themeId, array $data, string $cssHref): string
+    private function syncMenuIntoActiveTemplates(string $menuHtml): void
     {
-        $template = $this->themes->loadTemplate($themeId, $kind);
+        foreach (['page', 'blog-post', 'blog'] as $kind) {
+            try {
+                $this->repository->updateBlockInRelativeFile(
+                    $this->repository->activeTemplateRelativePath($kind),
+                    'main-menu',
+                    $menuHtml
+                );
+            } catch (RuntimeException) {
+                continue;
+            }
+        }
+    }
+
+    private function renderKind(string $kind, string $themeId, array $data, string $cssHref, ?string $template = null): string
+    {
+        $template ??= $this->loadActiveTemplateOrTheme($kind, $themeId);
         $pageContentBlocks = $data['page_content_blocks']
             ?? array_values(
                 array_filter(
@@ -379,6 +440,15 @@ final class SiteGenerator
         ];
 
         return str_replace(array_keys($replacements), array_values($replacements), $template);
+    }
+
+    private function loadActiveTemplateOrTheme(string $kind, string $themeId): string
+    {
+        try {
+            return $this->repository->loadActiveTemplate($kind);
+        } catch (RuntimeException) {
+            return $this->themes->loadTemplate($themeId, $kind);
+        }
     }
 
     private function renderBlogItems(string $tag): string

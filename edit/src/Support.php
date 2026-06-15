@@ -32,6 +32,8 @@ final class Filesystem
             @unlink($tmp);
             throw new RuntimeException('Unable to move temporary file into place: ' . $path);
         }
+
+        @chmod($path, 0644);
     }
 }
 

@@ -15,13 +15,12 @@ Thumbs.db
 
 # Ignore everything at the repo root by default, then re-include just the app
 # and project infrastructure. Anything else at the root (generated public pages,
-# /assets/, local tooling such as /.claude/) is intentionally untracked.
+# /assets/, local tooling such as /.claude/, and internal HANDOFF*.md dev notes)
+# is intentionally untracked.
 /*
 !/.gitignore
 !/.gitattributes
 !/.htaccess
 !/README.md
 !/LICENSE
-!/HANDOFF.md
-!/HANDOFF_CHANGES.md
 !/edit/

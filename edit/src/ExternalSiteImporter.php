@@ -354,8 +354,14 @@ final class ExternalSiteImporter
                 $progress('asset_permissions_repaired', $permissionReport);
             }
 
+            $localizeReport = $this->relocalizeImportedOutput();
+            if (($localizeReport['pages'] + $localizeReport['stylesheets']) > 0) {
+                $progress('localized', $localizeReport);
+            }
+
             $result = [
                 'saved' => $saved,
+                'localized' => $localizeReport,
                 'resources_saved' => $resourcesSaved,
                 'skipped' => $skipped,
                 'duplicates' => $duplicates,
@@ -376,6 +382,68 @@ final class ExternalSiteImporter
         } finally {
             $this->progressCallback = $previousProgressCallback;
         }
+    }
+
+    /**
+     * Make already-imported output location-agnostic. Raw (unmanaged) imported HTML
+     * pages get a per-page relative <base> and base-relative URLs; mirrored
+     * stylesheet url() refs are rewritten to resolve relative to each CSS file (the
+     * document <base> does not affect CSS url()). Managed pages (with WYSITE markers)
+     * are left to SiteGenerator. Idempotent — safe to re-run as a backfill.
+     *
+     * @return array{pages:int,stylesheets:int}
+     */
+    public function relocalizeImportedOutput(): array
+    {
+        $pages = 0;
+        $stylesheets = 0;
+
+        if (!is_dir($this->rootPath)) {
+            return ['pages' => 0, 'stylesheets' => 0];
+        }
+
+        $iterator = new \RecursiveIteratorIterator(
+            new \RecursiveDirectoryIterator($this->rootPath, \FilesystemIterator::SKIP_DOTS),
+            \RecursiveIteratorIterator::LEAVES_ONLY
+        );
+
+        foreach ($iterator as $file) {
+            if (!$file->isFile()) {
+                continue;
+            }
+
+            $full = str_replace('\\', '/', $file->getPathname());
+            $rel = ltrim(substr($full, strlen($this->rootPath)), '/');
+            if ($rel === '' || str_starts_with($rel, 'edit/')) {
+                continue;
+            }
+
+            $ext = strtolower((string) pathinfo($rel, PATHINFO_EXTENSION));
+
+            if (in_array($ext, ['html', 'htm'], true)) {
+                $html = (string) file_get_contents($full);
+                if (str_contains($html, 'WYSITE:BEGIN')) {
+                    continue; // managed page — SiteGenerator owns its localization
+                }
+                $localized = UrlLocalizer::localizeHtml($html, $rel);
+                if ($localized !== $html) {
+                    Filesystem::atomicWrite($full, $localized);
+                    $pages++;
+                }
+                continue;
+            }
+
+            if ($ext === 'css' && str_starts_with($rel, 'assets/imported/')) {
+                $css = (string) file_get_contents($full);
+                $localized = UrlLocalizer::localizeCssUrls($css, dirname($rel));
+                if ($localized !== $css) {
+                    Filesystem::atomicWrite($full, $localized);
+                    $stylesheets++;
+                }
+            }
+        }
+
+        return ['pages' => $pages, 'stylesheets' => $stylesheets];
     }
 
     public function importAssetUrls(array $urls): array

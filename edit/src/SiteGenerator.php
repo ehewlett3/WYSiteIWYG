@@ -582,19 +582,8 @@ final class SiteGenerator
      */
     private function localizeStylesheet(string $css): string
     {
-        return preg_replace_callback(
-            '#url\(\s*(["\']?)([^"\')]+)\1\s*\)#i',
-            function (array $m): string {
-                $url = trim($m[2]);
-                if ($url === '' || $url[0] !== '/' || str_starts_with($url, '//')) {
-                    return $m[0];
-                }
-                $rel = $this->toBaseRelative($url);
-                $rel = $rel === './' ? '../' : '../' . $rel;
-                return 'url(' . $m[1] . $rel . $m[1] . ')';
-            },
-            $css
-        ) ?? $css;
+        // The published stylesheet lives at <root>/assets/site.css.
+        return UrlLocalizer::localizeCssUrls($css, 'assets', $this->siteBaseUrl);
     }
 
     private function syncMenuIntoActiveTemplates(string $menuHtml): void
@@ -910,104 +899,7 @@ final class SiteGenerator
      */
     private function localizeUrls(string $html, string $relativePath): string
     {
-        $prefix = $this->relativePrefix($relativePath);
-
-        // Drop any <base> we (or a previous build) injected, so rebuilds stay idempotent.
-        $html = preg_replace('#\s*<base\b[^>]*>#i', '', $html) ?? $html;
-
-        // Rewrite URL-bearing attributes.
-        $html = preg_replace_callback(
-            '#\b(href|src|action|poster)\s*=\s*(["\'])([^"\']*)\2#i',
-            fn(array $m): string => $m[1] . '=' . $m[2] . $this->toBaseRelative($m[3]) . $m[2],
-            $html
-        ) ?? $html;
-
-        // Rewrite each candidate inside srcset attributes.
-        $html = preg_replace_callback(
-            '#\bsrcset\s*=\s*(["\'])([^"\']*)\1#i',
-            function (array $m): string {
-                $candidates = array_map(
-                    function (string $candidate): string {
-                        $candidate = trim($candidate);
-                        if ($candidate === '') {
-                            return $candidate;
-                        }
-                        $parts = preg_split('/\s+/', $candidate, 2) ?: [$candidate];
-                        $parts[0] = $this->toBaseRelative($parts[0]);
-                        return implode(' ', $parts);
-                    },
-                    explode(',', $m[2])
-                );
-                return 'srcset=' . $m[1] . implode(', ', $candidates) . $m[1];
-            },
-            $html
-        ) ?? $html;
-
-        // Rewrite CSS url(...) references in inline styles / <style> blocks.
-        $html = preg_replace_callback(
-            '#url\(\s*(["\']?)([^"\')]+)\1\s*\)#i',
-            fn(array $m): string => 'url(' . $m[1] . $this->toBaseRelative($m[2]) . $m[1] . ')',
-            $html
-        ) ?? $html;
-
-        // Inject a relative <base href> at the top of <head>.
-        $baseTag = '<base href="' . h($prefix) . '">';
-        if (preg_match('#<head\b[^>]*>#i', $html) === 1) {
-            $html = preg_replace('#(<head\b[^>]*>)#i', '$1' . $baseTag, $html, 1) ?? $html;
-        }
-
-        return $html;
-    }
-
-    /**
-     * Convert a single site-internal absolute URL to a base-relative one. Leaves
-     * external URLs, protocol-relative URLs, fragments, data: URIs, and
-     * already-relative URLs untouched.
-     */
-    private function toBaseRelative(string $url): string
-    {
-        $url = trim($url);
-        if ($url === '') {
-            return $url;
-        }
-
-        // Skip schemes, protocol-relative, fragments, queries, and existing relatives.
-        if ($url[0] !== '/' || str_starts_with($url, '//')) {
-            return $url;
-        }
-
-        // Strip the deployment base prefix if present, otherwise the leading slash.
-        if ($this->siteBaseUrl !== '/' && str_starts_with($url . '/', $this->siteBaseUrl)) {
-            $rest = substr($url, strlen($this->siteBaseUrl) - 1);
-        } else {
-            $rest = $url;
-        }
-        $rest = ltrim($rest, '/');
-
-        return $rest === '' ? './' : $rest;
-    }
-
-    /**
-     * Relative prefix that points at the site root from a generated page's
-     * canonical (clean-URL, trailing-slash) served location.
-     */
-    private function relativePrefix(string $relativePath): string
-    {
-        $path = trim(str_replace('\\', '/', $relativePath), '/');
-
-        if ($path === '' || $path === 'index.html') {
-            $depth = 0;
-        } else {
-            if (str_ends_with($path, '/index.html')) {
-                $served = substr($path, 0, -strlen('/index.html'));
-            } else {
-                $served = preg_replace('/\.html?$/i', '', $path) ?? $path;
-            }
-            $served = trim($served, '/');
-            $depth = $served === '' ? 0 : substr_count($served, '/') + 1;
-        }
-
-        return $depth === 0 ? './' : str_repeat('../', $depth);
+        return UrlLocalizer::localizeHtml($html, $relativePath, $this->siteBaseUrl);
     }
 
     private function normalizePageBlockContent(?string $html): string

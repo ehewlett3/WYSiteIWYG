@@ -8,6 +8,7 @@ use WYSiteIWYG\SiteGenerator;
 use WYSiteIWYG\ThemeManager;
 
 require_once __DIR__ . '/src/Support.php';
+require_once __DIR__ . '/src/UrlLocalizer.php';
 require_once __DIR__ . '/src/BlockRepository.php';
 require_once __DIR__ . '/src/ExternalSiteImporter.php';
 require_once __DIR__ . '/src/SiteGenerator.php';

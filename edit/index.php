@@ -680,6 +680,21 @@ try {
         redirect($appUrl . '/index.php');
     }
 
+    if ($action === 'relocalize-import') {
+        require_admin($user);
+        if (!is_post() || !Csrf::validate($_POST['csrf_token'] ?? null)) {
+            throw new RuntimeException('The re-localize request was rejected.');
+        }
+
+        $report = $externalImporter->relocalizeImportedOutput();
+        Flash::push(
+            'success',
+            'Re-localized imported output: ' . (int) $report['pages'] . ' page(s) and ' .
+            (int) $report['stylesheets'] . ' stylesheet(s) updated for relative-path serving.'
+        );
+        redirect($appUrl . '/index.php');
+    }
+
     if ($action === 'import') {
         require_admin($user);
         $path = (string) ($_GET['path'] ?? '');
@@ -1157,6 +1172,15 @@ try {
                   <textarea name="asset_urls" rows="7" placeholder="https://example.com/wp-content/uploads/audio.m4a"></textarea>
                 </label>
                 <button class="wysite-button" type="submit">Backfill Assets</button>
+              </form>
+            </article>
+
+            <article>
+              <h3>Re-localize imported pages</h3>
+              <p class="wysite-muted">Rewrite already-imported pages and mirrored stylesheets to use relative links, so the imported site renders correctly from a subdirectory (or after moving it). New imports do this automatically; use this for imports made before that, or after relocating the site. Managed pages are left untouched.</p>
+              <form method="post" action="<?= h($appUrl) ?>/index.php?action=relocalize-import" class="wysite-form">
+                <input type="hidden" name="csrf_token" value="<?= h(Csrf::token()) ?>">
+                <button class="wysite-button" type="submit">Re-localize Imported Pages</button>
               </form>
             </article>
           </div>

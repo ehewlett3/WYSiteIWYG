@@ -17,6 +17,7 @@ $repository = $app['repository'];
 $generator = $app['generator'];
 $externalImporter = $app['externalImporter'];
 $themes = $app['themes'];
+$ai = $app['ai'];
 $appUrl = $app['appUrl'];
 $rootPath = $app['rootPath'];
 $siteBaseUrl = $app['siteBaseUrl'];
@@ -33,6 +34,10 @@ if (!$auth->isInstalled() && $action !== 'install') {
 
 function layout(string $title, string $body, string $appUrl, string $siteTitle, ?array $user = null): void
 {
+    // The dashboard renders only the editor's own (escaped) markup, so it can run
+    // under a strict CSP: no inline JS at all — confirmations and the import UI live
+    // in dashboard.js. Inline styles remain allowed for the dashboard-theme block.
+    \WYSiteIWYG\send_csp('dashboard');
     $flashes = Flash::consume();
     ?>
 <!doctype html>
@@ -43,6 +48,7 @@ function layout(string $title, string $body, string $appUrl, string $siteTitle, 
   <title><?= h($title) ?> | <?= h($siteTitle) ?></title>
   <link rel="stylesheet" href="<?= h($appUrl) ?>/assets/editor.css">
   <?php if (!empty($GLOBALS['WYSITE_DASHBOARD_CSS'])): ?><style><?= $GLOBALS['WYSITE_DASHBOARD_CSS'] ?></style><?php endif; ?>
+  <script src="<?= h($appUrl) ?>/assets/dashboard.js" defer></script>
 </head>
 <body class="wysite-app-shell">
   <div class="wysite-shell">
@@ -120,6 +126,32 @@ function require_admin(array $user): void
 {
     if (empty($user['is_admin'])) {
         throw new RuntimeException('Administrator access is required for that action.');
+    }
+}
+
+/**
+ * If AI assistance is configured, ask the model to pre-select template regions for a
+ * cached source and attach them for the designer to show. Best-effort: any failure
+ * (misconfig, network, bad key) is surfaced as a flash but never blocks the manual
+ * designer, which remains the fallback and the source of truth.
+ */
+function maybe_attach_ai_suggestions($ai, $externalImporter, string $sourceId, string $kind): void
+{
+    if (!$ai->isConfigured()) {
+        return;
+    }
+
+    try {
+        $source = $externalImporter->getCachedTemplateSource($sourceId);
+        $suggestions = $ai->suggestRoles((string) $source['html'], $kind, $externalImporter->templateRoles($kind));
+        if ($suggestions !== []) {
+            $externalImporter->attachTemplateSuggestions($sourceId, $suggestions);
+            Flash::push('success', 'AI pre-selected ' . count($suggestions) . ' region(s). Review and adjust them before saving the template.');
+        } else {
+            Flash::push('error', 'The AI assistant could not confidently match any regions; select them manually.');
+        }
+    } catch (Throwable $error) {
+        Flash::push('error', 'AI suggestion skipped: ' . $error->getMessage() . ' You can still select regions manually.');
     }
 }
 
@@ -312,6 +344,12 @@ try {
         $path = (string) ($_GET['path'] ?? 'index.html');
         $previewTheme = trim((string) ($_GET['theme'] ?? ''));
 
+        // The preview renders the site's own (possibly imported) HTML in the app
+        // origin; a strict nonce/strict-dynamic CSP stops any script that arrives
+        // with that HTML from running with the session/CSRF token in reach.
+        \WYSiteIWYG\send_csp('preview');
+        $nonce = \WYSiteIWYG\csp_nonce();
+
         if ($previewTheme !== '') {
             $page = $repository->getPage($path);
             $themes->assertThemeIsValid($previewTheme);
@@ -330,10 +368,11 @@ try {
                     'pageKind' => $page['kind'],
                     'activeTemplatePath' => $repository->activeTemplateRelativePath($page['kind']),
                     'selectionSaveEnabled' => false,
-                ]
+                ],
+                $nonce
             );
         } else {
-            echo $repository->renderPreviewHtml($path, $appUrl, $siteBaseUrl, Csrf::token(), $user['username']);
+            echo $repository->renderPreviewHtml($path, $appUrl, $siteBaseUrl, Csrf::token(), $user['username'], $nonce);
         }
         return;
     }
@@ -543,6 +582,99 @@ try {
         redirect($appUrl . '/index.php');
     }
 
+    if ($action === 'save-ai-settings') {
+        require_admin($user);
+        if (!is_post() || !Csrf::validate($_POST['csrf_token'] ?? null)) {
+            throw new RuntimeException('The AI settings request was rejected.');
+        }
+
+        $ai->save([
+            'provider' => (string) ($_POST['provider'] ?? ''),
+            'model' => (string) ($_POST['model'] ?? ''),
+            'base_url' => (string) ($_POST['base_url'] ?? ''),
+            'api_key' => (string) ($_POST['api_key'] ?? ''),
+            'clear_key' => !empty($_POST['clear_key']),
+            'enabled' => !empty($_POST['enabled']),
+        ]);
+        Flash::push('success', 'Saved AI assistant settings.');
+        redirect($appUrl . '/index.php');
+    }
+
+    if ($action === 'create-theme') {
+        require_admin($user);
+        if (!is_post() || !Csrf::validate($_POST['csrf_token'] ?? null)) {
+            throw new RuntimeException('The create-theme request was rejected.');
+        }
+
+        $newThemeId = $themes->createTheme((string) ($_POST['name'] ?? ''));
+        $themes->setBuilderTheme($newThemeId);
+        Flash::push('success', 'Created theme "' . $themes->getTheme($newThemeId)['name'] . '" and selected it as the build target. Add templates by choosing "Use as template" on imported pages.');
+        redirect($appUrl . '/index.php');
+    }
+
+    if ($action === 'set-builder-theme') {
+        require_admin($user);
+        if (!is_post() || !Csrf::validate($_POST['csrf_token'] ?? null)) {
+            throw new RuntimeException('The build-target request was rejected.');
+        }
+
+        $themeId = trim((string) ($_POST['theme'] ?? ''));
+        $themes->setBuilderTheme($themeId);
+        Flash::push(
+            'success',
+            $themeId === ''
+                ? 'Cleared the template build target.'
+                : 'Now building templates into the "' . $themes->getTheme($themeId)['name'] . '" theme.'
+        );
+        redirect($appUrl . '/index.php');
+    }
+
+    if ($action === 'template-from-page') {
+        require_admin($user);
+        if (!is_post() || !Csrf::validate($_POST['csrf_token'] ?? null)) {
+            throw new RuntimeException('The template request was rejected.');
+        }
+
+        if ($themes->builderThemeId() === '') {
+            Flash::push('error', 'Create or select a build-target theme in the Template Manager before adding templates.');
+            redirect($appUrl . '/index.php');
+        }
+
+        $source = $externalImporter->cacheLocalTemplateSource(
+            (string) ($_POST['path'] ?? ''),
+            (string) ($_POST['kind'] ?? 'page'),
+            $siteBaseUrl
+        );
+
+        maybe_attach_ai_suggestions($ai, $externalImporter, (string) $source['id'], (string) $source['kind']);
+
+        redirect($appUrl . '/index.php?action=external-template-preview&id=' . rawurlencode((string) $source['id']));
+    }
+
+    if ($action === 'clear-template') {
+        require_admin($user);
+        if (!is_post() || !Csrf::validate($_POST['csrf_token'] ?? null)) {
+            throw new RuntimeException('The clear-template request was rejected.');
+        }
+
+        $builderTheme = $themes->builderThemeId();
+        if ($builderTheme === '') {
+            Flash::push('error', 'No build-target theme selected.');
+            redirect($appUrl . '/index.php');
+        }
+
+        $kind = (string) ($_POST['kind'] ?? '');
+        $filename = basename($repository->activeTemplateRelativePath($kind)); // validates kind
+        $relative = 'edit/themes/' . $builderTheme . '/' . $filename;
+        $full = $rootPath . '/' . $relative;
+        if (is_file($full) && @unlink($full)) {
+            Flash::push('success', 'Cleared the ' . $kind . ' template from ' . $relative . '.');
+        } else {
+            Flash::push('error', 'No ' . $kind . ' template to clear in the selected theme.');
+        }
+        redirect($appUrl . '/index.php');
+    }
+
     if ($action === 'external-template-fetch') {
         require_admin($user);
         if (!is_post() || !Csrf::validate($_POST['csrf_token'] ?? null)) {
@@ -554,13 +686,16 @@ try {
             (string) ($_POST['kind'] ?? 'page')
         );
 
+        maybe_attach_ai_suggestions($ai, $externalImporter, (string) $source['id'], (string) $source['kind']);
+
         redirect($appUrl . '/index.php?action=external-template-preview&id=' . rawurlencode((string) $source['id']));
     }
 
     if ($action === 'external-template-preview') {
         require_admin($user);
+        \WYSiteIWYG\send_csp('preview');
         $source = $externalImporter->getCachedTemplateSource((string) ($_GET['id'] ?? ''));
-        echo $externalImporter->renderTemplateDesignerHtml($source, $appUrl, Csrf::token(), $user['username']);
+        echo $externalImporter->renderTemplateDesignerHtml($source, $appUrl, Csrf::token(), $user['username'], \WYSiteIWYG\csp_nonce());
         return;
     }
 
@@ -571,19 +706,23 @@ try {
             json_response(['ok' => false, 'message' => 'Invalid CSRF token.'], 419);
         }
 
+        $builderTheme = $themes->builderThemeId();
+        if ($builderTheme === '') {
+            json_response(['ok' => false, 'message' => 'Select or create a build-target theme before saving templates.'], 400);
+        }
+
         $kind = (string) ($data['kind'] ?? 'page');
         $templatePath = $externalImporter->promoteCachedTemplate(
             (string) ($data['importId'] ?? ''),
             $kind,
-            is_array($data['selections'] ?? null) ? $data['selections'] : []
+            is_array($data['selections'] ?? null) ? $data['selections'] : [],
+            $builderTheme
         );
-        $updatedPages = $generator->rebuildPagesUsingTemplate($kind);
 
         json_response([
             'ok' => true,
-            'message' => 'Created ' . $templatePath . ' and rebuilt ' . $updatedPages . ' page(s) that use it.',
+            'message' => 'Added the ' . $kind . ' template to the "' . $themes->getTheme($builderTheme)['name'] . '" theme (' . $templatePath . '). Apply the theme when it is complete to make it live.',
             'templatePath' => $templatePath,
-            'updatedPages' => $updatedPages,
         ]);
     }
 
@@ -923,6 +1062,21 @@ try {
     $availableThemes = $generator->availableThemes();
     $currentTheme = $generator->currentTheme();
     $dashboardThemeId = $themes->dashboardThemeId();
+    $builderThemeId = $user['is_admin'] ? $themes->builderThemeId() : '';
+    $aiSettings = $user['is_admin'] ? $ai->publicSettings() : null;
+    $templateKinds = [
+        'home' => 'Home / front page',
+        'page' => 'Page',
+        'blog' => 'Blog index / archive',
+        'blog-post' => 'Blog post',
+    ];
+    $builderTemplates = [];
+    if ($builderThemeId !== '') {
+        foreach ($templateKinds as $templateKind => $templateLabel) {
+            $filename = basename($repository->activeTemplateRelativePath($templateKind));
+            $builderTemplates[$templateKind] = is_file($rootPath . '/edit/themes/' . $builderThemeId . '/' . $filename);
+        }
+    }
 
     ob_start();
     ?>
@@ -944,7 +1098,7 @@ try {
           </form>
           <?php endif; ?>
           <?php if ($hasDemoContent): ?>
-          <form method="post" action="<?= h($appUrl) ?>/index.php?action=delete-demo" onsubmit="return window.confirm('Delete all demo pages and posts? This removes every page flagged as demo content and cannot be undone.');">
+          <form method="post" action="<?= h($appUrl) ?>/index.php?action=delete-demo" data-wysite-confirm="Delete all demo pages and posts? This removes every page flagged as demo content and cannot be undone.">
             <input type="hidden" name="csrf_token" value="<?= h(Csrf::token()) ?>">
             <button class="wysite-button wysite-button--ghost" type="submit">Delete demo content</button>
           </form>
@@ -1139,7 +1293,7 @@ try {
             <article>
               <h3>Import an external site</h3>
               <p class="wysite-muted">Crawl source-site HTML pages from a starting URL, save feeds and other static resources locally, rewrite source-domain page links, and mirror referenced assets and feed media into <code>/assets/imported/</code>. This is intended as a first migration pass for WordPress-style sites before importing pages into WYSite blocks.</p>
-              <form method="post" action="<?= h($appUrl) ?>/index.php?action=external-site-import" class="wysite-form" data-wysite-external-import-form="1" onsubmit="return window.confirm('Import HTML pages, feeds, and referenced assets from this external site? Existing local files will only be replaced if overwrite is checked.');">
+              <form method="post" action="<?= h($appUrl) ?>/index.php?action=external-site-import" class="wysite-form" data-wysite-external-import-form="1" data-wysite-confirm="Import HTML pages, feeds, and referenced assets from this external site? Existing local files will only be replaced if overwrite is checked.">
                 <input type="hidden" name="csrf_token" value="<?= h(Csrf::token()) ?>">
                 <label>
                   <span>Starting URL</span>
@@ -1185,193 +1339,132 @@ try {
             </article>
           </div>
         </section>
-        <script>
-        (() => {
-          const form = document.querySelector('[data-wysite-external-import-form]');
-          const panel = document.querySelector('[data-wysite-external-import-progress]');
-          if (!form || !panel || !window.fetch || !window.TextDecoder) {
-            return;
-          }
-
-          const status = panel.querySelector('[data-wysite-import-progress-status]');
-          const log = panel.querySelector('[data-wysite-import-progress-log]');
-          const bar = panel.querySelector('[data-wysite-import-progress-bar]');
-          const button = form.querySelector('button[type="submit"]');
-          const defaultButtonText = button ? button.textContent : '';
-          const largeAssetBytes = 5 * 1024 * 1024;
-
-          form.addEventListener('submit', async (event) => {
-            if (event.defaultPrevented) {
-              return;
-            }
-
-            event.preventDefault();
-            const data = new FormData(form);
-            data.append('progress_stream', '1');
-            panel.hidden = false;
-            log.textContent = '';
-            setProgress(0);
-            setStatus('Starting import...');
-            if (button) {
-              button.disabled = true;
-              button.textContent = 'Importing...';
-            }
-
-            try {
-              const response = await fetch(form.action, {
-                method: 'POST',
-                credentials: 'same-origin',
-                body: data,
-                headers: { Accept: 'application/x-ndjson' }
-              });
-              if (!response.ok || !response.body) {
-                throw new Error('Import request failed.');
-              }
-
-              const reader = response.body.getReader();
-              const decoder = new TextDecoder();
-              let buffer = '';
-              while (true) {
-                const chunk = await reader.read();
-                if (chunk.done) {
-                  break;
-                }
-
-                buffer += decoder.decode(chunk.value, { stream: true });
-                const lines = buffer.split('\n');
-                buffer = lines.pop() || '';
-                lines.forEach(readLine);
-              }
-
-              if (buffer.trim() !== '') {
-                readLine(buffer);
-              }
-            } catch (error) {
-              appendLog('Error: ' + (error.message || 'Import failed.'));
-              setStatus('Import stopped before it could finish.');
-            } finally {
-              if (button) {
-                button.disabled = false;
-                button.textContent = defaultButtonText;
-              }
-            }
-          });
-
-          function readLine(line) {
-            const trimmed = line.trim();
-            if (trimmed === '') {
-              return;
-            }
-
-            try {
-              handleEvent(JSON.parse(trimmed));
-            } catch (error) {
-              appendLog(trimmed);
-            }
-          }
-
-          function handleEvent(event) {
-            updateCounts(event);
-
-            if (event.type === 'page_start') {
-              appendLog('Fetching ' + event.url);
-            } else if (event.type === 'page_saved') {
-              appendLog('Saved page ' + event.path);
-            } else if (event.type === 'resource_saved') {
-              appendLog('Saved resource ' + event.path);
-            } else if (event.type === 'page_skipped_nonessential') {
-              appendLog('Skipped non-essential ' + event.url);
-            } else if (event.type === 'page_skipped_limit') {
-              appendLog('Skipped extra page after limit ' + event.url);
-            } else if (event.type === 'asset_start') {
-              appendLog('Mirroring asset ' + event.url);
-            } else if (event.type === 'asset_saved') {
-              const size = Number(event.bytes || 0);
-              appendLog((size >= largeAssetBytes ? 'Mirrored large asset ' : 'Mirrored asset ') + event.path + (size > 0 ? ' (' + formatBytes(size) + ')' : ''));
-            } else if (event.type === 'asset_progress') {
-              const total = Number(event.total_bytes || 0);
-              setStatus('Downloading ' + event.url + ': ' + formatBytes(Number(event.bytes || 0)) + (total > 0 ? ' / ' + formatBytes(total) : ''));
-            } else if (event.type === 'queued_asset_saved') {
-              appendLog('Mirrored resource ' + event.path);
-            } else if (event.type === 'asset_permissions_repaired') {
-              appendLog('Repaired imported asset permissions: ' + Number(event.files || 0) + ' file(s), ' + Number(event.directories || 0) + ' folder(s)');
-            } else if (event.type === 'asset_failed') {
-              appendLog('Asset failed ' + event.url + ': ' + event.message);
-            } else if (event.type === 'page_failed') {
-              appendLog('Failed ' + event.url + ': ' + event.message);
-            } else if (event.type === 'complete' || event.type === 'done') {
-              const result = event.result || {};
-              setProgress(100);
-              setStatus(
-                'Finished. Pages: ' + count(result.saved) +
-                ', resources: ' + count(result.resources_saved) +
-                ', assets: ' + count(result.assets_saved) +
-                ', /wp-content assets: ' + Number(result.wp_content_assets_saved || 0) +
-                ', failed: ' + count(result.failed) +
-                ', page-limit skipped: ' + count(result.limit_skipped) +
-                ', non-essential skipped: ' + count(result.nonessential_skipped)
-              );
-            } else if (event.type === 'fatal') {
-              appendLog('Error: ' + event.message);
-              setStatus('Import failed.');
-            }
-          }
-
-          function updateCounts(event) {
-            if (event.type === 'complete' || event.type === 'done' || event.type === 'fatal') {
-              return;
-            }
-            if (!Object.prototype.hasOwnProperty.call(event, 'visited') && !Object.prototype.hasOwnProperty.call(event, 'max_pages')) {
-              return;
-            }
-
-            const visited = Number(event.visited || 0);
-            const maxPages = Number(event.max_pages || 0);
-            if (maxPages > 0) {
-              setProgress(Math.min(98, Math.round((visited / maxPages) * 100)));
-            }
-
-            setStatus(
-              'Visited ' + visited + '/' + maxPages +
-              ', queued ' + Number(event.queued || 0) +
-              ', pages ' + Number(event.saved || 0) +
-              ', resources ' + Number(event.resources_saved || 0) +
-              ', assets ' + Number(event.assets_saved || 0) +
-              ', /wp-content assets ' + Number(event.wp_content_assets_saved || 0) +
-              ', page-limit skipped ' + Number(event.skipped_limit || 0) +
-              ', failed ' + Number(event.failed || 0)
-            );
-          }
-
-          function appendLog(message) {
-            log.textContent += (log.textContent === '' ? '' : '\n') + message;
-            log.scrollTop = log.scrollHeight;
-          }
-
-          function setStatus(message) {
-            status.textContent = message;
-          }
-
-          function setProgress(value) {
-            bar.style.width = Math.max(0, Math.min(100, value)) + '%';
-          }
-
-          function count(value) {
-            return Array.isArray(value) ? value.length : 0;
-          }
-
-          function formatBytes(bytes) {
-            if (bytes >= 1024 * 1024) {
-              return (bytes / 1024 / 1024).toFixed(1) + ' MB';
-            }
-            return Math.round(bytes / 1024) + ' KB';
-          }
-        })();
-        </script>
 
       <?php endif; ?>
 
+      <?php if ($user['is_admin'] && $aiSettings !== null): ?>
+      <section class="wysite-panel">
+        <div class="wysite-panel__heading">
+          <div>
+            <p class="wysite-kicker">AI assistance (optional)</p>
+            <h3>Auto-tag template regions with your own API key</h3>
+          </div>
+          <p class="wysite-muted">
+            <?php if ($aiSettings['enabled'] && $aiSettings['has_key']): ?>
+              Active — “Use as template” will pre-select regions for you to review.
+            <?php else: ?>
+              Off — template regions are selected manually. Add a key to enable pre-selection.
+            <?php endif; ?>
+          </p>
+        </div>
+        <p class="wysite-muted">When enabled, choosing “Use as template” sends a compact structural outline of the page (tags, ids, classes, short snippets — not the full page) to your chosen model, which proposes which element fills each template role. The picks are pre-loaded into the region designer for you to confirm or change; nothing is saved without your review. Your API key is stored in <code>edit/storage/ai.local.php</code> (git-ignored) and is never sent to the browser.</p>
+        <form method="post" action="<?= h($appUrl) ?>/index.php?action=save-ai-settings" class="wysite-form">
+          <input type="hidden" name="csrf_token" value="<?= h(Csrf::token()) ?>">
+          <div class="wysite-grid">
+            <label>
+              <span>Provider</span>
+              <select name="provider" class="wysite-theme-select">
+                <option value="anthropic"<?= $aiSettings['provider'] === 'anthropic' ? ' selected' : '' ?>>Anthropic (Claude)</option>
+                <option value="openai"<?= $aiSettings['provider'] === 'openai' ? ' selected' : '' ?>>OpenAI-compatible</option>
+              </select>
+            </label>
+            <label>
+              <span>Model</span>
+              <input type="text" name="model" value="<?= h((string) $aiSettings['model']) ?>" placeholder="e.g. claude-sonnet-5 or gpt-4o-mini">
+            </label>
+          </div>
+          <label>
+            <span>API key <?= $aiSettings['has_key'] ? '<em>(a key is saved — leave blank to keep it)</em>' : '<em>(none saved yet)</em>' ?></span>
+            <input type="password" name="api_key" autocomplete="off" placeholder="<?= $aiSettings['has_key'] ? '••••••••••••' : 'Paste your API key' ?>">
+          </label>
+          <label>
+            <span>Custom endpoint base URL <em>(optional; for self-hosted or OpenAI-compatible gateways)</em></span>
+            <input type="url" name="base_url" value="<?= h((string) $aiSettings['base_url']) ?>" placeholder="https://api.openai.com">
+          </label>
+          <label class="wysite-checkbox">
+            <input type="checkbox" name="enabled" value="1" <?= $aiSettings['enabled'] ? 'checked' : '' ?>>
+            <span>Enable AI region pre-selection</span>
+          </label>
+          <?php if ($aiSettings['has_key']): ?>
+          <label class="wysite-checkbox">
+            <input type="checkbox" name="clear_key" value="1">
+            <span>Remove the saved API key</span>
+          </label>
+          <?php endif; ?>
+          <button class="wysite-button" type="submit">Save AI settings</button>
+        </form>
+      </section>
+      <?php endif; ?>
+
       <?php if ($user['is_admin']): ?>
+      <section class="wysite-panel">
+        <div class="wysite-panel__heading">
+          <div>
+            <p class="wysite-kicker">Template manager</p>
+            <h3>Build a theme from your pages</h3>
+          </div>
+          <p class="wysite-muted">Select or create a theme to build into, then choose "Use as template" on the pages below to add its templates. This does not touch your live site until you Apply the theme.</p>
+        </div>
+
+        <div class="wysite-grid">
+          <article class="wysite-panel">
+            <h3>Build target</h3>
+            <form method="post" action="<?= h($appUrl) ?>/index.php?action=set-builder-theme" class="wysite-form">
+              <input type="hidden" name="csrf_token" value="<?= h(Csrf::token()) ?>">
+              <label>
+                <span>Building templates into</span>
+                <select name="theme" class="wysite-theme-select">
+                  <option value="">— none selected —</option>
+                  <?php foreach ($availableThemes as $theme): ?>
+                  <option value="<?= h($theme['id']) ?>"<?= $theme['id'] === $builderThemeId ? ' selected' : '' ?>><?= h($theme['name']) ?></option>
+                  <?php endforeach; ?>
+                </select>
+              </label>
+              <button class="wysite-button" type="submit">Set build target</button>
+            </form>
+          </article>
+          <article class="wysite-panel">
+            <h3>Create a new theme</h3>
+            <form method="post" action="<?= h($appUrl) ?>/index.php?action=create-theme" class="wysite-form">
+              <input type="hidden" name="csrf_token" value="<?= h(Csrf::token()) ?>">
+              <label>
+                <span>Theme name</span>
+                <input type="text" name="name" required placeholder="e.g. Kamloops Mission">
+              </label>
+              <button class="wysite-button" type="submit">Create &amp; select</button>
+            </form>
+          </article>
+        </div>
+
+        <?php if ($builderThemeId === ''): ?>
+          <p class="wysite-muted">No build target selected. Create a theme (recommended for an imported site) or pick one above, then add templates from the pages below.</p>
+        <?php else: ?>
+          <p class="wysite-muted">Templates for <strong><?= h($themes->getTheme($builderThemeId)['name']) ?></strong> (<code>edit/themes/<?= h($builderThemeId) ?>/</code>). Apply this theme from the Themes section when it's complete.</p>
+          <div class="wysite-table-wrap">
+            <table class="wysite-table">
+              <thead><tr><th>Kind</th><th>Status</th><th></th></tr></thead>
+              <tbody>
+                <?php foreach ($templateKinds as $templateKind => $templateLabel): ?>
+                <tr>
+                  <td><?= h($templateLabel) ?><?php if ($templateKind === 'home'): ?> <span class="wysite-muted">(optional; falls back to Page)</span><?php endif; ?></td>
+                  <td><?= !empty($builderTemplates[$templateKind]) ? 'Established' : '<span class="wysite-muted">Not set</span>' ?></td>
+                  <td class="wysite-table__actions">
+                    <?php if (!empty($builderTemplates[$templateKind])): ?>
+                    <form method="post" action="<?= h($appUrl) ?>/index.php?action=clear-template" data-wysite-confirm="Clear the <?= h($templateLabel) ?> template from this theme?">
+                      <input type="hidden" name="csrf_token" value="<?= h(Csrf::token()) ?>">
+                      <input type="hidden" name="kind" value="<?= h($templateKind) ?>">
+                      <button class="wysite-button wysite-button--ghost" type="submit">Clear</button>
+                    </form>
+                    <?php endif; ?>
+                  </td>
+                </tr>
+                <?php endforeach; ?>
+              </tbody>
+            </table>
+          </div>
+        <?php endif; ?>
+      </section>
+
         <section class="wysite-panel">
           <div class="wysite-panel__heading">
             <div>
@@ -1379,7 +1472,7 @@ try {
               <h3>HTML files not yet added to WYSiteIWYG</h3>
             </div>
             <?php if ($importCandidates !== []): ?>
-              <form method="post" action="<?= h($appUrl) ?>/index.php?action=import-all" onsubmit="return window.confirm('Import all <?= h((string) count($importCandidates)) ?> unmanaged HTML file(s) with the current theme? This will rewrite those files on disk.');">
+              <form method="post" action="<?= h($appUrl) ?>/index.php?action=import-all" data-wysite-confirm="Import all <?= h((string) count($importCandidates)) ?> unmanaged HTML file(s) with the current theme? This will rewrite those files on disk.">
                 <input type="hidden" name="csrf_token" value="<?= h(Csrf::token()) ?>">
                 <button class="wysite-button" type="submit">Import All</button>
               </form>
@@ -1407,7 +1500,7 @@ try {
                       <td><?= h($candidate['title']) ?></td>
                       <td><?= h($candidate['excerpt'] !== '' ? $candidate['excerpt'] : '—') ?></td>
                       <td class="wysite-table__actions">
-                        <form method="post" action="<?= h($appUrl) ?>/index.php?action=import-page" onsubmit="return window.confirm('Import <?= h($candidate['path']) ?> with the current theme?');">
+                        <form method="post" action="<?= h($appUrl) ?>/index.php?action=import-page" data-wysite-confirm="Import <?= h($candidate['path']) ?> with the current theme?">
                           <input type="hidden" name="csrf_token" value="<?= h(Csrf::token()) ?>">
                           <input type="hidden" name="path" value="<?= h($candidate['path']) ?>">
                           <input type="hidden" name="title" value="<?= h($candidate['title']) ?>">
@@ -1417,6 +1510,17 @@ try {
                           <button class="wysite-button wysite-button--ghost" type="submit">Import</button>
                         </form>
                         <a class="wysite-button wysite-button--ghost" href="<?= h($appUrl) ?>/index.php?action=import&path=<?= rawurlencode($candidate['path']) ?>">Advanced</a>
+                        <form method="post" action="<?= h($appUrl) ?>/index.php?action=template-from-page">
+                          <input type="hidden" name="csrf_token" value="<?= h(Csrf::token()) ?>">
+                          <input type="hidden" name="path" value="<?= h($candidate['path']) ?>">
+                          <select name="kind" class="wysite-theme-select" aria-label="Template kind">
+                            <option value="home">Home template</option>
+                            <option value="page" selected>Page template</option>
+                            <option value="blog">Blog index template</option>
+                            <option value="blog-post">Blog post template</option>
+                          </select>
+                          <button class="wysite-button wysite-button--ghost" type="submit">Use as template</button>
+                        </form>
                       </td>
                     </tr>
                   <?php endforeach; ?>

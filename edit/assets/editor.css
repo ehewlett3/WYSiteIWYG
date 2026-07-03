@@ -336,9 +336,16 @@ body.wysite-app-shell {
   padding-top: 116px;
 }
 
+/* Anchor the designer chrome (bar + selection list) to the BOTTOM of the viewport
+   so it never covers the top of the page — otherwise a top-of-page menu can't be
+   selected (works regardless of how the imported page positions its header). */
+body.wysite-template-import-mode {
+  padding-bottom: 140px !important;
+}
+
 .wysite-template-import-bar {
   position: fixed;
-  top: 0;
+  bottom: 0;
   left: 0;
   right: 0;
   z-index: 1100;
@@ -366,7 +373,7 @@ body.wysite-app-shell {
 
 .wysite-template-selection-list {
   position: fixed;
-  top: 64px;
+  bottom: 64px;
   left: 0;
   right: 0;
   z-index: 1099;
@@ -393,6 +400,19 @@ body.wysite-app-shell {
   color: #14532d;
   border-color: rgba(22, 101, 52, 0.26);
   background: rgba(34, 197, 94, 0.14);
+}
+
+.wysite-template-ai-note {
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: 108px;
+  z-index: 1099;
+  padding: 8px 20px;
+  color: #14532d;
+  background: rgba(224, 247, 233, 0.96);
+  border-bottom: 1px solid rgba(22, 101, 52, 0.2);
+  font: 700 0.82rem/1.4 var(--wysite-font-sans);
 }
 
 .wysite-template-hover {

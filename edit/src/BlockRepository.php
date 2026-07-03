@@ -11,6 +11,7 @@ use RuntimeException;
 final class BlockRepository
 {
     private const ACTIVE_TEMPLATE_FILES = [
+        'home' => 'home.html',
         'page' => 'page.html',
         'blog-post' => 'blog-post.html',
         'blog' => 'blog-index.html',
@@ -394,7 +395,7 @@ final class BlockRepository
         return null;
     }
 
-    public function renderPreviewHtml(string $relativePath, string $appUrl, string $siteBaseUrl, string $csrfToken, string $username): string
+    public function renderPreviewHtml(string $relativePath, string $appUrl, string $siteBaseUrl, string $csrfToken, string $username, string $nonce = ''): string
     {
         $page = $this->getPage($relativePath);
         return $this->renderPreviewHtmlFromSource(
@@ -408,7 +409,8 @@ final class BlockRepository
                 'pageKind' => $page['kind'],
                 'activeTemplatePath' => $this->activeTemplateRelativePath($page['kind']),
                 'selectionSaveEnabled' => true,
-            ]
+            ],
+            $nonce
         );
     }
 
@@ -419,7 +421,8 @@ final class BlockRepository
         string $siteBaseUrl,
         string $csrfToken,
         string $username,
-        array $extraContext = []
+        array $extraContext = [],
+        string $nonce = ''
     ): string {
         $blocks = $this->parseBlocks($html);
 
@@ -458,9 +461,10 @@ final class BlockRepository
             $html = $baseTag . $html;
         }
 
+        $nonceAttr = $nonce !== '' ? ' nonce="' . h($nonce) . '"' : '';
         $headInjection = '<link rel="stylesheet" href="' . h($appUrl) . '/assets/editor.css">' .
-            '<script>window.WYSITE_PREVIEW_CONTEXT = ' . json_encode($context, JSON_UNESCAPED_SLASHES) . ';</script>' .
-            '<script type="module" src="' . h($appUrl) . '/assets/editor-shell.js"></script>';
+            '<script' . $nonceAttr . '>window.WYSITE_PREVIEW_CONTEXT = ' . json_encode($context, JSON_UNESCAPED_SLASHES) . ';</script>' .
+            '<script type="module"' . $nonceAttr . ' src="' . h($appUrl) . '/assets/editor-shell.js"></script>';
 
         $metaBits = ['<strong>WYSiteIWYG</strong>', '<span>' . h($relativePath) . '</span>', '<span>Signed in as ' . h($username) . '</span>'];
         if (!empty($extraContext['previewThemeName'])) {

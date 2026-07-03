@@ -1,6 +1,7 @@
 <?php
 declare(strict_types=1);
 
+use WYSiteIWYG\AiAssistant;
 use WYSiteIWYG\AuthManager;
 use WYSiteIWYG\BlockRepository;
 use WYSiteIWYG\ExternalSiteImporter;
@@ -13,6 +14,7 @@ require_once __DIR__ . '/src/BlockRepository.php';
 require_once __DIR__ . '/src/ExternalSiteImporter.php';
 require_once __DIR__ . '/src/SiteGenerator.php';
 require_once __DIR__ . '/src/ThemeManager.php';
+require_once __DIR__ . '/src/AiAssistant.php';
 
 WYSiteIWYG\apply_security_headers();
 
@@ -69,6 +71,7 @@ $repository = new BlockRepository($rootPath, $editPath);
 $themes = new ThemeManager(__DIR__ . '/storage/config.php', __DIR__ . '/themes');
 $generator = new SiteGenerator($rootPath, $repository, $themes, $siteBaseUrl);
 $externalImporter = new ExternalSiteImporter($rootPath, $editPath);
+$ai = new AiAssistant(__DIR__ . '/storage/ai.local.php');
 
 return [
     'auth' => $auth,
@@ -76,6 +79,7 @@ return [
     'generator' => $generator,
     'externalImporter' => $externalImporter,
     'themes' => $themes,
+    'ai' => $ai,
     'rootPath' => $rootPath,
     'editPath' => $editPath,
     'appUrl' => $appUrl,

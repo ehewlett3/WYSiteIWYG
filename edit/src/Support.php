@@ -34,6 +34,14 @@ final class Filesystem
         }
 
         @chmod($path, 0644);
+
+        // State (users, config, AI settings, throttle) is persisted as require()d PHP
+        // files. Without this, OPcache can keep serving the previously compiled
+        // version on the very next request, so a saved setting or theme change would
+        // not take effect until the cache revalidates. Invalidate immediately.
+        if (str_ends_with($path, '.php') && function_exists('opcache_invalidate')) {
+            @opcache_invalidate($path, true);
+        }
     }
 }
 
@@ -456,4 +464,213 @@ function apply_security_headers(): void
     header('X-Content-Type-Options: nosniff');
     header('Referrer-Policy: strict-origin-when-cross-origin');
     header('Permissions-Policy: camera=(), microphone=(), geolocation=()');
+}
+
+/**
+ * A per-request Content-Security-Policy nonce. The editor's own inline/module
+ * scripts carry this nonce so a strict script-src can allow them while blocking
+ * any script that arrives with untrusted (imported) HTML.
+ */
+function csp_nonce(): string
+{
+    static $nonce = '';
+    if ($nonce === '') {
+        $nonce = base64_encode(random_bytes(16));
+    }
+
+    return $nonce;
+}
+
+/**
+ * Send a Content-Security-Policy for the current response.
+ *
+ * - 'dashboard': locked down — scripts only from same-origin files (no inline JS;
+ *   the dashboard's confirms and import UI live in dashboard.js). Inline styles are
+ *   allowed for the dashboard-theme variables block.
+ * - 'preview': the preview/designer render untrusted imported HTML in the app
+ *   origin. `strict-dynamic` + a nonce means only the editor's own nonced scripts
+ *   (and modules they import) run; any script inside the imported page — inline or
+ *   same-origin mirrored — is blocked, so it cannot reach the session/CSRF token.
+ */
+function send_csp(string $profile): void
+{
+    $nonce = csp_nonce();
+
+    if ($profile === 'preview') {
+        header(
+            "Content-Security-Policy: default-src 'self' data: https: http:; " .
+            "script-src 'self' 'nonce-{$nonce}' 'strict-dynamic'; " .
+            "style-src 'self' 'unsafe-inline' https: http: data:; " .
+            "img-src 'self' data: https: http:; " .
+            "font-src 'self' data: https: http:; " .
+            "media-src 'self' data: https: http:; " .
+            "frame-src 'self' https: http: data:; " .
+            "object-src 'none'; base-uri 'self'"
+        );
+        return;
+    }
+
+    header(
+        "Content-Security-Policy: default-src 'self'; " .
+        "script-src 'self'; " .
+        "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; " .
+        "img-src 'self' data:; " .
+        "font-src 'self' data: https://fonts.gstatic.com; " .
+        "connect-src 'self'; " .
+        "object-src 'none'; base-uri 'self'; form-action 'self'"
+    );
+}
+
+/**
+ * SSRF guard shared by the site importer and the AI client: refuse a URL whose
+ * host resolves to a private, reserved, loopback, or link-local address (this
+ * includes cloud metadata endpoints such as 169.254.169.254). A residual
+ * DNS-rebinding window remains between this check and the socket connect.
+ */
+function assert_public_url(string $url): void
+{
+    $host = strtolower((string) parse_url($url, PHP_URL_HOST));
+    if ($host === '') {
+        throw new RuntimeException('The URL has no host to fetch.');
+    }
+
+    $literal = trim($host, '[]');
+    if (filter_var($literal, FILTER_VALIDATE_IP)) {
+        if (!is_public_ip($literal)) {
+            throw new RuntimeException('Refusing to fetch a private or reserved address (' . $literal . ').');
+        }
+        return;
+    }
+
+    $ips = resolve_host_ips($host);
+    if ($ips === []) {
+        throw new RuntimeException('Could not resolve host: ' . $host . '.');
+    }
+
+    foreach ($ips as $ip) {
+        if (!is_public_ip($ip)) {
+            throw new RuntimeException('Refusing to fetch ' . $host . ' — it resolves to a private or reserved address (' . $ip . ').');
+        }
+    }
+}
+
+function is_public_ip(string $ip): bool
+{
+    // Treat an IPv4-mapped IPv6 address (::ffff:1.2.3.4) as its IPv4 form.
+    if (stripos($ip, '::ffff:') === 0 && filter_var(substr($ip, 7), FILTER_VALIDATE_IP, FILTER_FLAG_IPV4)) {
+        $ip = substr($ip, 7);
+    }
+
+    if (filter_var($ip, FILTER_VALIDATE_IP, FILTER_FLAG_NO_PRIV_RANGE | FILTER_FLAG_NO_RES_RANGE) === false) {
+        return false;
+    }
+
+    // Belt-and-suspenders for ranges not always covered by the reserved flag:
+    // 100.64.0.0/10 (CGNAT) and 0.0.0.0/8.
+    if (filter_var($ip, FILTER_VALIDATE_IP, FILTER_FLAG_IPV4)) {
+        $long = ip2long($ip);
+        if ($long === false) {
+            return false;
+        }
+        foreach ([['100.64.0.0', 10], ['0.0.0.0', 8]] as [$net, $bits]) {
+            $mask = -1 << (32 - $bits);
+            if (($long & $mask) === (ip2long($net) & $mask)) {
+                return false;
+            }
+        }
+    }
+
+    return true;
+}
+
+/** @return string[] Resolved A/AAAA addresses for a hostname (cached per request). */
+function resolve_host_ips(string $host): array
+{
+    static $cache = [];
+    $key = strtolower($host);
+    if (array_key_exists($key, $cache)) {
+        return $cache[$key];
+    }
+
+    $ips = [];
+    $v4 = @gethostbynamel($host);
+    if (is_array($v4)) {
+        $ips = array_merge($ips, $v4);
+    }
+
+    if (function_exists('dns_get_record')) {
+        $records = @dns_get_record($host, DNS_AAAA);
+        if (is_array($records)) {
+            foreach ($records as $record) {
+                if (!empty($record['ipv6'])) {
+                    $ips[] = (string) $record['ipv6'];
+                }
+            }
+        }
+    }
+
+    $ips = array_values(array_unique(array_filter($ips, static fn($ip): bool => is_string($ip) && $ip !== '')));
+    $cache[$key] = $ips;
+
+    return $ips;
+}
+
+/**
+ * Neutralize active content in an untrusted HTML document before it is rendered
+ * in the app origin: remove <script> elements, strip on* event-handler attributes,
+ * drop javascript: URLs, and remove iframe srcdoc. Used as defense-in-depth for the
+ * template designer, alongside the strict preview CSP.
+ */
+function strip_active_content(string $html): string
+{
+    if (trim($html) === '') {
+        return $html;
+    }
+
+    if (!class_exists(\DOMDocument::class)) {
+        return preg_replace('#<script\b[^>]*>.*?</script>#is', '', $html) ?? $html;
+    }
+
+    $dom = new \DOMDocument('1.0', 'UTF-8');
+    libxml_use_internal_errors(true);
+    $loaded = $dom->loadHTML('<?xml encoding="UTF-8">' . $html);
+    libxml_clear_errors();
+
+    if (!$loaded) {
+        return preg_replace('#<script\b[^>]*>.*?</script>#is', '', $html) ?? $html;
+    }
+
+    foreach (iterator_to_array($dom->getElementsByTagName('script')) as $script) {
+        $script->parentNode?->removeChild($script);
+    }
+
+    $urlAttrs = ['href', 'src', 'action', 'formaction', 'poster', 'data', 'background', 'xlink:href'];
+    $xpath = new \DOMXPath($dom);
+    foreach ($xpath->query('//*') as $element) {
+        if (!$element instanceof \DOMElement || !$element->hasAttributes()) {
+            continue;
+        }
+
+        $remove = [];
+        foreach ($element->attributes as $attribute) {
+            $name = strtolower($attribute->nodeName);
+            $value = html_entity_decode((string) $attribute->nodeValue, ENT_QUOTES | ENT_HTML5, 'UTF-8');
+
+            if (str_starts_with($name, 'on') || $name === 'srcdoc') {
+                $remove[] = $attribute->nodeName;
+                continue;
+            }
+
+            if (in_array($name, $urlAttrs, true) && preg_match('#^\s*javascript:#i', $value) === 1) {
+                $remove[] = $attribute->nodeName;
+            }
+        }
+
+        foreach ($remove as $name) {
+            $element->removeAttribute($name);
+        }
+    }
+
+    $out = $dom->saveHTML() ?: $html;
+    return preg_replace('/<\?xml\s+encoding=["\']UTF-8["\']\??>\s*/i', '', $out) ?? $out;
 }

@@ -20,14 +20,20 @@ final class ExternalSiteImporter
     private const MAX_STREAMED_ASSET_BYTES = 1_073_741_824;
     private const ASSET_PROGRESS_BYTES = 2_097_152;
     private const ASSET_PROGRESS_SECONDS = 2.0;
+    private const MAX_FETCH_REDIRECTS = 5;
 
     private const TEMPLATE_FILES = [
+        'home' => 'home.html',
         'page' => 'page.html',
         'blog-post' => 'blog-post.html',
         'blog' => 'blog-index.html',
     ];
 
     private const TEMPLATE_ROLES = [
+        'home' => [
+            ['id' => 'main-menu', 'label' => 'Main menu list', 'required' => true],
+            ['id' => 'page-content', 'label' => 'Editable front-page content', 'required' => true],
+        ],
         'page' => [
             ['id' => 'main-menu', 'label' => 'Main menu list', 'required' => true],
             ['id' => 'page-content', 'label' => 'Editable page content', 'required' => true],
@@ -81,6 +87,70 @@ final class ExternalSiteImporter
         return $meta;
     }
 
+    /**
+     * Cache an already-imported local page as a template source, so the same
+     * template designer can be driven from a page on disk (not just a fresh fetch).
+     * $baseUrl is the deployment base (e.g. "/WYtest/") used as the designer <base>
+     * so the page's base-relative assets resolve while you select regions.
+     */
+    public function cacheLocalTemplateSource(string $relativePath, string $kind, string $baseUrl = '/'): array
+    {
+        $this->templateFilename($kind);
+
+        $relativePath = ltrim(str_replace('\\', '/', trim($relativePath)), '/');
+        if ($relativePath === '' || str_contains($relativePath, '../') || str_starts_with($relativePath, 'edit/')) {
+            throw new RuntimeException('Invalid page path for template source.');
+        }
+
+        $full = $this->rootPath . '/' . $relativePath;
+        if (!is_file($full)) {
+            throw new RuntimeException('Page not found: ' . $relativePath);
+        }
+
+        $html = (string) file_get_contents($full);
+        $id = gmdate('Ymd-His') . '-' . bin2hex(random_bytes(4));
+        $dir = $this->importsPath();
+
+        Filesystem::ensureDirectory($dir);
+        Filesystem::atomicWrite($dir . '/' . $id . '.html', $html);
+
+        $meta = [
+            'id' => $id,
+            'kind' => $kind,
+            'url' => $baseUrl,
+            'source' => 'local',
+            'rel' => $relativePath,
+            'title' => $this->titleFromHtml($html) ?: $relativePath,
+            'created_at' => gmdate('c'),
+        ];
+
+        Filesystem::atomicWrite($dir . '/' . $id . '.json', json_encode($meta, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES));
+
+        return $meta;
+    }
+
+    /**
+     * Attach AI-proposed role => DOM-path selections to a cached template source, so
+     * the designer can pre-fill them for the human to review. Best-effort: a missing
+     * or unreadable cache entry is silently ignored (the designer just opens empty).
+     */
+    public function attachTemplateSuggestions(string $id, array $suggestions): void
+    {
+        $this->assertImportId($id);
+        $metaPath = $this->importsPath() . '/' . $id . '.json';
+        if (!is_file($metaPath)) {
+            return;
+        }
+
+        $meta = json_decode((string) file_get_contents($metaPath), true);
+        if (!is_array($meta)) {
+            return;
+        }
+
+        $meta['suggestions'] = $suggestions;
+        Filesystem::atomicWrite($metaPath, json_encode($meta, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES));
+    }
+
     public function getCachedTemplateSource(string $id): array
     {
         $this->assertImportId($id);
@@ -101,9 +171,12 @@ final class ExternalSiteImporter
         return $meta;
     }
 
-    public function renderTemplateDesignerHtml(array $source, string $appUrl, string $csrfToken, string $username): string
+    public function renderTemplateDesignerHtml(array $source, string $appUrl, string $csrfToken, string $username, string $nonce = ''): string
     {
         $kind = (string) ($source['kind'] ?? 'page');
+        $suggestions = (isset($source['suggestions']) && is_array($source['suggestions']) && $source['suggestions'] !== [])
+            ? $source['suggestions']
+            : new \stdClass();
         $context = [
             'appUrl' => $appUrl,
             'csrfToken' => $csrfToken,
@@ -111,12 +184,16 @@ final class ExternalSiteImporter
             'kind' => $kind,
             'sourceUrl' => (string) $source['url'],
             'roles' => $this->templateRoles($kind),
+            'suggestions' => $suggestions,
         ];
 
-        $headInjection = '<base href="' . h((string) $source['url']) . '">' .
+        $isLocal = ($source['source'] ?? '') === 'local';
+        $nonceAttr = $nonce !== '' ? ' nonce="' . h($nonce) . '"' : '';
+
+        $headInjection = ($isLocal ? '' : '<base href="' . h((string) $source['url']) . '">') .
             '<link rel="stylesheet" href="' . h($appUrl) . '/assets/editor.css">' .
-            '<script>window.WYSITE_TEMPLATE_IMPORT_CONTEXT = ' . json_encode($context, JSON_UNESCAPED_SLASHES) . ';</script>' .
-            '<script type="module" src="' . h($appUrl) . '/assets/template-import-builder.js"></script>';
+            '<script' . $nonceAttr . '>window.WYSITE_TEMPLATE_IMPORT_CONTEXT = ' . json_encode($context, JSON_UNESCAPED_SLASHES) . ';</script>' .
+            '<script type="module"' . $nonceAttr . ' src="' . h($appUrl) . '/assets/template-import-builder.js"></script>';
 
         $bar = '<div class="wysite-template-import-bar">' .
             '<div class="wysite-admin-bar__meta">' .
@@ -133,7 +210,24 @@ final class ExternalSiteImporter
             '</div>' .
             '<div id="wysite-template-selection-list" class="wysite-template-selection-list"></div>';
 
-        $html = (string) $source['html'];
+        // Strip active content from the imported source so nothing in a hostile page
+        // executes in the admin origin while regions are being selected (the strict
+        // preview CSP is the second layer). Script elements are not tags you select as
+        // template roles, so this does not affect region indexing.
+        $html = strip_active_content((string) $source['html']);
+
+        // A localized local page carries its own relative <base>; drop it and set the
+        // designer base to the deployment root so its base-relative assets resolve.
+        if ($isLocal) {
+            $html = preg_replace('#\s*<base\b[^>]*>#i', '', $html) ?? $html;
+            $baseTag = '<base href="' . h((string) $source['url']) . '">';
+            if (preg_match('#<head\b[^>]*>#i', $html) === 1) {
+                $html = preg_replace('#(<head\b[^>]*>)#i', '$1' . $baseTag, $html, 1) ?? $html;
+            } else {
+                $html = $baseTag . $html;
+            }
+        }
+
         if (stripos($html, '</head>') !== false) {
             $html = preg_replace('/<\/head>/i', $headInjection . '</head>', $html, 1) ?? ($headInjection . $html);
         } else {
@@ -149,7 +243,7 @@ final class ExternalSiteImporter
         return $html;
     }
 
-    public function promoteCachedTemplate(string $id, string $kind, array $selections): string
+    public function promoteCachedTemplate(string $id, string $kind, array $selections, ?string $themeId = null): string
     {
         $source = $this->getCachedTemplateSource($id);
         $this->assertRequiredSelections($kind, $selections);
@@ -173,11 +267,22 @@ final class ExternalSiteImporter
         $this->assertTemplateHasRequiredTokens($kind, $html);
 
         $filename = $this->templateFilename($kind);
-        $path = $this->editPath . '/templates/' . $filename;
+
+        if ($themeId !== null && $themeId !== '') {
+            if (preg_match('/^[a-z0-9-]+$/', $themeId) !== 1 || !is_dir($this->editPath . '/themes/' . $themeId)) {
+                throw new RuntimeException('Unknown build-target theme: ' . $themeId);
+            }
+            $relative = 'edit/themes/' . $themeId . '/' . $filename;
+            $path = $this->editPath . '/themes/' . $themeId . '/' . $filename;
+        } else {
+            $relative = 'edit/templates/' . $filename;
+            $path = $this->editPath . '/templates/' . $filename;
+        }
+
         Filesystem::ensureDirectory(dirname($path));
         Filesystem::atomicWrite($path, $html);
 
-        return 'edit/templates/' . $filename;
+        return $relative;
     }
 
     public function importSite(string $startUrl, int $maxPages = 50, bool $overwrite = false, ?callable $progressCallback = null): array
@@ -603,6 +708,7 @@ final class ExternalSiteImporter
         return match ($kind) {
             'blog-post' => ' WYSITE:META title="{{TITLE}}" kind="blog-post" date="{{DATE}}" excerpt="{{EXCERPT}}" hashtags="{{HASHTAGS}}" ',
             'blog' => ' WYSITE:META title="{{TITLE}}" kind="blog" excerpt="{{EXCERPT}}" tag="{{TAG}}" ',
+            'home' => ' WYSITE:META title="{{TITLE}}" kind="home" excerpt="{{EXCERPT}}" ',
             default => ' WYSITE:META title="{{TITLE}}" kind="page" excerpt="{{EXCERPT}}" ',
         };
     }
@@ -1470,10 +1576,49 @@ final class ExternalSiteImporter
 
     private function fetchUrlBody(string $url, int $timeoutSeconds, int $maxBytes, string $acceptHeader): array
     {
+        // Follow redirects manually so every hop's target is SSRF-validated. The
+        // stream wrapper's own follow_location would happily chase a public URL's
+        // 3xx into an internal address, so it is disabled here.
+        $current = $this->normalizeHttpUrl($url);
+        for ($hop = 0; $hop <= self::MAX_FETCH_REDIRECTS; $hop++) {
+            $this->assertPublicUrl($current);
+            $response = $this->streamRequestOnce($current, $timeoutSeconds, $maxBytes, $acceptHeader);
+
+            if ($this->isRedirectStatus($response['status']) && (string) $response['location'] !== '') {
+                $next = $this->absolutizeUrl((string) $response['location'], $current, false);
+                if ($next === null) {
+                    throw new RuntimeException('Unable to follow redirect to ' . $response['location'] . '.');
+                }
+                $current = $this->normalizeHttpUrl($next);
+                continue;
+            }
+
+            if ($response['status'] >= 400) {
+                throw new RuntimeException('Request returned HTTP ' . $response['status'] . '.');
+            }
+
+            return [
+                'body' => $response['body'],
+                'content_type' => $response['content_type'],
+            ];
+        }
+
+        throw new RuntimeException('Too many redirects while fetching ' . $url . '.');
+    }
+
+    /**
+     * Perform one HTTP GET with no automatic redirect following, returning the
+     * status line, any Location header, the body, and the content type. 3xx/4xx
+     * responses do not throw (ignore_errors) so the caller can inspect the status.
+     */
+    private function streamRequestOnce(string $url, int $timeoutSeconds, int $maxBytes, string $acceptHeader): array
+    {
         $context = stream_context_create([
             'http' => [
                 'timeout' => $timeoutSeconds,
-                'max_redirects' => 5,
+                'follow_location' => 0,
+                'max_redirects' => 1,
+                'ignore_errors' => true,
                 'user_agent' => 'WYSiteIWYG Migration Importer',
                 'header' => $acceptHeader,
             ],
@@ -1486,7 +1631,9 @@ final class ExternalSiteImporter
 
         $metadata = stream_get_meta_data($handle);
         $headers = $metadata['wrapper_data'] ?? [];
-        $declaredLength = $this->responseContentLength(is_array($headers) ? $headers : []);
+        $headers = is_array($headers) ? $headers : [];
+
+        $declaredLength = $this->responseContentLength($headers);
         if ($declaredLength !== null && $declaredLength > $maxBytes) {
             fclose($handle);
             throw new RuntimeException('Resource is larger than the import limit of ' . $this->bytesLabel($maxBytes) . '.');
@@ -1509,9 +1656,51 @@ final class ExternalSiteImporter
         fclose($handle);
 
         return [
+            'status' => $this->responseStatusCode($headers),
+            'location' => $this->responseHeaderValue($headers, 'location'),
             'body' => $body,
-            'content_type' => $this->responseContentType(is_array($headers) ? $headers : []),
+            'content_type' => $this->responseContentType($headers),
         ];
+    }
+
+    private function isRedirectStatus(int $status): bool
+    {
+        return $status >= 300 && $status < 400;
+    }
+
+    /**
+     * SSRF guard (delegates to the shared Support helper): refuse to fetch a URL
+     * whose host resolves to a private/reserved/loopback/link-local address. Called
+     * for the initial URL and re-checked on every redirect hop, so a public URL
+     * cannot bounce a fetch to an internal target.
+     */
+    private function assertPublicUrl(string $url): void
+    {
+        assert_public_url($url);
+    }
+
+    private function responseStatusCode(array $headers): int
+    {
+        $status = 0;
+        foreach ($headers as $header) {
+            if (preg_match('#^HTTP/\S+\s+(\d{3})#', (string) $header, $match) === 1) {
+                $status = (int) $match[1];
+            }
+        }
+
+        return $status;
+    }
+
+    private function responseHeaderValue(array $headers, string $name): ?string
+    {
+        $value = null;
+        foreach ($headers as $header) {
+            if (stripos((string) $header, $name . ':') === 0) {
+                $value = trim((string) substr((string) $header, strlen($name) + 1));
+            }
+        }
+
+        return $value;
     }
 
     private function downloadAssetToTemp(string $url): array
@@ -1535,9 +1724,50 @@ final class ExternalSiteImporter
             throw new RuntimeException('Unable to create a temporary asset file.');
         }
 
+        // Follow redirects manually, SSRF-validating each hop, so a public asset URL
+        // cannot 3xx-redirect the download into an internal address.
+        $current = $url;
+        try {
+            for ($hop = 0; $hop <= self::MAX_FETCH_REDIRECTS; $hop++) {
+                $this->assertPublicUrl($current);
+                $result = $this->curlDownloadOnce($current, $tmpPath);
+
+                if ($this->isRedirectStatus($result['status']) && $result['redirect_url'] !== '') {
+                    $next = $this->absolutizeUrl($result['redirect_url'], $current, false);
+                    if ($next === null) {
+                        throw new RuntimeException('Unable to follow asset redirect to ' . $result['redirect_url'] . '.');
+                    }
+                    $current = $this->normalizeHttpUrl($next);
+                    continue;
+                }
+
+                if ($result['status'] >= 400) {
+                    throw new RuntimeException('Asset request returned HTTP ' . $result['status'] . '.');
+                }
+
+                return [
+                    'path' => $tmpPath,
+                    'content_type' => $result['content_type'],
+                    'bytes' => $result['bytes'],
+                ];
+            }
+
+            throw new RuntimeException('Too many redirects while fetching asset ' . $url . '.');
+        } catch (RuntimeException $error) {
+            @unlink($tmpPath);
+            throw $error;
+        }
+    }
+
+    /**
+     * One cURL GET to $tmpPath (truncating it) with automatic redirect following
+     * disabled. Returns the status, resolved redirect target (if any), content type,
+     * and byte count so the caller can validate and follow redirects itself.
+     */
+    private function curlDownloadOnce(string $url, string $tmpPath): array
+    {
         $out = @fopen($tmpPath, 'wb');
         if (!is_resource($out)) {
-            @unlink($tmpPath);
             throw new RuntimeException('Unable to open a temporary asset file.');
         }
 
@@ -1548,14 +1778,13 @@ final class ExternalSiteImporter
         $ch = curl_init($url);
         if ($ch === false) {
             fclose($out);
-            @unlink($tmpPath);
             throw new RuntimeException('Unable to initialize cURL for asset download.');
         }
 
         curl_setopt_array($ch, [
             CURLOPT_FILE => $out,
-            CURLOPT_FOLLOWLOCATION => true,
-            CURLOPT_MAXREDIRS => 5,
+            CURLOPT_FOLLOWLOCATION => false,
+            CURLOPT_PROTOCOLS => CURLPROTO_HTTP | CURLPROTO_HTTPS,
             CURLOPT_TIMEOUT => 0,
             CURLOPT_CONNECTTIMEOUT => 30,
             CURLOPT_BUFFERSIZE => 1024 * 1024,
@@ -1628,7 +1857,8 @@ final class ExternalSiteImporter
         $error = curl_error($ch);
         $status = (int) curl_getinfo($ch, CURLINFO_RESPONSE_CODE);
         $finalContentType = (string) curl_getinfo($ch, CURLINFO_CONTENT_TYPE);
-        $ch = null;
+        $redirectUrl = (string) curl_getinfo($ch, CURLINFO_REDIRECT_URL);
+        curl_close($ch);
         fclose($out);
 
         if ($finalContentType !== '') {
@@ -1636,27 +1866,24 @@ final class ExternalSiteImporter
         }
 
         if ($result === false || $abortReason !== null) {
-            @unlink($tmpPath);
             throw new RuntimeException($abortReason ?? ('cURL error: ' . ($error !== '' ? $error : 'Unable to fetch asset.')));
-        }
-
-        if ($status >= 400) {
-            @unlink($tmpPath);
-            throw new RuntimeException('Asset request returned HTTP ' . $status . '.');
         }
 
         $bytes = filesize($tmpPath);
         $bytes = is_int($bytes) ? $bytes : 0;
-        $maxBytes = $this->assetLooksLikeCss($url, $contentType)
-            ? self::MAX_REWRITABLE_ASSET_BYTES
-            : self::MAX_STREAMED_ASSET_BYTES;
-        if ($bytes > $maxBytes) {
-            @unlink($tmpPath);
-            throw new RuntimeException('Resource is larger than the import limit of ' . $this->bytesLabel($maxBytes) . '.');
+
+        if (!$this->isRedirectStatus($status) && $status < 400) {
+            $limit = $this->assetLooksLikeCss($url, $contentType)
+                ? self::MAX_REWRITABLE_ASSET_BYTES
+                : self::MAX_STREAMED_ASSET_BYTES;
+            if ($bytes > $limit) {
+                throw new RuntimeException('Resource is larger than the import limit of ' . $this->bytesLabel($limit) . '.');
+            }
         }
 
         return [
-            'path' => $tmpPath,
+            'status' => $status,
+            'redirect_url' => $redirectUrl,
             'content_type' => $contentType,
             'bytes' => $bytes,
         ];
@@ -1664,10 +1891,59 @@ final class ExternalSiteImporter
 
     private function downloadAssetToTempWithStream(string $url): array
     {
+        $tmpDir = $this->importsPath() . '/tmp';
+        Filesystem::ensureDirectory($tmpDir);
+        $tmpPath = tempnam($tmpDir, 'asset-');
+        if (!is_string($tmpPath)) {
+            throw new RuntimeException('Unable to create a temporary asset file.');
+        }
+
+        // Manual, SSRF-validated redirect following (see downloadAssetToTempWithCurl).
+        $current = $url;
+        try {
+            for ($hop = 0; $hop <= self::MAX_FETCH_REDIRECTS; $hop++) {
+                $this->assertPublicUrl($current);
+                $result = $this->streamDownloadOnce($current, $tmpPath);
+
+                if ($this->isRedirectStatus($result['status']) && (string) $result['redirect_url'] !== '') {
+                    $next = $this->absolutizeUrl((string) $result['redirect_url'], $current, false);
+                    if ($next === null) {
+                        throw new RuntimeException('Unable to follow asset redirect to ' . $result['redirect_url'] . '.');
+                    }
+                    $current = $this->normalizeHttpUrl($next);
+                    continue;
+                }
+
+                if ($result['status'] >= 400) {
+                    throw new RuntimeException('Asset request returned HTTP ' . $result['status'] . '.');
+                }
+
+                return [
+                    'path' => $tmpPath,
+                    'content_type' => $result['content_type'],
+                    'bytes' => $result['bytes'],
+                ];
+            }
+
+            throw new RuntimeException('Too many redirects while fetching asset ' . $url . '.');
+        } catch (RuntimeException $error) {
+            @unlink($tmpPath);
+            throw $error;
+        }
+    }
+
+    /**
+     * One streaming GET to $tmpPath (truncating it) with no automatic redirect
+     * following. Returns status, resolved redirect target, content type, and bytes.
+     */
+    private function streamDownloadOnce(string $url, string $tmpPath): array
+    {
         $context = stream_context_create([
             'http' => [
                 'timeout' => self::LARGE_ASSET_FETCH_TIMEOUT_SECONDS,
-                'max_redirects' => 5,
+                'follow_location' => 0,
+                'max_redirects' => 1,
+                'ignore_errors' => true,
                 'user_agent' => 'WYSiteIWYG Migration Importer',
                 'header' => "Accept: */*\r\n",
             ],
@@ -1681,29 +1957,25 @@ final class ExternalSiteImporter
         $metadata = stream_get_meta_data($handle);
         $headers = $metadata['wrapper_data'] ?? [];
         $headers = is_array($headers) ? $headers : [];
+        $status = $this->responseStatusCode($headers);
+        $location = $this->responseHeaderValue($headers, 'location');
         $contentType = $this->responseContentType($headers);
         $maxBytes = $this->assetLooksLikeCss($url, $contentType)
             ? self::MAX_REWRITABLE_ASSET_BYTES
             : self::MAX_STREAMED_ASSET_BYTES;
 
+        // A redirect response body is discarded; don't enforce the asset size limit.
+        $enforceLimit = !$this->isRedirectStatus($status) && $status < 400;
+
         $declaredLength = $this->responseContentLength($headers);
-        if ($declaredLength !== null && $declaredLength > $maxBytes) {
+        if ($enforceLimit && $declaredLength !== null && $declaredLength > $maxBytes) {
             fclose($handle);
             throw new RuntimeException('Resource is larger than the import limit of ' . $this->bytesLabel($maxBytes) . '.');
-        }
-
-        $tmpDir = $this->importsPath() . '/tmp';
-        Filesystem::ensureDirectory($tmpDir);
-        $tmpPath = tempnam($tmpDir, 'asset-');
-        if (!is_string($tmpPath)) {
-            fclose($handle);
-            throw new RuntimeException('Unable to create a temporary asset file.');
         }
 
         $out = @fopen($tmpPath, 'wb');
         if (!is_resource($out)) {
             fclose($handle);
-            @unlink($tmpPath);
             throw new RuntimeException('Unable to open a temporary asset file.');
         }
 
@@ -1715,33 +1987,33 @@ final class ExternalSiteImporter
             if ($chunk === false) {
                 fclose($handle);
                 fclose($out);
-                @unlink($tmpPath);
                 throw new RuntimeException('Unable to read asset.');
             }
 
             $bytes += strlen($chunk);
-            if ($bytes > $maxBytes) {
+            if ($enforceLimit && $bytes > $maxBytes) {
                 fclose($handle);
                 fclose($out);
-                @unlink($tmpPath);
                 throw new RuntimeException('Resource is larger than the import limit of ' . $this->bytesLabel($maxBytes) . '.');
             }
 
             if ($chunk !== '' && fwrite($out, $chunk) === false) {
                 fclose($handle);
                 fclose($out);
-                @unlink($tmpPath);
                 throw new RuntimeException('Unable to write temporary asset file.');
             }
 
-            $this->emitThrottledAssetProgress($url, $bytes, $declaredLength ?? 0, $lastProgressBytes, $lastProgressAt);
+            if ($enforceLimit) {
+                $this->emitThrottledAssetProgress($url, $bytes, $declaredLength ?? 0, $lastProgressBytes, $lastProgressAt);
+            }
         }
 
         fclose($handle);
         fclose($out);
 
         return [
-            'path' => $tmpPath,
+            'status' => $status,
+            'redirect_url' => $location,
             'content_type' => $contentType,
             'bytes' => $bytes,
         ];

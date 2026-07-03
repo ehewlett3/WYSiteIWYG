@@ -12,6 +12,7 @@ if (context) {
 
   initRoleSelect();
   renderSelections();
+  applySuggestions();
 
   document.addEventListener("mousemove", (event) => {
     const target = selectableTarget(event.target);
@@ -116,6 +117,67 @@ if (context) {
     }).join("");
   }
 
+  // Pre-fill the AI's proposed regions (if any) as selections for the human to
+  // review. Each suggestion is a DOM path in the same tag/nth-of-tag form the
+  // manual selector produces, so it resolves to exactly the element the server
+  // would edit when the template is saved.
+  function applySuggestions() {
+    const suggestions = context.suggestions;
+    if (!suggestions || typeof suggestions !== "object") return;
+
+    let applied = 0;
+    for (const role of context.roles) {
+      const path = suggestions[role.id];
+      if (!Array.isArray(path) || path.length === 0) continue;
+      const element = resolveDomPath(path);
+      if (element && !isImporterChrome(element)) {
+        selectElementForRole(role.id, element);
+        applied += 1;
+      }
+    }
+
+    if (applied > 0) {
+      showAiBanner(applied);
+    }
+  }
+
+  function showAiBanner(applied) {
+    if (!list || !list.parentElement) return;
+    const note = document.createElement("div");
+    note.className = "wysite-template-ai-note";
+    note.textContent = `AI pre-selected ${applied} region(s). Review the highlights and adjust anything before saving.`;
+    list.parentElement.insertBefore(note, list);
+  }
+
+  function resolveDomPath(path) {
+    let current = document.documentElement;
+    if (!current) return null;
+
+    let segments = path.slice();
+    if (segments[0] && segments[0].tag === current.tagName.toLowerCase() && segments[0].index === 1) {
+      segments = segments.slice(1);
+    }
+
+    for (const segment of segments) {
+      current = nthChildByTag(current, segment.tag, segment.index);
+      if (!current) return null;
+    }
+
+    return current;
+  }
+
+  function nthChildByTag(parent, tag, index) {
+    let seen = 0;
+    for (const child of parent.children) {
+      if (isInjectedElement(child)) continue;
+      if (child.tagName.toLowerCase() === tag) {
+        seen += 1;
+        if (seen === index) return child;
+      }
+    }
+    return null;
+  }
+
   function selectableTarget(node) {
     if (!(node instanceof Element) || isImporterChrome(node)) {
       return null;
@@ -134,7 +196,7 @@ if (context) {
   }
 
   function isImporterChrome(element) {
-    return Boolean(element.closest(".wysite-template-import-bar, .wysite-template-selection-list"));
+    return Boolean(element.closest(".wysite-template-import-bar, .wysite-template-selection-list, .wysite-template-ai-note"));
   }
 
   function buildDomPath(element) {
@@ -161,7 +223,7 @@ if (context) {
   }
 
   function isInjectedElement(element) {
-    return element.matches(".wysite-template-import-bar, .wysite-template-selection-list");
+    return element.matches(".wysite-template-import-bar, .wysite-template-selection-list, .wysite-template-ai-note");
   }
 
   function roleLabel(roleId) {

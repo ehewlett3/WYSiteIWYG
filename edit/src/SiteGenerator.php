@@ -217,7 +217,7 @@ final class SiteGenerator
             $relativePath,
             $themeId,
             $cssHref,
-            $this->themes->loadTemplate($themeId, $page['kind'])
+            $this->themes->loadTemplate($themeId, $this->themeTemplateKind($page['kind']))
         );
     }
 
@@ -588,7 +588,7 @@ final class SiteGenerator
 
     private function syncMenuIntoActiveTemplates(string $menuHtml): void
     {
-        foreach (['page', 'blog-post', 'blog'] as $kind) {
+        foreach (['home', 'page', 'blog-post', 'blog'] as $kind) {
             try {
                 $this->repository->updateBlockInRelativeFile(
                     $this->repository->activeTemplateRelativePath($kind),
@@ -620,12 +620,18 @@ final class SiteGenerator
             $template = $this->injectPageContentSlots($template, $pageContentBlocks);
         }
 
+        // Scalar tokens carry plain text (page titles, excerpts, dates, tags) that
+        // originates from editors or imported pages, and land in sensitive spots
+        // like <title> and content="..." attributes. They are HTML-escaped here so
+        // metadata can never inject markup/script into the generated public pages.
+        // HTML-bearing tokens (MAIN_MENU, PAGE_CONTENT*, BLOG_*, TAG_LINKS) are the
+        // editor's own sanitized block output and stay raw.
         $replacements = [
             '{{THEME_CSS_HREF}}' => $cssHref,
-            '{{TITLE}}' => $data['title'] ?? 'Untitled',
-            '{{EXCERPT}}' => $data['excerpt'] ?? '',
-            '{{DATE}}' => $data['date'] ?? gmdate('Y-m-d'),
-            '{{BODY_CLASS}}' => $this->bodyClass($data['path'] ?? 'index.html', $kind),
+            '{{TITLE}}' => h((string) ($data['title'] ?? 'Untitled')),
+            '{{EXCERPT}}' => h((string) ($data['excerpt'] ?? '')),
+            '{{DATE}}' => h((string) ($data['date'] ?? gmdate('Y-m-d'))),
+            '{{BODY_CLASS}}' => h($this->bodyClass($data['path'] ?? 'index.html', $kind)),
             '{{MAIN_MENU}}' => trim((string) ($data['main_menu'] ?? $this->currentMenuHtml())),
             '{{PAGE_CONTENT_BLOCKS}}' => $kind === 'page' ? '' : $this->renderPageContentBlocks($pageContentBlocks),
             '{{PAGE_CONTENT_BLOCK}}' => '',
@@ -635,10 +641,10 @@ final class SiteGenerator
             '{{BLOG_POST_CONTENT}}' => trim((string) ($data['blog_post_content'] ?? '')),
             '{{BLOG_INDEX_CONTENT}}' => trim((string) ($data['blog_index_content'] ?? '')),
             '{{BLOG_ITEMS}}' => trim((string) ($data['blog_items'] ?? '')),
-            '{{HASHTAGS}}' => trim((string) ($data['hashtags'] ?? '')),
+            '{{HASHTAGS}}' => h(trim((string) ($data['hashtags'] ?? ''))),
             '{{TAG_LINKS}}' => trim((string) ($data['tag_links'] ?? '')),
-            '{{TAG}}' => trim((string) ($data['tag'] ?? '')),
-            '{{TAG_LABEL}}' => trim((string) ($data['tag_label'] ?? 'Journal')),
+            '{{TAG}}' => h(trim((string) ($data['tag'] ?? ''))),
+            '{{TAG_LABEL}}' => h(trim((string) ($data['tag_label'] ?? 'Journal'))),
             '{{WYSITE_PUBLIC_BRIDGE}}' => $this->publicBridgeHtml(),
         ];
 
@@ -649,11 +655,27 @@ final class SiteGenerator
 
     private function loadActiveTemplateOrTheme(string $kind, string $themeId): string
     {
-        try {
-            return $this->repository->loadActiveTemplate($kind);
-        } catch (RuntimeException) {
-            return $this->themes->loadTemplate($themeId, $kind);
+        foreach ($this->activeTemplateKindChain($kind) as $candidate) {
+            try {
+                return $this->repository->loadActiveTemplate($candidate);
+            } catch (RuntimeException) {
+                continue;
+            }
         }
+
+        return $this->themes->loadTemplate($themeId, $this->themeTemplateKind($kind));
+    }
+
+    /** A 'home' page uses an active home template if present, else falls back to 'page'. */
+    private function activeTemplateKindChain(string $kind): array
+    {
+        return $kind === 'home' ? ['home', 'page'] : [$kind];
+    }
+
+    /** Themes do not ship a 'home' template; home pages render with the page template. */
+    private function themeTemplateKind(string $kind): string
+    {
+        return $kind === 'home' ? 'page' : $kind;
     }
 
     private function renderBlogItems(string $tag): string

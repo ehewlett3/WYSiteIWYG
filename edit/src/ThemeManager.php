@@ -210,6 +210,74 @@ final class ThemeManager
         return is_array($meta) ? $meta : [];
     }
 
+    /**
+     * Create a new, empty theme to build from imported pages: a directory with
+     * theme.php and a minimal site.css. Templates are added later by promoting
+     * imported pages into it. Returns the new theme id (slug).
+     */
+    public function createTheme(string $name): string
+    {
+        $name = trim($name);
+        if ($name === '') {
+            throw new RuntimeException('Provide a theme name.');
+        }
+
+        $slug = strtolower((string) preg_replace('/[^a-z0-9]+/i', '-', $name));
+        $slug = trim((string) preg_replace('/-+/', '-', $slug), '-');
+        if ($slug === '') {
+            throw new RuntimeException('Provide a theme name with letters or numbers.');
+        }
+
+        $dir = $this->themePath($slug);
+        if (is_dir($dir)) {
+            throw new RuntimeException('A theme with the id "' . $slug . '" already exists.');
+        }
+
+        Filesystem::ensureDirectory($dir);
+        $meta = [
+            'name' => $name,
+            'description' => 'Custom theme built from imported pages.',
+            'inspiration' => '',
+            'preview_blurb' => '',
+        ];
+        Filesystem::atomicWrite($dir . '/theme.php', "<?php\nreturn " . var_export($meta, true) . ";\n");
+        Filesystem::atomicWrite(
+            $dir . '/site.css',
+            "/* " . $name . " — minimal theme stylesheet. Imported pages link their own CSS. */\n"
+        );
+
+        return $slug;
+    }
+
+    /** The theme currently selected as the template build target, or '' if none. */
+    public function builderThemeId(): string
+    {
+        $data = $this->load();
+        $id = (string) ($data['builder_theme'] ?? '');
+        if ($id === '') {
+            return '';
+        }
+
+        try {
+            $this->getTheme($id);
+            return $id;
+        } catch (RuntimeException) {
+            return '';
+        }
+    }
+
+    public function setBuilderTheme(string $id): void
+    {
+        $data = $this->load();
+        if ($id === '') {
+            unset($data['builder_theme']);
+        } else {
+            $this->getTheme($id);
+            $data['builder_theme'] = $id;
+        }
+        $this->save($data);
+    }
+
     public function assertThemeIsValid(string $id): void
     {
         $theme = $this->getTheme($id);
@@ -223,7 +291,12 @@ final class ThemeManager
             $filename = self::TEMPLATE_FILES[$kind];
             $path = $this->themePath($id) . '/' . $filename;
             if (!is_file($path)) {
-                $errors[] = $filename . ' is missing.';
+                // A theme must at least define a page template. Blog index/post
+                // templates are optional — sites without a blog don't need them, and
+                // those kinds fall back to the default theme if ever rendered.
+                if ($kind === 'page') {
+                    $errors[] = $filename . ' is missing (a theme must at least define a page template).';
+                }
                 continue;
             }
 
@@ -250,6 +323,13 @@ final class ThemeManager
 
         $path = $this->themePath($themeId) . '/' . $filename;
         if (!is_file($path)) {
+            // A theme may omit blog/blog-post templates. Fall back to the built-in
+            // default theme so those kinds still render if the site has them.
+            $fallback = $this->themePath($this->defaultTheme) . '/' . $filename;
+            if ($themeId !== $this->defaultTheme && is_file($fallback)) {
+                return (string) file_get_contents($fallback);
+            }
+
             throw new RuntimeException('Missing theme template: ' . $filename);
         }
 
@@ -281,9 +361,9 @@ final class ThemeManager
     {
         $errors = [];
 
-        if (substr_count($template, '{{') !== substr_count($template, '}}')) {
-            $errors[] = $filename . ' has unmatched {{...}} placeholder delimiters.';
-        }
+        // Note: we deliberately do NOT compare raw {{ vs }} counts — imported pages
+        // legitimately contain stray braces (inline JS/JSON/CSS). Unknown {{TOKEN}}
+        // placeholders are still caught by unknownTemplateTokens() below.
 
         if (!$this->hasMetaKind($template, (string) $requirements['meta_kind'])) {
             $errors[] = $filename . ' must include a WYSITE:META comment with kind="' . $requirements['meta_kind'] . '".';

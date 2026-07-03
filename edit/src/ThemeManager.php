@@ -61,13 +61,21 @@ final class ThemeManager
         ],
     ];
 
-    private string $storePath;
+    private string $configPath;
+    private string $statePath;
     private string $themesPath;
     private string $defaultTheme = 'wysite-cathedral';
 
-    public function __construct(string $storePath, string $themesPath)
+    /**
+     * @param string $configPath Shipped defaults (tracked in git); read-only here.
+     * @param string $statePath  Per-install runtime selections (git-ignored); the
+     *                           active theme, dashboard theme, and build target are
+     *                           written here so a commit never carries a live choice.
+     */
+    public function __construct(string $configPath, string $themesPath, string $statePath)
     {
-        $this->storePath = $storePath;
+        $this->configPath = $configPath;
+        $this->statePath = $statePath;
         $this->themesPath = rtrim($themesPath, '/');
     }
 
@@ -113,8 +121,7 @@ final class ThemeManager
 
     public function currentThemeId(): string
     {
-        $data = $this->load();
-        $themeId = $data['theme'] ?? $this->defaultTheme;
+        $themeId = $this->value('theme', $this->defaultTheme);
 
         try {
             $this->getTheme($themeId);
@@ -132,9 +139,7 @@ final class ThemeManager
     public function setCurrentTheme(string $id): void
     {
         $this->getTheme($id);
-        $data = $this->load();
-        $data['theme'] = $id;
-        $this->save($data);
+        $this->setStateKey('theme', $id);
     }
 
     /**
@@ -143,8 +148,7 @@ final class ThemeManager
      */
     public function dashboardThemeId(): string
     {
-        $data = $this->load();
-        $id = (string) ($data['dashboard_theme'] ?? '');
+        $id = $this->value('dashboard_theme', '');
         if ($id === '') {
             return '';
         }
@@ -159,14 +163,13 @@ final class ThemeManager
 
     public function setDashboardTheme(string $id): void
     {
-        $data = $this->load();
         if ($id === '' || $id === 'default') {
-            unset($data['dashboard_theme']);
-        } else {
-            $this->getTheme($id);
-            $data['dashboard_theme'] = $id;
+            $this->setStateKey('dashboard_theme', '');
+            return;
         }
-        $this->save($data);
+
+        $this->getTheme($id);
+        $this->setStateKey('dashboard_theme', $id);
     }
 
     public function dashboardPalette(string $id): array
@@ -252,8 +255,7 @@ final class ThemeManager
     /** The theme currently selected as the template build target, or '' if none. */
     public function builderThemeId(): string
     {
-        $data = $this->load();
-        $id = (string) ($data['builder_theme'] ?? '');
+        $id = $this->value('builder_theme', '');
         if ($id === '') {
             return '';
         }
@@ -268,14 +270,13 @@ final class ThemeManager
 
     public function setBuilderTheme(string $id): void
     {
-        $data = $this->load();
         if ($id === '') {
-            unset($data['builder_theme']);
-        } else {
-            $this->getTheme($id);
-            $data['builder_theme'] = $id;
+            $this->setStateKey('builder_theme', '');
+            return;
         }
-        $this->save($data);
+
+        $this->getTheme($id);
+        $this->setStateKey('builder_theme', $id);
     }
 
     public function assertThemeIsValid(string $id): void
@@ -475,19 +476,59 @@ final class ThemeManager
         return $attributes;
     }
 
-    private function load(): array
+    /** Shipped defaults (config.php). Read-only; the app never writes this file. */
+    private function loadConfig(): array
     {
-        if (!is_file($this->storePath)) {
+        if (!is_file($this->configPath)) {
             return ['theme' => $this->defaultTheme];
         }
 
-        $data = require $this->storePath;
+        $data = require $this->configPath;
         return is_array($data) ? $data : ['theme' => $this->defaultTheme];
     }
 
-    private function save(array $data): void
+    /** Per-install runtime selections (state.local.php). */
+    private function loadState(): array
     {
-        $payload = "<?php\nreturn " . var_export($data, true) . ";\n";
-        Filesystem::atomicWrite($this->storePath, $payload);
+        if (!is_file($this->statePath)) {
+            return [];
+        }
+
+        $data = require $this->statePath;
+        return is_array($data) ? $data : [];
+    }
+
+    /**
+     * Resolve a setting: a runtime selection wins, then the shipped default, then
+     * the given fallback. This also means an existing config.php that still holds a
+     * runtime value keeps working until the setting is next changed.
+     */
+    private function value(string $key, string $default): string
+    {
+        $state = $this->loadState();
+        if (array_key_exists($key, $state) && (string) $state[$key] !== '') {
+            return (string) $state[$key];
+        }
+
+        $config = $this->loadConfig();
+        if (array_key_exists($key, $config) && (string) $config[$key] !== '') {
+            return (string) $config[$key];
+        }
+
+        return $default;
+    }
+
+    /** Set (or, with an empty value, clear) a runtime selection in state.local.php. */
+    private function setStateKey(string $key, string $value): void
+    {
+        $state = $this->loadState();
+        if ($value === '') {
+            unset($state[$key]);
+        } else {
+            $state[$key] = $value;
+        }
+
+        $payload = "<?php\nreturn " . var_export($state, true) . ";\n";
+        Filesystem::atomicWrite($this->statePath, $payload);
     }
 }

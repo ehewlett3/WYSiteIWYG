@@ -245,11 +245,49 @@ body.wysite-app-shell {
 }
 
 .wysite-user-chip {
-  align-items: center;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 6px;
   padding: 12px 14px;
   border-radius: 18px;
   background: rgba(255, 255, 255, 0.78);
   border: 1px solid var(--wysite-line);
+}
+
+.wysite-user-chip__name {
+  font-weight: 800;
+  color: var(--wysite-ink);
+}
+
+.wysite-nav {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 0 0 24px;
+  padding: 6px;
+  background: var(--wysite-surface);
+  border: 1px solid var(--wysite-line);
+  border-radius: 16px;
+  box-shadow: var(--wysite-shadow);
+}
+
+.wysite-nav__link {
+  padding: 9px 16px;
+  border-radius: 10px;
+  color: var(--wysite-muted);
+  text-decoration: none;
+  font-weight: 700;
+  transition: background 160ms ease, color 160ms ease;
+}
+
+.wysite-nav__link:hover {
+  background: rgba(0, 0, 0, 0.04);
+  color: var(--wysite-ink);
+}
+
+.wysite-nav__link.is-active {
+  background: linear-gradient(135deg, var(--wysite-accent), #4f8b68);
+  color: #ffffff;
 }
 
 .wysite-flash {

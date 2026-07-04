@@ -32,7 +32,30 @@ if (!$auth->isInstalled() && $action !== 'install') {
     redirect($appUrl . '/index.php?action=install');
 }
 
-function layout(string $title, string $body, string $appUrl, string $siteTitle, ?array $user = null): void
+function render_dashboard_nav(string $appUrl, string $active, bool $isAdmin): string
+{
+    $items = [
+        ['id' => 'dashboard', 'label' => 'Dashboard', 'href' => $appUrl . '/index.php', 'admin' => false],
+        ['id' => 'themes', 'label' => 'Theme', 'href' => $appUrl . '/index.php?action=themes', 'admin' => false],
+        ['id' => 'manager', 'label' => 'Manager', 'href' => $appUrl . '/index.php?action=manager', 'admin' => true],
+        ['id' => 'ai', 'label' => 'AI', 'href' => $appUrl . '/index.php?action=ai', 'admin' => true],
+        ['id' => 'users', 'label' => 'Users', 'href' => $appUrl . '/index.php?action=users', 'admin' => true],
+        ['id' => 'docs', 'label' => 'Docs', 'href' => $appUrl . '/index.php?action=docs', 'admin' => false],
+    ];
+
+    $links = '';
+    foreach ($items as $item) {
+        if ($item['admin'] && !$isAdmin) {
+            continue;
+        }
+        $class = 'wysite-nav__link' . ($item['id'] === $active ? ' is-active' : '');
+        $links .= '<a class="' . $class . '" href="' . h($item['href']) . '">' . h($item['label']) . '</a>';
+    }
+
+    return '<nav class="wysite-nav">' . $links . '</nav>';
+}
+
+function layout(string $title, string $body, string $appUrl, string $siteTitle, ?array $user = null, ?string $navActive = null): void
 {
     // The dashboard renders only the editor's own (escaped) markup, so it can run
     // under a strict CSP: no inline JS at all — confirmations and the import UI live
@@ -59,7 +82,7 @@ function layout(string $title, string $body, string $appUrl, string $siteTitle, 
       </div>
       <?php if ($user): ?>
         <div class="wysite-user-chip">
-          <span>Signed in as <?= h($user['username']) ?></span>
+          <span class="wysite-user-chip__name"><?= h($user['username']) ?></span>
           <form method="post" action="<?= h($appUrl) ?>/index.php?action=logout">
             <input type="hidden" name="csrf_token" value="<?= h(Csrf::token()) ?>">
             <button type="submit" class="wysite-button wysite-button--ghost">Log out</button>
@@ -67,6 +90,10 @@ function layout(string $title, string $body, string $appUrl, string $siteTitle, 
         </div>
       <?php endif; ?>
     </header>
+
+    <?php if ($user && $navActive !== null): ?>
+      <?= render_dashboard_nav($appUrl, $navActive, (bool) ($user['is_admin'] ?? false)) ?>
+    <?php endif; ?>
 
     <?php foreach ($flashes as $flash): ?>
       <div class="wysite-flash wysite-flash--<?= h($flash['type']) ?>"><?= render_flash_message((string) $flash['message']) ?></div>
@@ -1075,7 +1102,7 @@ try {
           <?php endforeach; ?>
         </main>
         <?php
-        layout('Documentation', (string) ob_get_clean(), $appUrl, $siteTitle, $user);
+        layout('Documentation', (string) ob_get_clean(), $appUrl, $siteTitle, $user, 'docs');
         return;
     }
 
@@ -1127,82 +1154,29 @@ try {
         redirect($appUrl . '/index.php');
     }
 
-    $pages = $repository->listPages();
-    $hasDemoContent = $user['is_admin'] && $generator->hasDemoContent();
-    $importCandidates = $user['is_admin'] ? $repository->listImportCandidates() : [];
-
-    // Default template kind per unmanaged file: a path heuristic, refined by AI
-    // classification (cached) when AI assistance is configured.
-    $kindGuesses = [];
-    foreach ($importCandidates as $candidate) {
-        $kindGuesses[$candidate['path']] = guess_template_kind($candidate['path']);
-    }
-    if ($user['is_admin'] && $importCandidates !== [] && $ai->isConfigured()) {
-        $aiCandidates = array_map(
-            static fn(array $c): array => [
-                'path' => $c['path'],
-                'title' => $c['title'],
-                'outline' => $c['excerpt'],
-                'mtime' => (int) (@filemtime($rootPath . '/' . $c['path']) ?: 0),
-            ],
-            $importCandidates
-        );
-        foreach ($ai->cachedKinds($aiCandidates, ['home', 'page', 'blog', 'blog-post']) as $path => $kind) {
-            $kindGuesses[$path] = $kind;
-        }
+    // ---- Multi-page dashboard router ----
+    $view = in_array($action, ['themes', 'manager', 'ai', 'users'], true) ? $action : 'dashboard';
+    if (in_array($view, ['manager', 'ai', 'users'], true) && !$user['is_admin']) {
+        redirect($appUrl . '/index.php');
     }
 
-    $users = $user['is_admin'] ? $auth->allUsers() : [];
     $availableThemes = $generator->availableThemes();
     $currentTheme = $generator->currentTheme();
-    $dashboardThemeId = $themes->dashboardThemeId();
-    $builderThemeId = $user['is_admin'] ? $themes->builderThemeId() : '';
-    $aiSettings = $user['is_admin'] ? $ai->publicSettings() : null;
-    $templateKinds = [
-        'home' => 'Home / front page',
-        'page' => 'Page',
-        'blog' => 'Blog index / archive',
-        'blog-post' => 'Blog post',
-    ];
-    $builderTemplates = [];
-    if ($builderThemeId !== '') {
-        foreach ($templateKinds as $templateKind => $templateLabel) {
-            $filename = basename($repository->activeTemplateRelativePath($templateKind));
-            $builderTemplates[$templateKind] = is_file($rootPath . '/edit/themes/' . $builderThemeId . '/' . $filename);
-        }
-    }
 
     ob_start();
+    if ($view === 'dashboard'):
+        $pages = $repository->listPages();
     ?>
     <main class="wysite-dashboard">
       <section class="wysite-panel wysite-panel--hero">
         <div>
           <p class="wysite-kicker">Transparent editing</p>
-          <h2>Open any marked page, click the in-page badge, and edit the real HTML file.</h2>
-          <p>Editable sections are delimited with HTML comments, so the output stays static and the editing system stays simple.</p>
+          <h2>Edit the real HTML, in place.</h2>
+          <p>Open a page, click the in-page badge, and edit the static file directly. Editable sections are delimited with HTML comments, so the output stays static.</p>
         </div>
         <div class="wysite-hero-actions">
-          <a class="wysite-button wysite-button--ghost" href="<?= h($appUrl) ?>/index.php?action=docs">View documentation</a>
-          <a class="wysite-button" href="<?= h($appUrl) ?>/index.php?action=preview&path=index.html">Open homepage preview</a>
+          <a class="wysite-button" href="<?= h($appUrl) ?>/index.php?action=preview&path=index.html">Edit homepage</a>
           <a class="wysite-button wysite-button--ghost" href="<?= h($siteBaseUrl) ?>" target="_blank" rel="noreferrer">Open live site</a>
-          <?php if ($user['is_admin'] && !$hasDemoContent): ?>
-          <form method="post" action="<?= h($appUrl) ?>/index.php?action=deploy-demo">
-            <input type="hidden" name="csrf_token" value="<?= h(Csrf::token()) ?>">
-            <button class="wysite-button" type="submit">Deploy demo site</button>
-          </form>
-          <?php endif; ?>
-          <?php if ($hasDemoContent): ?>
-          <form method="post" action="<?= h($appUrl) ?>/index.php?action=delete-demo" data-wysite-confirm="Delete all demo pages and posts? This removes every page flagged as demo content and cannot be undone.">
-            <input type="hidden" name="csrf_token" value="<?= h(Csrf::token()) ?>">
-            <button class="wysite-button wysite-button--ghost" type="submit">Delete demo content</button>
-          </form>
-          <?php endif; ?>
-          <?php if ($user['is_admin']): ?>
-          <form method="post" action="<?= h($appUrl) ?>/index.php?action=purge-site" data-wysite-confirm="Delete ALL pages from this site? Every HTML page (managed and unmanaged) will be permanently removed. Assets and the editor are kept. This cannot be undone.">
-            <input type="hidden" name="csrf_token" value="<?= h(Csrf::token()) ?>">
-            <button class="wysite-button wysite-button--ghost" type="submit">Delete all pages</button>
-          </form>
-          <?php endif; ?>
         </div>
       </section>
 
@@ -1251,10 +1225,64 @@ try {
       <section class="wysite-panel">
         <div class="wysite-panel__heading">
           <div>
-            <p class="wysite-kicker">Theme switching</p>
-            <h3>Preview a theme, then rewrite the site to match it</h3>
+            <p class="wysite-kicker">Managed pages</p>
+            <h3>Pages managed by WYSiteIWYG</h3>
           </div>
-          <p class="wysite-muted">Current theme: <?= h($currentTheme['name']) ?></p>
+          <p class="wysite-muted">Static HTML files containing WYSiteIWYG marker comments.</p>
+        </div>
+        <div class="wysite-table-wrap">
+          <table class="wysite-table">
+            <thead>
+              <tr>
+                <th>Page</th>
+                <th>Type</th>
+                <th>Template</th>
+                <th>Hashtags</th>
+                <th>Blocks</th>
+                <th></th>
+              </tr>
+            </thead>
+            <tbody>
+              <?php foreach ($pages as $page): ?>
+                <tr>
+                  <td>
+                    <strong><?= h($page['title']) ?></strong>
+                    <div class="wysite-muted"><?= h($page['path']) ?></div>
+                  </td>
+                  <td><?= h($page['kind']) ?></td>
+                  <td><?= !empty($page['exclude_template']) ? 'Excluded' : 'Included' ?></td>
+                  <td><?= h($page['hashtags'] !== '' ? $page['hashtags'] : '—') ?></td>
+                  <td><?= h(implode(', ', array_map(static fn(array $block): string => $block['label'], $page['blocks']))) ?></td>
+                  <td class="wysite-table__actions">
+                    <a class="wysite-button wysite-button--ghost" href="<?= h($appUrl) ?>/index.php?action=preview&path=<?= rawurlencode($page['path']) ?>">Edit</a>
+                    <?php if (($page['generated'] ?? '') !== 'tag-index'): ?>
+                      <a class="wysite-button wysite-button--ghost" href="<?= h($appUrl) ?>/index.php?action=metadata&path=<?= rawurlencode($page['path']) ?>">Details</a>
+                    <?php endif; ?>
+                  </td>
+                </tr>
+              <?php endforeach; ?>
+            </tbody>
+          </table>
+        </div>
+      </section>
+    </main>
+    <?php
+    elseif ($view === 'themes'):
+        $dashboardThemeId = $themes->dashboardThemeId();
+    ?>
+    <main class="wysite-dashboard">
+      <section class="wysite-panel">
+        <div class="wysite-panel__heading">
+          <div>
+            <p class="wysite-kicker">Theme selector</p>
+            <h3>Preview a theme, then apply it to your site</h3>
+          </div>
+          <div class="wysite-hero-actions">
+            <p class="wysite-muted">Current theme: <?= h($currentTheme['name']) ?></p>
+            <?php if ($user['is_admin']): ?>
+            <a class="wysite-button" href="<?= h($appUrl) ?>/index.php?action=manager">New theme</a>
+            <?php endif; ?>
+          </div>
         </div>
         <div class="wysite-theme-grid">
           <?php foreach ($availableThemes as $theme): ?>
@@ -1294,15 +1322,14 @@ try {
         </div>
       </section>
 
+      <?php if ($user['is_admin']): ?>
       <section class="wysite-panel">
         <div class="wysite-panel__heading">
           <div>
-            <p class="wysite-kicker">Dashboard appearance</p>
-            <h3>Choose a theme for the editor itself</h3>
+            <p class="wysite-kicker">Dashboard theme</p>
+            <h3>Theme for the editor itself</h3>
           </div>
-          <p class="wysite-muted">This restyles only the dashboard/editor UI. It is separate from "Apply Theme", which rewrites your public site.</p>
         </div>
-        <?php if ($user['is_admin']): ?>
         <form method="post" action="<?= h($appUrl) ?>/index.php?action=set-dashboard-theme" class="wysite-form">
           <input type="hidden" name="csrf_token" value="<?= h(Csrf::token()) ?>">
           <label>
@@ -1316,131 +1343,284 @@ try {
               <?php endforeach; ?>
             </select>
           </label>
-          <button class="wysite-button" type="submit">Save dashboard appearance</button>
+          <button class="wysite-button" type="submit">Save dashboard theme</button>
         </form>
+      </section>
+      <?php endif; ?>
+    </main>
+    <?php
+    elseif ($view === 'manager'):
+        $hasDemoContent = $generator->hasDemoContent();
+        $importCandidates = $repository->listImportCandidates();
+        $kindGuesses = [];
+        foreach ($importCandidates as $candidate) {
+            $kindGuesses[$candidate['path']] = guess_template_kind($candidate['path']);
+        }
+        if ($importCandidates !== [] && $ai->isConfigured()) {
+            $aiCandidates = array_map(
+                static fn(array $c): array => [
+                    'path' => $c['path'],
+                    'title' => $c['title'],
+                    'outline' => $c['excerpt'],
+                    'mtime' => (int) (@filemtime($rootPath . '/' . $c['path']) ?: 0),
+                ],
+                $importCandidates
+            );
+            foreach ($ai->cachedKinds($aiCandidates, ['home', 'page', 'blog', 'blog-post']) as $path => $kind) {
+                $kindGuesses[$path] = $kind;
+            }
+        }
+        $builderThemeId = $themes->builderThemeId();
+        $templateKinds = [
+            'home' => 'Home / front page',
+            'page' => 'Page',
+            'blog' => 'Blog index / archive',
+            'blog-post' => 'Blog post',
+        ];
+        $builderTemplates = [];
+        if ($builderThemeId !== '') {
+            foreach ($templateKinds as $templateKind => $templateLabel) {
+                $filename = basename($repository->activeTemplateRelativePath($templateKind));
+                $builderTemplates[$templateKind] = is_file($rootPath . '/edit/themes/' . $builderThemeId . '/' . $filename);
+            }
+        }
+    ?>
+    <main class="wysite-dashboard">
+      <section class="wysite-panel">
+        <div class="wysite-panel__heading">
+          <div>
+            <p class="wysite-kicker">Site content</p>
+            <h3>Demo &amp; bulk actions</h3>
+          </div>
+        </div>
+        <div class="wysite-hero-actions">
+          <?php if (!$hasDemoContent): ?>
+          <form method="post" action="<?= h($appUrl) ?>/index.php?action=deploy-demo">
+            <input type="hidden" name="csrf_token" value="<?= h(Csrf::token()) ?>">
+            <button class="wysite-button" type="submit">Deploy demo site</button>
+          </form>
+          <?php else: ?>
+          <form method="post" action="<?= h($appUrl) ?>/index.php?action=delete-demo" data-wysite-confirm="Delete all demo pages and posts? This removes every page flagged as demo content and cannot be undone.">
+            <input type="hidden" name="csrf_token" value="<?= h(Csrf::token()) ?>">
+            <button class="wysite-button wysite-button--ghost" type="submit">Delete demo content</button>
+          </form>
+          <?php endif; ?>
+          <form method="post" action="<?= h($appUrl) ?>/index.php?action=purge-site" data-wysite-confirm="Delete ALL pages from this site? Every HTML page (managed and unmanaged) will be permanently removed. Assets and the editor are kept. This cannot be undone.">
+            <input type="hidden" name="csrf_token" value="<?= h(Csrf::token()) ?>">
+            <button class="wysite-button wysite-button--ghost" type="submit">Delete all pages</button>
+          </form>
+        </div>
+      </section>
+
+      <section class="wysite-panel">
+        <div class="wysite-panel__heading">
+          <div>
+            <p class="wysite-kicker">Template manager</p>
+            <h3>Build a theme from your pages</h3>
+          </div>
+          <p class="wysite-muted">Select or create a theme to build into, then choose "Use as template" on the pages below to add its templates. This does not touch your live site until you Apply the theme.</p>
+        </div>
+
+        <div class="wysite-grid">
+          <article class="wysite-panel">
+            <h3>Build target</h3>
+            <form method="post" action="<?= h($appUrl) ?>/index.php?action=set-builder-theme" class="wysite-form">
+              <input type="hidden" name="csrf_token" value="<?= h(Csrf::token()) ?>">
+              <label>
+                <span>Building templates into</span>
+                <select name="theme" class="wysite-theme-select">
+                  <option value="">— none selected —</option>
+                  <?php foreach ($availableThemes as $theme): ?>
+                  <option value="<?= h($theme['id']) ?>"<?= $theme['id'] === $builderThemeId ? ' selected' : '' ?>><?= h($theme['name']) ?></option>
+                  <?php endforeach; ?>
+                </select>
+              </label>
+              <button class="wysite-button" type="submit">Set build target</button>
+            </form>
+          </article>
+          <article class="wysite-panel">
+            <h3>Create a new theme</h3>
+            <form method="post" action="<?= h($appUrl) ?>/index.php?action=create-theme" class="wysite-form">
+              <input type="hidden" name="csrf_token" value="<?= h(Csrf::token()) ?>">
+              <label>
+                <span>Theme name</span>
+                <input type="text" name="name" required placeholder="e.g. Kamloops Mission">
+              </label>
+              <button class="wysite-button" type="submit">Create &amp; select</button>
+            </form>
+          </article>
+        </div>
+
+        <?php if ($builderThemeId === ''): ?>
+          <p class="wysite-muted">No build target selected. Create a theme (recommended for an imported site) or pick one above, then add templates from the pages below.</p>
         <?php else: ?>
-        <p class="wysite-muted">Only administrators can change the dashboard appearance.</p>
+          <p class="wysite-muted">Templates for <strong><?= h($themes->getTheme($builderThemeId)['name']) ?></strong> (<code>edit/themes/<?= h($builderThemeId) ?>/</code>). Apply this theme from the Theme page when it's complete.</p>
+          <div class="wysite-table-wrap">
+            <table class="wysite-table">
+              <thead><tr><th>Kind</th><th>Status</th><th></th></tr></thead>
+              <tbody>
+                <?php foreach ($templateKinds as $templateKind => $templateLabel): ?>
+                <tr>
+                  <td><?= h($templateLabel) ?><?php if ($templateKind === 'home'): ?> <span class="wysite-muted">(optional; falls back to Page)</span><?php endif; ?></td>
+                  <td><?= !empty($builderTemplates[$templateKind]) ? 'Established' : '<span class="wysite-muted">Not set</span>' ?></td>
+                  <td class="wysite-table__actions">
+                    <?php if (!empty($builderTemplates[$templateKind])): ?>
+                    <form method="post" action="<?= h($appUrl) ?>/index.php?action=clear-template" data-wysite-confirm="Clear the <?= h($templateLabel) ?> template from this theme?">
+                      <input type="hidden" name="csrf_token" value="<?= h(Csrf::token()) ?>">
+                      <input type="hidden" name="kind" value="<?= h($templateKind) ?>">
+                      <button class="wysite-button wysite-button--ghost" type="submit">Clear</button>
+                    </form>
+                    <?php endif; ?>
+                  </td>
+                </tr>
+                <?php endforeach; ?>
+              </tbody>
+            </table>
+          </div>
         <?php endif; ?>
       </section>
 
       <section class="wysite-panel">
         <div class="wysite-panel__heading">
           <div>
-            <p class="wysite-kicker">Editable files</p>
-            <h3>Pages discovered from the filesystem</h3>
+            <p class="wysite-kicker">External migration tools</p>
+            <h3>Import templates or crawl a static copy of another site</h3>
           </div>
-          <p class="wysite-muted">These are the static HTML files containing WYSiteIWYG marker comments.</p>
         </div>
-        <div class="wysite-table-wrap">
-          <table class="wysite-table">
-            <thead>
-              <tr>
-                <th>Page</th>
-                <th>Type</th>
-                <th>Template</th>
-                <th>Hashtags</th>
-                <th>Blocks</th>
-                <th></th>
-              </tr>
-            </thead>
-            <tbody>
-              <?php foreach ($pages as $page): ?>
-                <tr>
-                  <td>
-                    <strong><?= h($page['title']) ?></strong>
-                    <div class="wysite-muted"><?= h($page['path']) ?></div>
-                  </td>
-                  <td><?= h($page['kind']) ?></td>
-                  <td><?= !empty($page['exclude_template']) ? 'Excluded' : 'Included' ?></td>
-                  <td><?= h($page['hashtags'] !== '' ? $page['hashtags'] : '—') ?></td>
-                  <td><?= h(implode(', ', array_map(static fn(array $block): string => $block['label'], $page['blocks']))) ?></td>
-                  <td class="wysite-table__actions">
-                    <a class="wysite-button wysite-button--ghost" href="<?= h($appUrl) ?>/index.php?action=preview&path=<?= rawurlencode($page['path']) ?>">Edit</a>
-                    <?php if (($page['generated'] ?? '') !== 'tag-index'): ?>
-                      <a class="wysite-button wysite-button--ghost" href="<?= h($appUrl) ?>/index.php?action=metadata&path=<?= rawurlencode($page['path']) ?>">Details</a>
-                    <?php endif; ?>
-                  </td>
-                </tr>
-              <?php endforeach; ?>
-            </tbody>
-          </table>
+        <div class="wysite-grid">
+          <article>
+            <h3>Build a template from a URL</h3>
+            <p class="wysite-muted">Fetch one external page, select the menu and content regions in the browser, and promote those selections into an active template file in <code>/edit/templates/</code>.</p>
+            <form method="post" action="<?= h($appUrl) ?>/index.php?action=external-template-fetch" class="wysite-form">
+              <input type="hidden" name="csrf_token" value="<?= h(Csrf::token()) ?>">
+              <label>
+                <span>Source URL</span>
+                <input type="url" name="url" required placeholder="https://example.com/about/">
+              </label>
+              <label>
+                <span>Template type</span>
+                <select name="kind" class="wysite-theme-select">
+                  <option value="page">Page template</option>
+                  <option value="blog-post">Blog post template</option>
+                  <option value="blog">Blog / archive template</option>
+                </select>
+              </label>
+              <button class="wysite-button" type="submit">Fetch and Select Sections</button>
+            </form>
+          </article>
+
+          <article>
+            <h3>Import an external site</h3>
+            <p class="wysite-muted">Crawl source-site HTML pages from a starting URL, save feeds and other static resources locally, rewrite source-domain page links, and mirror referenced assets and feed media into <code>/assets/imported/</code>. This is intended as a first migration pass for WordPress-style sites before importing pages into WYSite blocks.</p>
+            <form method="post" action="<?= h($appUrl) ?>/index.php?action=external-site-import" class="wysite-form" data-wysite-external-import-form="1" data-wysite-confirm="Import HTML pages, feeds, and referenced assets from this external site? Existing local files will only be replaced if overwrite is checked.">
+              <input type="hidden" name="csrf_token" value="<?= h(Csrf::token()) ?>">
+              <label>
+                <span>Starting URL</span>
+                <input type="url" name="url" required placeholder="https://example.com/">
+              </label>
+              <label>
+                <span>Maximum pages</span>
+                <input type="number" name="max_pages" min="1" max="500" value="50">
+              </label>
+              <label class="wysite-checkbox">
+                <input type="checkbox" name="overwrite" value="1">
+                <span>Overwrite existing local HTML files</span>
+              </label>
+              <button class="wysite-button" type="submit">Import Site</button>
+            </form>
+            <div class="wysite-import-progress" data-wysite-external-import-progress hidden>
+              <div class="wysite-import-progress__bar"><span data-wysite-import-progress-bar></span></div>
+              <p class="wysite-muted" data-wysite-import-progress-status>Preparing import...</p>
+              <pre class="wysite-import-progress__log" data-wysite-import-progress-log></pre>
+            </div>
+          </article>
+
+          <article>
+            <h3>Backfill specific assets</h3>
+            <p class="wysite-muted">Use this as a repair pass for individual media URLs that were blocked, discovered later, or listed in an import report. Assets are streamed into <code>/assets/imported/</code>, then matching references in local HTML/CSS/JS files are rewritten.</p>
+            <form method="post" action="<?= h($appUrl) ?>/index.php?action=external-assets-import" class="wysite-form">
+              <input type="hidden" name="csrf_token" value="<?= h(Csrf::token()) ?>">
+              <label>
+                <span>Asset URLs</span>
+                <textarea name="asset_urls" rows="7" placeholder="https://example.com/wp-content/uploads/audio.m4a"></textarea>
+              </label>
+              <button class="wysite-button" type="submit">Backfill Assets</button>
+            </form>
+          </article>
         </div>
       </section>
 
-      <?php if ($user['is_admin']): ?>
-        <section class="wysite-panel">
-          <div class="wysite-panel__heading">
-            <div>
-              <p class="wysite-kicker">External migration tools</p>
-              <h3>Import templates or crawl a static copy of another site</h3>
-            </div>
+      <section class="wysite-panel">
+        <div class="wysite-panel__heading">
+          <div>
+            <p class="wysite-kicker">Unmanaged pages</p>
+            <h3>HTML files not yet added to WYSiteIWYG</h3>
           </div>
-          <div class="wysite-grid">
-            <article>
-              <h3>Build a template from a URL</h3>
-              <p class="wysite-muted">Fetch one external page, select the menu and content regions in the browser, and promote those selections into an active template file in <code>/edit/templates/</code>.</p>
-              <form method="post" action="<?= h($appUrl) ?>/index.php?action=external-template-fetch" class="wysite-form">
-                <input type="hidden" name="csrf_token" value="<?= h(Csrf::token()) ?>">
-                <label>
-                  <span>Source URL</span>
-                  <input type="url" name="url" required placeholder="https://example.com/about/">
-                </label>
-                <label>
-                  <span>Template type</span>
-                  <select name="kind" class="wysite-theme-select">
-                    <option value="page">Page template</option>
-                    <option value="blog-post">Blog post template</option>
-                    <option value="blog">Blog / archive template</option>
-                  </select>
-                </label>
-                <button class="wysite-button" type="submit">Fetch and Select Sections</button>
-              </form>
-            </article>
+          <?php if ($importCandidates !== []): ?>
+            <form method="post" action="<?= h($appUrl) ?>/index.php?action=import-all" data-wysite-confirm="Import all <?= h((string) count($importCandidates)) ?> unmanaged HTML file(s) with the current theme? This will rewrite those files on disk.">
+              <input type="hidden" name="csrf_token" value="<?= h(Csrf::token()) ?>">
+              <button class="wysite-button" type="submit">Import All</button>
+            </form>
+          <?php endif; ?>
+        </div>
+        <p class="wysite-muted">These files are present on the server but do not yet contain WYSiteIWYG markers. Importing applies the current theme and wraps the imported content in editable Page Content blocks.</p>
 
-            <article>
-              <h3>Import an external site</h3>
-              <p class="wysite-muted">Crawl source-site HTML pages from a starting URL, save feeds and other static resources locally, rewrite source-domain page links, and mirror referenced assets and feed media into <code>/assets/imported/</code>. This is intended as a first migration pass for WordPress-style sites before importing pages into WYSite blocks.</p>
-              <form method="post" action="<?= h($appUrl) ?>/index.php?action=external-site-import" class="wysite-form" data-wysite-external-import-form="1" data-wysite-confirm="Import HTML pages, feeds, and referenced assets from this external site? Existing local files will only be replaced if overwrite is checked.">
-                <input type="hidden" name="csrf_token" value="<?= h(Csrf::token()) ?>">
-                <label>
-                  <span>Starting URL</span>
-                  <input type="url" name="url" required placeholder="https://example.com/">
-                </label>
-                <label>
-                  <span>Maximum pages</span>
-                  <input type="number" name="max_pages" min="1" max="500" value="50">
-                </label>
-                <label class="wysite-checkbox">
-                  <input type="checkbox" name="overwrite" value="1">
-                  <span>Overwrite existing local HTML files</span>
-                </label>
-                <button class="wysite-button" type="submit">Import Site</button>
-              </form>
-              <div class="wysite-import-progress" data-wysite-external-import-progress hidden>
-                <div class="wysite-import-progress__bar"><span data-wysite-import-progress-bar></span></div>
-                <p class="wysite-muted" data-wysite-import-progress-status>Preparing import...</p>
-                <pre class="wysite-import-progress__log" data-wysite-import-progress-log></pre>
-              </div>
-            </article>
-
-            <article>
-              <h3>Backfill specific assets</h3>
-              <p class="wysite-muted">Use this as a repair pass for individual media URLs that were blocked, discovered later, or listed in an import report. Assets are streamed into <code>/assets/imported/</code>, then matching references in local HTML/CSS/JS files are rewritten.</p>
-              <form method="post" action="<?= h($appUrl) ?>/index.php?action=external-assets-import" class="wysite-form">
-                <input type="hidden" name="csrf_token" value="<?= h(Csrf::token()) ?>">
-                <label>
-                  <span>Asset URLs</span>
-                  <textarea name="asset_urls" rows="7" placeholder="https://example.com/wp-content/uploads/audio.m4a"></textarea>
-                </label>
-                <button class="wysite-button" type="submit">Backfill Assets</button>
-              </form>
-            </article>
+        <?php if ($importCandidates === []): ?>
+          <p class="wysite-muted">No unmanaged HTML files were found outside <code>/edit/</code>.</p>
+        <?php else: ?>
+          <div class="wysite-table-wrap">
+            <table class="wysite-table">
+              <thead>
+                <tr>
+                  <th>File</th>
+                  <th>Detected Title</th>
+                  <th>Excerpt</th>
+                  <th></th>
+                </tr>
+              </thead>
+              <tbody>
+                <?php foreach ($importCandidates as $candidate): ?>
+                  <tr>
+                    <td><code><?= h($candidate['path']) ?></code></td>
+                    <td><?= h($candidate['title']) ?></td>
+                    <td><?= h($candidate['excerpt'] !== '' ? $candidate['excerpt'] : '—') ?></td>
+                    <td class="wysite-table__actions">
+                      <form method="post" action="<?= h($appUrl) ?>/index.php?action=import-page" data-wysite-confirm="Import <?= h($candidate['path']) ?> with the current theme?">
+                        <input type="hidden" name="csrf_token" value="<?= h(Csrf::token()) ?>">
+                        <input type="hidden" name="path" value="<?= h($candidate['path']) ?>">
+                        <input type="hidden" name="title" value="<?= h($candidate['title']) ?>">
+                        <input type="hidden" name="excerpt" value="<?= h($candidate['excerpt']) ?>">
+                        <input type="hidden" name="container_xpath" value="">
+                        <input type="hidden" name="block_xpaths" value="">
+                        <button class="wysite-button wysite-button--ghost" type="submit">Import</button>
+                      </form>
+                      <a class="wysite-button wysite-button--ghost" href="<?= h($appUrl) ?>/index.php?action=import&path=<?= rawurlencode($candidate['path']) ?>">Advanced</a>
+                      <?php $guessKind = $kindGuesses[$candidate['path']] ?? 'page'; ?>
+                      <form method="post" action="<?= h($appUrl) ?>/index.php?action=template-from-page">
+                        <input type="hidden" name="csrf_token" value="<?= h(Csrf::token()) ?>">
+                        <input type="hidden" name="path" value="<?= h($candidate['path']) ?>">
+                        <select name="kind" class="wysite-theme-select" aria-label="Template kind">
+                          <option value="home"<?= $guessKind === 'home' ? ' selected' : '' ?>>Home template</option>
+                          <option value="page"<?= $guessKind === 'page' ? ' selected' : '' ?>>Page template</option>
+                          <option value="blog"<?= $guessKind === 'blog' ? ' selected' : '' ?>>Blog index template</option>
+                          <option value="blog-post"<?= $guessKind === 'blog-post' ? ' selected' : '' ?>>Blog post template</option>
+                        </select>
+                        <button class="wysite-button wysite-button--ghost" type="submit">Use as template</button>
+                      </form>
+                    </td>
+                  </tr>
+                <?php endforeach; ?>
+              </tbody>
+            </table>
           </div>
-        </section>
-
-      <?php endif; ?>
-
-      <?php if ($user['is_admin'] && $aiSettings !== null): ?>
+        <?php endif; ?>
+      </section>
+    </main>
+    <?php
+    elseif ($view === 'ai'):
+        $aiSettings = $ai->publicSettings();
+    ?>
+    <main class="wysite-dashboard">
       <section class="wysite-panel">
         <div class="wysite-panel__heading">
           <div>
@@ -1502,225 +1682,93 @@ try {
           <button class="wysite-button" type="submit">Save AI settings</button>
         </form>
       </section>
-      <?php endif; ?>
+    </main>
+    <?php
+    elseif ($view === 'users'):
+        $users = $auth->allUsers();
+    ?>
+    <main class="wysite-dashboard">
+      <section class="wysite-grid">
+        <article class="wysite-panel">
+          <h3>Create a user</h3>
+          <form method="post" action="<?= h($appUrl) ?>/index.php?action=create-user" class="wysite-form">
+            <input type="hidden" name="csrf_token" value="<?= h(Csrf::token()) ?>">
+            <label>
+              <span>Username</span>
+              <input type="text" name="username" required>
+            </label>
+            <label>
+              <span>Password</span>
+              <input type="password" name="password" required minlength="10">
+            </label>
+            <label class="wysite-checkbox">
+              <input type="checkbox" name="is_admin" value="1">
+              <span>Administrator</span>
+            </label>
+            <button class="wysite-button" type="submit">Create user</button>
+          </form>
+        </article>
 
-      <?php if ($user['is_admin']): ?>
+        <article class="wysite-panel">
+          <h3>Reset a password</h3>
+          <form method="post" action="<?= h($appUrl) ?>/index.php?action=update-password" class="wysite-form">
+            <input type="hidden" name="csrf_token" value="<?= h(Csrf::token()) ?>">
+            <label>
+              <span>Username</span>
+              <input type="text" name="username" required>
+            </label>
+            <label>
+              <span>New password</span>
+              <input type="password" name="password" required minlength="10">
+            </label>
+            <button class="wysite-button" type="submit">Update password</button>
+          </form>
+        </article>
+      </section>
+
       <section class="wysite-panel">
         <div class="wysite-panel__heading">
           <div>
-            <p class="wysite-kicker">Template manager</p>
-            <h3>Build a theme from your pages</h3>
+            <p class="wysite-kicker">User management</p>
+            <h3>Accounts</h3>
           </div>
-          <p class="wysite-muted">Select or create a theme to build into, then choose "Use as template" on the pages below to add its templates. This does not touch your live site until you Apply the theme.</p>
         </div>
-
-        <div class="wysite-grid">
-          <article class="wysite-panel">
-            <h3>Build target</h3>
-            <form method="post" action="<?= h($appUrl) ?>/index.php?action=set-builder-theme" class="wysite-form">
-              <input type="hidden" name="csrf_token" value="<?= h(Csrf::token()) ?>">
-              <label>
-                <span>Building templates into</span>
-                <select name="theme" class="wysite-theme-select">
-                  <option value="">— none selected —</option>
-                  <?php foreach ($availableThemes as $theme): ?>
-                  <option value="<?= h($theme['id']) ?>"<?= $theme['id'] === $builderThemeId ? ' selected' : '' ?>><?= h($theme['name']) ?></option>
-                  <?php endforeach; ?>
-                </select>
-              </label>
-              <button class="wysite-button" type="submit">Set build target</button>
-            </form>
-          </article>
-          <article class="wysite-panel">
-            <h3>Create a new theme</h3>
-            <form method="post" action="<?= h($appUrl) ?>/index.php?action=create-theme" class="wysite-form">
-              <input type="hidden" name="csrf_token" value="<?= h(Csrf::token()) ?>">
-              <label>
-                <span>Theme name</span>
-                <input type="text" name="name" required placeholder="e.g. Kamloops Mission">
-              </label>
-              <button class="wysite-button" type="submit">Create &amp; select</button>
-            </form>
-          </article>
-        </div>
-
-        <?php if ($builderThemeId === ''): ?>
-          <p class="wysite-muted">No build target selected. Create a theme (recommended for an imported site) or pick one above, then add templates from the pages below.</p>
-        <?php else: ?>
-          <p class="wysite-muted">Templates for <strong><?= h($themes->getTheme($builderThemeId)['name']) ?></strong> (<code>edit/themes/<?= h($builderThemeId) ?>/</code>). Apply this theme from the Themes section when it's complete.</p>
-          <div class="wysite-table-wrap">
-            <table class="wysite-table">
-              <thead><tr><th>Kind</th><th>Status</th><th></th></tr></thead>
-              <tbody>
-                <?php foreach ($templateKinds as $templateKind => $templateLabel): ?>
+        <div class="wysite-table-wrap">
+          <table class="wysite-table">
+            <thead>
+              <tr>
+                <th>User</th>
+                <th>Role</th>
+                <th>Created</th>
+                <th></th>
+              </tr>
+            </thead>
+            <tbody>
+              <?php foreach ($users as $account): ?>
                 <tr>
-                  <td><?= h($templateLabel) ?><?php if ($templateKind === 'home'): ?> <span class="wysite-muted">(optional; falls back to Page)</span><?php endif; ?></td>
-                  <td><?= !empty($builderTemplates[$templateKind]) ? 'Established' : '<span class="wysite-muted">Not set</span>' ?></td>
+                  <td><?= h($account['username']) ?></td>
+                  <td><?= $account['is_admin'] ? 'Admin' : 'Editor' ?></td>
+                  <td><?= h((string) $account['created_at']) ?></td>
                   <td class="wysite-table__actions">
-                    <?php if (!empty($builderTemplates[$templateKind])): ?>
-                    <form method="post" action="<?= h($appUrl) ?>/index.php?action=clear-template" data-wysite-confirm="Clear the <?= h($templateLabel) ?> template from this theme?">
-                      <input type="hidden" name="csrf_token" value="<?= h(Csrf::token()) ?>">
-                      <input type="hidden" name="kind" value="<?= h($templateKind) ?>">
-                      <button class="wysite-button wysite-button--ghost" type="submit">Clear</button>
-                    </form>
+                    <?php if ($account['username'] !== $user['username']): ?>
+                      <form method="post" action="<?= h($appUrl) ?>/index.php?action=delete-user">
+                        <input type="hidden" name="csrf_token" value="<?= h(Csrf::token()) ?>">
+                        <input type="hidden" name="username" value="<?= h($account['username']) ?>">
+                        <button class="wysite-button wysite-button--ghost" type="submit">Delete</button>
+                      </form>
                     <?php endif; ?>
                   </td>
                 </tr>
-                <?php endforeach; ?>
-              </tbody>
-            </table>
-          </div>
-        <?php endif; ?>
+              <?php endforeach; ?>
+            </tbody>
+          </table>
+        </div>
       </section>
-
-        <section class="wysite-panel">
-          <div class="wysite-panel__heading">
-            <div>
-              <p class="wysite-kicker">Unmanaged HTML</p>
-              <h3>HTML files not yet added to WYSiteIWYG</h3>
-            </div>
-            <?php if ($importCandidates !== []): ?>
-              <form method="post" action="<?= h($appUrl) ?>/index.php?action=import-all" data-wysite-confirm="Import all <?= h((string) count($importCandidates)) ?> unmanaged HTML file(s) with the current theme? This will rewrite those files on disk.">
-                <input type="hidden" name="csrf_token" value="<?= h(Csrf::token()) ?>">
-                <button class="wysite-button" type="submit">Import All</button>
-              </form>
-            <?php endif; ?>
-          </div>
-          <p class="wysite-muted">These files are present on the server but do not yet contain WYSiteIWYG markers. Importing applies the current theme and wraps the imported content in editable Page Content blocks.</p>
-
-          <?php if ($importCandidates === []): ?>
-            <p class="wysite-muted">No unmanaged HTML files were found outside <code>/edit/</code>.</p>
-          <?php else: ?>
-            <div class="wysite-table-wrap">
-              <table class="wysite-table">
-                <thead>
-                  <tr>
-                    <th>File</th>
-                    <th>Detected Title</th>
-                    <th>Excerpt</th>
-                    <th></th>
-                  </tr>
-                </thead>
-                <tbody>
-                  <?php foreach ($importCandidates as $candidate): ?>
-                    <tr>
-                      <td><code><?= h($candidate['path']) ?></code></td>
-                      <td><?= h($candidate['title']) ?></td>
-                      <td><?= h($candidate['excerpt'] !== '' ? $candidate['excerpt'] : '—') ?></td>
-                      <td class="wysite-table__actions">
-                        <form method="post" action="<?= h($appUrl) ?>/index.php?action=import-page" data-wysite-confirm="Import <?= h($candidate['path']) ?> with the current theme?">
-                          <input type="hidden" name="csrf_token" value="<?= h(Csrf::token()) ?>">
-                          <input type="hidden" name="path" value="<?= h($candidate['path']) ?>">
-                          <input type="hidden" name="title" value="<?= h($candidate['title']) ?>">
-                          <input type="hidden" name="excerpt" value="<?= h($candidate['excerpt']) ?>">
-                          <input type="hidden" name="container_xpath" value="">
-                          <input type="hidden" name="block_xpaths" value="">
-                          <button class="wysite-button wysite-button--ghost" type="submit">Import</button>
-                        </form>
-                        <a class="wysite-button wysite-button--ghost" href="<?= h($appUrl) ?>/index.php?action=import&path=<?= rawurlencode($candidate['path']) ?>">Advanced</a>
-                        <?php $guessKind = $kindGuesses[$candidate['path']] ?? 'page'; ?>
-                        <form method="post" action="<?= h($appUrl) ?>/index.php?action=template-from-page">
-                          <input type="hidden" name="csrf_token" value="<?= h(Csrf::token()) ?>">
-                          <input type="hidden" name="path" value="<?= h($candidate['path']) ?>">
-                          <select name="kind" class="wysite-theme-select" aria-label="Template kind">
-                            <option value="home"<?= $guessKind === 'home' ? ' selected' : '' ?>>Home template</option>
-                            <option value="page"<?= $guessKind === 'page' ? ' selected' : '' ?>>Page template</option>
-                            <option value="blog"<?= $guessKind === 'blog' ? ' selected' : '' ?>>Blog index template</option>
-                            <option value="blog-post"<?= $guessKind === 'blog-post' ? ' selected' : '' ?>>Blog post template</option>
-                          </select>
-                          <button class="wysite-button wysite-button--ghost" type="submit">Use as template</button>
-                        </form>
-                      </td>
-                    </tr>
-                  <?php endforeach; ?>
-                </tbody>
-              </table>
-            </div>
-          <?php endif; ?>
-        </section>
-      <?php endif; ?>
-
-      <?php if ($user['is_admin']): ?>
-        <section class="wysite-grid">
-          <article class="wysite-panel">
-            <h3>Create a user</h3>
-            <form method="post" action="<?= h($appUrl) ?>/index.php?action=create-user" class="wysite-form">
-              <input type="hidden" name="csrf_token" value="<?= h(Csrf::token()) ?>">
-              <label>
-                <span>Username</span>
-                <input type="text" name="username" required>
-              </label>
-              <label>
-                <span>Password</span>
-                <input type="password" name="password" required minlength="10">
-              </label>
-              <label class="wysite-checkbox">
-                <input type="checkbox" name="is_admin" value="1">
-                <span>Administrator</span>
-              </label>
-              <button class="wysite-button" type="submit">Create user</button>
-            </form>
-          </article>
-
-          <article class="wysite-panel">
-            <h3>Reset a password</h3>
-            <form method="post" action="<?= h($appUrl) ?>/index.php?action=update-password" class="wysite-form">
-              <input type="hidden" name="csrf_token" value="<?= h(Csrf::token()) ?>">
-              <label>
-                <span>Username</span>
-                <input type="text" name="username" required>
-              </label>
-              <label>
-                <span>New password</span>
-                <input type="password" name="password" required minlength="10">
-              </label>
-              <button class="wysite-button" type="submit">Update password</button>
-            </form>
-          </article>
-        </section>
-
-        <section class="wysite-panel">
-          <div class="wysite-panel__heading">
-            <div>
-              <p class="wysite-kicker">User management</p>
-              <h3>Accounts</h3>
-            </div>
-          </div>
-          <div class="wysite-table-wrap">
-            <table class="wysite-table">
-              <thead>
-                <tr>
-                  <th>User</th>
-                  <th>Role</th>
-                  <th>Created</th>
-                  <th></th>
-                </tr>
-              </thead>
-              <tbody>
-                <?php foreach ($users as $account): ?>
-                  <tr>
-                    <td><?= h($account['username']) ?></td>
-                    <td><?= $account['is_admin'] ? 'Admin' : 'Editor' ?></td>
-                    <td><?= h((string) $account['created_at']) ?></td>
-                    <td class="wysite-table__actions">
-                      <?php if ($account['username'] !== $user['username']): ?>
-                        <form method="post" action="<?= h($appUrl) ?>/index.php?action=delete-user">
-                          <input type="hidden" name="csrf_token" value="<?= h(Csrf::token()) ?>">
-                          <input type="hidden" name="username" value="<?= h($account['username']) ?>">
-                          <button class="wysite-button wysite-button--ghost" type="submit">Delete</button>
-                        </form>
-                      <?php endif; ?>
-                    </td>
-                  </tr>
-                <?php endforeach; ?>
-              </tbody>
-            </table>
-          </div>
-        </section>
-      <?php endif; ?>
     </main>
     <?php
-    layout('Dashboard', (string) ob_get_clean(), $appUrl, $siteTitle, $user);
+    endif;
+    $viewTitles = ['dashboard' => 'Dashboard', 'themes' => 'Theme', 'manager' => 'Manager', 'ai' => 'AI', 'users' => 'Users'];
+    layout($viewTitles[$view], (string) ob_get_clean(), $appUrl, $siteTitle, $user, $view);
 } catch (Throwable $error) {
     Flash::push('error', $error->getMessage());
 

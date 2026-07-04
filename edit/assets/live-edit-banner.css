@@ -1,10 +1,10 @@
 body.wysite-live-banner-visible {
-  padding-top: 72px;
+  padding-bottom: 72px;
 }
 
 .wysite-live-banner {
   position: fixed;
-  top: 0;
+  bottom: 0;
   left: 0;
   right: 0;
   z-index: 1200;
@@ -15,7 +15,7 @@ body.wysite-live-banner-visible {
   padding: 12px 20px;
   background: rgba(17, 23, 20, 0.92);
   color: #f7f6f1;
-  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.18);
+  box-shadow: 0 -12px 40px rgba(0, 0, 0, 0.18);
   backdrop-filter: blur(18px);
   font: 600 14px/1.4 system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
 }
@@ -58,7 +58,7 @@ body.wysite-live-banner-visible {
 
 @media (max-width: 720px) {
   body.wysite-live-banner-visible {
-    padding-top: 108px;
+    padding-bottom: 108px;
   }
 
   .wysite-live-banner {

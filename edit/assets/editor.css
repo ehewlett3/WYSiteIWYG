@@ -316,12 +316,12 @@ body.wysite-app-shell {
 }
 
 .wysite-preview-mode {
-  padding-top: 72px;
+  padding-bottom: 72px;
 }
 
 .wysite-admin-bar {
   position: fixed;
-  top: 0;
+  bottom: 0;
   left: 0;
   right: 0;
   z-index: 1100;
@@ -329,7 +329,7 @@ body.wysite-app-shell {
   color: white;
   background: rgba(18, 40, 31, 0.92);
   backdrop-filter: blur(18px);
-  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.18);
+  box-shadow: 0 -12px 40px rgba(0, 0, 0, 0.18);
 }
 
 .wysite-template-import-mode {
@@ -685,6 +685,11 @@ body.wysite-live-banner-visible .pm-dropin--menu {
   .wysite-user-chip {
     flex-direction: column;
     align-items: flex-start;
+  }
+
+  /* The bottom admin bar stacks taller on narrow screens — reserve more space. */
+  body.wysite-preview-mode {
+    padding-bottom: 168px;
   }
 
   .wysite-theme-actions {

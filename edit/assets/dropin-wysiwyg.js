@@ -41,20 +41,56 @@ function buildUI({ onSave, onCancel }) {
 
   const style = document.createElement("style");
   style.textContent = `
-    .pm-dropin { margin-top: 12px; border: 1px solid rgba(0,0,0,.12); border-radius: 12px; overflow: hidden; background: transparent; }
-    .pm-toolbar { display:flex; flex-wrap:wrap; gap:6px; padding:10px; border-bottom: 1px solid rgba(0,0,0,.10); background: transparent; }
+    .pm-dropin { margin-top: 12px; border: 1px solid rgba(0,0,0,.15); border-radius: 12px; overflow: hidden; background: transparent; }
+    /* Toolbar/footer get a defined light surface so controls stay legible over any
+       theme; the editor body stays transparent so you still see the block's theme. */
+    .pm-dropin .pm-toolbar { display:flex !important; flex-wrap:wrap !important; align-items:center !important; gap:6px !important; padding:10px !important; border-bottom: 1px solid rgba(0,0,0,.12); background: #f3f5f8 !important; }
     .pm-editorHost { padding: 12px; background: transparent; }
-    .pm-sourceHost { display:none; padding: 12px; border-top: 1px solid rgba(0,0,0,.08); background: transparent; }
-    .pm-sourceHost.is-active { display:block; }
-    .pm-sourceEditor { width: 100%; min-height: 320px; box-sizing: border-box; border: 1px solid rgba(0,0,0,.16); border-radius: 12px; padding: 12px; font: 13px/1.55 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; background: transparent; color: inherit; resize: vertical; }
-    .pm-footer { display:flex; justify-content:flex-end; gap:8px; padding:10px; border-top: 1px solid rgba(0,0,0,.10); background: transparent; }
-    .pm-btn { border: 1px solid rgba(0,0,0,.18); background: rgba(255,255,255,.08); padding: 6px 10px; border-radius: 10px; cursor: pointer; min-height: 34px; line-height: 1.2; }
-    .pm-dropin .pm-btn.pm-btn--save { border-color: rgba(22, 101, 52, .35); background: rgba(34, 197, 94, .18); color: #14532d; font-weight: 700; }
-    .pm-dropin .pm-btn.pm-btn--save:hover { background: rgba(34, 197, 94, .26); }
-    .pm-dropin .pm-btn.pm-btn--cancel { border-color: rgba(153, 27, 27, .3); background: rgba(239, 68, 68, .14); color: #7f1d1d; font-weight: 700; }
-    .pm-dropin .pm-btn.pm-btn--cancel:hover { background: rgba(239, 68, 68, .22); }
-    .pm-btn:disabled { opacity: .55; cursor: not-allowed; }
-    .pm-btn[aria-pressed="true"] { outline: 2px solid rgba(120,160,255,.55); }
+    .pm-dropin .pm-sourceHost { display:none; padding: 12px; border-top: 1px solid rgba(0,0,0,.08); background: #f3f5f8; }
+    .pm-dropin .pm-sourceHost.is-active { display:block; }
+    .pm-dropin .pm-sourceEditor { width: 100%; min-height: 320px; box-sizing: border-box; border: 1px solid rgba(0,0,0,.16); border-radius: 12px; padding: 12px; font: 13px/1.55 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; background: #ffffff; color: #111827; resize: vertical; }
+    .pm-dropin .pm-footer { display:flex !important; justify-content:flex-end !important; gap:8px !important; padding:10px !important; border-top: 1px solid rgba(0,0,0,.12); background: #f3f5f8 !important; }
+
+    /* Theme-proof controls: lock every property a page theme might override (color,
+       font, sizing, text-indent, fill, visibility…) so the icons/labels are always
+       readable regardless of the theme the edited block inherits. */
+    .pm-dropin .pm-btn {
+      box-sizing: border-box !important;
+      display: inline-flex !important;
+      align-items: center !important;
+      justify-content: center !important;
+      gap: 5px !important;
+      min-width: 34px !important;
+      height: 34px !important;
+      padding: 0 9px !important;
+      margin: 0 !important;
+      border: 1px solid rgba(0,0,0,.2) !important;
+      border-radius: 8px !important;
+      background: #ffffff !important;
+      color: #1f2937 !important;
+      -webkit-text-fill-color: #1f2937 !important;
+      font: 600 13px/1 system-ui, -apple-system, "Segoe UI", sans-serif !important;
+      letter-spacing: 0 !important;
+      text-transform: none !important;
+      text-indent: 0 !important;
+      text-shadow: none !important;
+      white-space: nowrap !important;
+      opacity: 1 !important;
+      visibility: visible !important;
+      box-shadow: none !important;
+      cursor: pointer !important;
+      vertical-align: middle !important;
+    }
+    .pm-dropin .pm-btn:hover { background: #eef2f7 !important; }
+    .pm-dropin .pm-btn svg { width: 18px !important; height: 18px !important; display: block !important; stroke: #1f2937 !important; fill: none !important; stroke-width: 2 !important; }
+    .pm-dropin select.pm-btn option { color: #1f2937 !important; background: #ffffff !important; }
+    .pm-dropin .pm-btn.pm-btn--save { background: #16a34a !important; border-color: #15803d !important; color: #ffffff !important; -webkit-text-fill-color: #ffffff !important; font-weight: 800 !important; padding: 0 14px !important; }
+    .pm-dropin .pm-btn.pm-btn--save:hover { background: #15803d !important; }
+    .pm-dropin .pm-btn.pm-btn--cancel { background: #ffffff !important; border-color: #dc2626 !important; color: #b91c1c !important; -webkit-text-fill-color: #b91c1c !important; font-weight: 800 !important; padding: 0 14px !important; }
+    .pm-dropin .pm-btn.pm-btn--cancel:hover { background: #fef2f2 !important; }
+    .pm-dropin .pm-btn:disabled { opacity: .5 !important; cursor: not-allowed !important; }
+    .pm-dropin .pm-btn[aria-pressed="true"] { background: #dbeafe !important; border-color: #3b82f6 !important; color: #1e3a8a !important; -webkit-text-fill-color: #1e3a8a !important; }
+    .pm-dropin .pm-btn[aria-pressed="true"] svg { stroke: #1e3a8a !important; }
     .pm-image-upload-placeholder { font-size: 12px; opacity: .85; }
     /* ProseMirror requires the editable surface to use pre-wrap for correct
        caret/whitespace handling; scoped to the live editor only, so published
@@ -780,6 +816,20 @@ export const DropInWysiwyg = {
     function buildToolbar() {
       const controls = [];
 
+      // Inline SVG icons so labels never disappear into a theme's typography/colour.
+      const svg = (paths) =>
+        `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${paths}</svg>`;
+      const ICONS = {
+        bold: svg('<path d="M14 12a4 4 0 0 0 0-8H6v8"/><path d="M15 20a4 4 0 0 0 0-8H6v8Z"/>'),
+        italic: svg('<line x1="19" y1="4" x2="10" y2="4"/><line x1="14" y1="20" x2="5" y2="20"/><line x1="15" y1="4" x2="9" y2="20"/>'),
+        code: svg('<polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/>'),
+        bulletList: svg('<line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/><line x1="3" y1="6" x2="3.01" y2="6"/><line x1="3" y1="12" x2="3.01" y2="12"/><line x1="3" y1="18" x2="3.01" y2="18"/>'),
+        orderedList: svg('<line x1="10" y1="6" x2="21" y2="6"/><line x1="10" y1="12" x2="21" y2="12"/><line x1="10" y1="18" x2="21" y2="18"/><path d="M4 6h1v4"/><path d="M4 10h2"/><path d="M6 18H4c0-1 2-2 2-3s-1-1.5-2-1"/>'),
+        link: svg('<path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/>'),
+        image: svg('<rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="9" cy="9" r="2"/><path d="m21 15-3.1-3.1a2 2 0 0 0-2.8 0L6 21"/>'),
+        source: svg('<polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/><line x1="13" y1="4" x2="11" y2="20"/>'),
+      };
+
       const registerControl = (control, allowWhenSource = false) => {
         controls.push({ control, allowWhenSource });
         return control;
@@ -791,12 +841,13 @@ export const DropInWysiwyg = {
         ui.toolbar.appendChild(s);
       };
 
-      const add = (label, title, commandFactory) => {
+      const add = (iconName, title, commandFactory) => {
         const b = document.createElement("button");
         b.type = "button";
         b.className = "pm-btn";
-        b.textContent = label;
+        b.innerHTML = ICONS[iconName] || "";
         b.title = title;
+        b.setAttribute("aria-label", title);
         b.addEventListener("click", () => {
           const cmd = commandFactory();
           cmd(view.state, view.dispatch, view);
@@ -807,9 +858,9 @@ export const DropInWysiwyg = {
         return registerControl(b);
       };
 
-      const btnBold = add("B", "Bold", () => toggleMark(schema.marks.strong));
-      const btnItalic = add("I", "Italic", () => toggleMark(schema.marks.em));
-      const btnCode = add("</>", "Inline code", () => toggleMark(schema.marks.code));
+      const btnBold = add("bold", "Bold", () => toggleMark(schema.marks.strong));
+      const btnItalic = add("italic", "Italic", () => toggleMark(schema.marks.em));
+      const btnCode = add("code", "Inline code", () => toggleMark(schema.marks.code));
       addSep();
 
       const headingSelect = document.createElement("select");
@@ -848,15 +899,16 @@ export const DropInWysiwyg = {
       registerControl(headingSelect);
       addSep();
 
-      add("• List", "Toggle bullet list", () => toggleListRich(schema.nodes.bullet_list));
-      add("1. List", "Toggle ordered list", () => toggleListRich(schema.nodes.ordered_list));
+      add("bulletList", "Bullet list", () => toggleListRich(schema.nodes.bullet_list));
+      add("orderedList", "Numbered list", () => toggleListRich(schema.nodes.ordered_list));
       addSep();
 
       const btnLink = document.createElement("button");
       btnLink.type = "button";
       btnLink.className = "pm-btn";
-      btnLink.textContent = "Link";
+      btnLink.innerHTML = ICONS.link;
       btnLink.title = "Add/remove link";
+      btnLink.setAttribute("aria-label", "Add or remove link");
       btnLink.addEventListener("click", () => promptLink(view));
       ui.toolbar.appendChild(btnLink);
       registerControl(btnLink);
@@ -913,8 +965,9 @@ export const DropInWysiwyg = {
       const sourceBtn = document.createElement("button");
       sourceBtn.type = "button";
       sourceBtn.className = "pm-btn";
-      sourceBtn.textContent = "Source";
+      sourceBtn.innerHTML = ICONS.source;
       sourceBtn.title = "Toggle raw HTML source editing";
+      sourceBtn.setAttribute("aria-label", "Toggle HTML source");
       sourceBtn.addEventListener("click", () => {
         setSourceMode(!sourceMode);
       });
@@ -926,8 +979,9 @@ export const DropInWysiwyg = {
       const imgBtn = document.createElement("button");
       imgBtn.type = "button";
       imgBtn.className = "pm-btn";
-      imgBtn.textContent = "Image…";
+      imgBtn.innerHTML = ICONS.image;
       imgBtn.title = "Upload/insert an image";
+      imgBtn.setAttribute("aria-label", "Insert image");
       imgBtn.addEventListener("click", () => {
         const input = document.createElement("input");
         input.type = "file";

@@ -203,3 +203,87 @@
     return Math.round(bytes / 1024) + " KB";
   }
 })();
+
+// --- AI assistant settings: load model list + test connection (separate IIFE so
+// it runs even when the import panel above isn't present) ---
+(() => {
+  const form = document.querySelector('form[action*="action=save-ai-settings"]');
+  if (!form || !window.fetch) return;
+
+  const modelList = form.querySelector("[data-wysite-ai-model-list]");
+  const statusEl = form.querySelector("[data-wysite-ai-status]");
+  const loadBtn = form.querySelector("[data-wysite-ai-load]");
+  const testBtn = form.querySelector("[data-wysite-ai-test]");
+
+  const endpoint = (name) => form.action.split("?")[0] + "?action=" + name;
+  const fieldValue = (selector) => {
+    const el = form.querySelector(selector);
+    return el ? el.value : "";
+  };
+  const payload = () => ({
+    csrfToken: fieldValue('input[name="csrf_token"]'),
+    provider: fieldValue('[name="provider"]'),
+    base_url: fieldValue("[data-wysite-ai-baseurl]"),
+    api_key: fieldValue("[data-wysite-ai-key]"),
+  });
+
+  function setStatus(message, isError) {
+    if (!statusEl) return;
+    statusEl.hidden = false;
+    statusEl.textContent = message;
+    statusEl.classList.toggle("is-error", Boolean(isError));
+  }
+
+  async function call(name) {
+    const response = await fetch(endpoint(name), {
+      method: "POST",
+      credentials: "same-origin",
+      headers: { "Content-Type": "application/json", Accept: "application/json" },
+      body: JSON.stringify(payload()),
+    });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok || data.ok === false) {
+      throw new Error(data.message || "The request failed.");
+    }
+    return data;
+  }
+
+  loadBtn?.addEventListener("click", async () => {
+    setStatus("Loading models…");
+    loadBtn.disabled = true;
+    try {
+      const data = await call("ai-list-models");
+      const models = Array.isArray(data.models) ? data.models : [];
+      if (modelList) {
+        modelList.innerHTML = "";
+        models.forEach((id) => {
+          const option = document.createElement("option");
+          option.value = id;
+          modelList.appendChild(option);
+        });
+      }
+      setStatus(
+        models.length
+          ? `Loaded ${models.length} model(s) — click the Model field to choose one.`
+          : "The provider returned no models."
+      );
+    } catch (error) {
+      setStatus(error.message || "Could not load models.", true);
+    } finally {
+      loadBtn.disabled = false;
+    }
+  });
+
+  testBtn?.addEventListener("click", async () => {
+    setStatus("Testing connection…");
+    testBtn.disabled = true;
+    try {
+      const data = await call("ai-test");
+      setStatus(data.message || "Connection OK.");
+    } catch (error) {
+      setStatus(error.message || "Connection failed.", true);
+    } finally {
+      testBtn.disabled = false;
+    }
+  });
+})();

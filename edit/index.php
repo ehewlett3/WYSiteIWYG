@@ -130,6 +130,26 @@ function require_admin(array $user): void
 }
 
 /**
+ * A cheap, no-AI default template kind for an unmanaged HTML file, from its path.
+ * Used as the baseline for the "Use as template" dropdown; AI classification (when
+ * configured) refines it.
+ */
+function guess_template_kind(string $path): string
+{
+    $lower = strtolower(ltrim(str_replace('\\', '/', $path), '/'));
+    if ($lower === 'index.html' || $lower === 'index.htm') {
+        return 'home';
+    }
+    if (preg_match('#(^|/)blog/index\.html?$#', $lower) === 1) {
+        return 'blog';
+    }
+    if (preg_match('#(^|/)blog/#', $lower) === 1) {
+        return 'blog-post';
+    }
+    return 'page';
+}
+
+/**
  * If AI assistance is configured, ask the model to pre-select template regions for a
  * cached source and attach them for the designer to show. Best-effort: any failure
  * (misconfig, network, bad key) is surfaced as a flash but never blocks the manual
@@ -565,6 +585,19 @@ try {
         redirect($appUrl . '/index.php');
     }
 
+    if ($action === 'delete-theme') {
+        require_admin($user);
+        if (!is_post() || !Csrf::validate($_POST['csrf_token'] ?? null)) {
+            throw new RuntimeException('The delete-theme request was rejected.');
+        }
+
+        $themeId = trim((string) ($_POST['theme'] ?? ''));
+        $themeName = $themes->getTheme($themeId)['name'] ?? $themeId;
+        $themes->deleteTheme($themeId);
+        Flash::push('success', 'Deleted the "' . $themeName . '" theme.');
+        redirect($appUrl . '/index.php');
+    }
+
     if ($action === 'set-dashboard-theme') {
         require_admin($user);
         if (!is_post() || !Csrf::validate($_POST['csrf_token'] ?? null)) {
@@ -598,6 +631,44 @@ try {
         ]);
         Flash::push('success', 'Saved AI assistant settings.');
         redirect($appUrl . '/index.php');
+    }
+
+    if ($action === 'ai-list-models') {
+        require_admin($user);
+        $data = request_data();
+        if (!Csrf::validate($data['csrfToken'] ?? null)) {
+            json_response(['ok' => false, 'message' => 'Invalid CSRF token.'], 419);
+        }
+
+        try {
+            $models = $ai->listModels([
+                'provider' => (string) ($data['provider'] ?? ''),
+                'base_url' => (string) ($data['base_url'] ?? ''),
+                'api_key' => (string) ($data['api_key'] ?? ''),
+            ]);
+            json_response(['ok' => true, 'models' => $models]);
+        } catch (Throwable $error) {
+            json_response(['ok' => false, 'message' => $error->getMessage()], 400);
+        }
+    }
+
+    if ($action === 'ai-test') {
+        require_admin($user);
+        $data = request_data();
+        if (!Csrf::validate($data['csrfToken'] ?? null)) {
+            json_response(['ok' => false, 'message' => 'Invalid CSRF token.'], 419);
+        }
+
+        try {
+            $count = $ai->testConnection([
+                'provider' => (string) ($data['provider'] ?? ''),
+                'base_url' => (string) ($data['base_url'] ?? ''),
+                'api_key' => (string) ($data['api_key'] ?? ''),
+            ]);
+            json_response(['ok' => true, 'message' => 'Connection OK — ' . $count . ' model(s) available.']);
+        } catch (Throwable $error) {
+            json_response(['ok' => false, 'message' => $error->getMessage()], 400);
+        }
     }
 
     if ($action === 'create-theme') {
@@ -816,21 +887,6 @@ try {
         }
 
         Flash::push($results['assets_failed'] === [] ? 'success' : 'error', $message);
-        redirect($appUrl . '/index.php');
-    }
-
-    if ($action === 'relocalize-import') {
-        require_admin($user);
-        if (!is_post() || !Csrf::validate($_POST['csrf_token'] ?? null)) {
-            throw new RuntimeException('The re-localize request was rejected.');
-        }
-
-        $report = $externalImporter->relocalizeImportedOutput();
-        Flash::push(
-            'success',
-            'Re-localized imported output: ' . (int) $report['pages'] . ' page(s) and ' .
-            (int) $report['stylesheets'] . ' stylesheet(s) updated for relative-path serving.'
-        );
         redirect($appUrl . '/index.php');
     }
 
@@ -1058,6 +1114,28 @@ try {
     $pages = $repository->listPages();
     $hasDemoContent = $user['is_admin'] && $generator->hasDemoContent();
     $importCandidates = $user['is_admin'] ? $repository->listImportCandidates() : [];
+
+    // Default template kind per unmanaged file: a path heuristic, refined by AI
+    // classification (cached) when AI assistance is configured.
+    $kindGuesses = [];
+    foreach ($importCandidates as $candidate) {
+        $kindGuesses[$candidate['path']] = guess_template_kind($candidate['path']);
+    }
+    if ($user['is_admin'] && $importCandidates !== [] && $ai->isConfigured()) {
+        $aiCandidates = array_map(
+            static fn(array $c): array => [
+                'path' => $c['path'],
+                'title' => $c['title'],
+                'outline' => $c['excerpt'],
+                'mtime' => (int) (@filemtime($rootPath . '/' . $c['path']) ?: 0),
+            ],
+            $importCandidates
+        );
+        foreach ($ai->cachedKinds($aiCandidates, ['home', 'page', 'blog', 'blog-post']) as $path => $kind) {
+            $kindGuesses[$path] = $kind;
+        }
+    }
+
     $users = $user['is_admin'] ? $auth->allUsers() : [];
     $availableThemes = $generator->availableThemes();
     $currentTheme = $generator->currentTheme();
@@ -1180,6 +1258,13 @@ try {
                     <input type="hidden" name="theme" value="<?= h($theme['id']) ?>">
                     <button class="wysite-button" type="submit">Apply Theme</button>
                   </form>
+                  <?php if ($theme['id'] !== $currentTheme['id'] && $theme['id'] !== $themes->defaultThemeId()): ?>
+                  <form method="post" action="<?= h($appUrl) ?>/index.php?action=delete-theme" data-wysite-confirm="Delete the &quot;<?= h($theme['name']) ?>&quot; theme? This permanently removes its files and cannot be undone.">
+                    <input type="hidden" name="csrf_token" value="<?= h(Csrf::token()) ?>">
+                    <input type="hidden" name="theme" value="<?= h($theme['id']) ?>">
+                    <button class="wysite-button wysite-button--ghost" type="submit">Delete</button>
+                  </form>
+                  <?php endif; ?>
                 <?php endif; ?>
               </div>
             </article>
@@ -1328,15 +1413,6 @@ try {
                 <button class="wysite-button" type="submit">Backfill Assets</button>
               </form>
             </article>
-
-            <article>
-              <h3>Re-localize imported pages</h3>
-              <p class="wysite-muted">Rewrite already-imported pages and mirrored stylesheets to use relative links, so the imported site renders correctly from a subdirectory (or after moving it). New imports do this automatically; use this for imports made before that, or after relocating the site. Managed pages are left untouched.</p>
-              <form method="post" action="<?= h($appUrl) ?>/index.php?action=relocalize-import" class="wysite-form">
-                <input type="hidden" name="csrf_token" value="<?= h(Csrf::token()) ?>">
-                <button class="wysite-button" type="submit">Re-localize Imported Pages</button>
-              </form>
-            </article>
           </div>
         </section>
 
@@ -1370,21 +1446,29 @@ try {
             </label>
             <label>
               <span>Model</span>
-              <input type="text" name="model" value="<?= h((string) $aiSettings['model']) ?>" placeholder="e.g. claude-sonnet-5 or gpt-4o-mini">
+              <input type="text" name="model" list="wysite-ai-models" data-wysite-ai-model value="<?= h((string) $aiSettings['model']) ?>" placeholder="Type or load models…" autocomplete="off">
+              <datalist id="wysite-ai-models" data-wysite-ai-model-list></datalist>
             </label>
           </div>
           <label>
             <span>API key <?= $aiSettings['has_key'] ? '<em>(a key is saved — leave blank to keep it)</em>' : '<em>(none saved yet)</em>' ?></span>
-            <input type="password" name="api_key" autocomplete="off" placeholder="<?= $aiSettings['has_key'] ? '••••••••••••' : 'Paste your API key' ?>">
+            <input type="password" name="api_key" data-wysite-ai-key autocomplete="off" placeholder="<?= $aiSettings['has_key'] ? '••••••••••••' : 'Paste your API key' ?>">
           </label>
           <label>
             <span>Custom endpoint base URL <em>(optional; for self-hosted or OpenAI-compatible gateways)</em></span>
-            <input type="url" name="base_url" value="<?= h((string) $aiSettings['base_url']) ?>" placeholder="https://api.openai.com">
+            <input type="url" name="base_url" data-wysite-ai-baseurl value="<?= h((string) $aiSettings['base_url']) ?>" placeholder="https://api.openai.com">
           </label>
-          <label class="wysite-checkbox">
-            <input type="checkbox" name="enabled" value="1" <?= $aiSettings['enabled'] ? 'checked' : '' ?>>
-            <span>Enable AI region pre-selection</span>
-          </label>
+          <div class="wysite-ai-controls">
+            <label class="wysite-checkbox">
+              <input type="checkbox" name="enabled" value="1" <?= $aiSettings['enabled'] ? 'checked' : '' ?>>
+              <span>Enable AI region pre-selection</span>
+            </label>
+            <div class="wysite-ai-controls__buttons">
+              <button type="button" class="wysite-button wysite-button--ghost" data-wysite-ai-load>Load models</button>
+              <button type="button" class="wysite-button wysite-button--ghost" data-wysite-ai-test>Test connection</button>
+            </div>
+          </div>
+          <p class="wysite-muted" data-wysite-ai-status hidden></p>
           <?php if ($aiSettings['has_key']): ?>
           <label class="wysite-checkbox">
             <input type="checkbox" name="clear_key" value="1">
@@ -1510,14 +1594,15 @@ try {
                           <button class="wysite-button wysite-button--ghost" type="submit">Import</button>
                         </form>
                         <a class="wysite-button wysite-button--ghost" href="<?= h($appUrl) ?>/index.php?action=import&path=<?= rawurlencode($candidate['path']) ?>">Advanced</a>
+                        <?php $guessKind = $kindGuesses[$candidate['path']] ?? 'page'; ?>
                         <form method="post" action="<?= h($appUrl) ?>/index.php?action=template-from-page">
                           <input type="hidden" name="csrf_token" value="<?= h(Csrf::token()) ?>">
                           <input type="hidden" name="path" value="<?= h($candidate['path']) ?>">
                           <select name="kind" class="wysite-theme-select" aria-label="Template kind">
-                            <option value="home">Home template</option>
-                            <option value="page" selected>Page template</option>
-                            <option value="blog">Blog index template</option>
-                            <option value="blog-post">Blog post template</option>
+                            <option value="home"<?= $guessKind === 'home' ? ' selected' : '' ?>>Home template</option>
+                            <option value="page"<?= $guessKind === 'page' ? ' selected' : '' ?>>Page template</option>
+                            <option value="blog"<?= $guessKind === 'blog' ? ' selected' : '' ?>>Blog index template</option>
+                            <option value="blog-post"<?= $guessKind === 'blog-post' ? ' selected' : '' ?>>Blog post template</option>
                           </select>
                           <button class="wysite-button wysite-button--ghost" type="submit">Use as template</button>
                         </form>

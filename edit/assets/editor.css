@@ -402,6 +402,28 @@ body.wysite-template-import-mode {
   background: rgba(34, 197, 94, 0.14);
 }
 
+.wysite-ai-controls {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.wysite-ai-controls__buttons {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+[data-wysite-ai-status] {
+  margin: 0;
+}
+
+[data-wysite-ai-status].is-error {
+  color: #8a2b1f;
+}
+
 .wysite-template-ai-note {
   position: fixed;
   left: 0;

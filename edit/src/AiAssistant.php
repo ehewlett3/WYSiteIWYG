@@ -26,11 +26,15 @@ final class AiAssistant
     private const MAX_SKELETON_NODES = 500;
     private const REQUEST_TIMEOUT_SECONDS = 40;
 
+    private const CLASSIFY_RETRY_SECONDS = 60;
+
     private string $settingsPath;
+    private string $classifyCachePath;
 
     public function __construct(string $settingsPath)
     {
         $this->settingsPath = $settingsPath;
+        $this->classifyCachePath = dirname($settingsPath) . '/ai-classify.local.php';
     }
 
     /** Full settings incl. the raw key — for internal use only, never rendered. */
@@ -117,6 +121,194 @@ final class AiAssistant
 
         Filesystem::atomicWrite($this->settingsPath, "<?php\nreturn " . var_export($data, true) . ";\n");
         @chmod($this->settingsPath, 0600);
+    }
+
+    /**
+     * List the models available for the configured (or supplied) provider/key, for
+     * the settings dropdown. $override lets the dashboard test values typed into the
+     * form before they are saved (a blank api_key falls back to the stored key).
+     *
+     * @return string[] model ids, sorted
+     */
+    public function listModels(array $override = []): array
+    {
+        $settings = $this->effective($override);
+        if ($settings['api_key'] === '') {
+            throw new RuntimeException('Enter an API key first.');
+        }
+
+        if ($settings['provider'] === 'anthropic') {
+            $endpoint = ($settings['base_url'] !== '' ? $settings['base_url'] : 'https://api.anthropic.com') . '/v1/models?limit=1000';
+            $headers = ['x-api-key: ' . $settings['api_key'], 'anthropic-version: 2023-06-01'];
+        } else {
+            $endpoint = ($settings['base_url'] !== '' ? $settings['base_url'] : 'https://api.openai.com') . '/v1/models';
+            $headers = ['authorization: Bearer ' . $settings['api_key']];
+        }
+
+        $response = $this->httpGetJson($endpoint, $headers);
+        $data = $response['data'] ?? null;
+        if (!is_array($data)) {
+            throw new RuntimeException($this->apiErrorMessage($response) ?? 'The provider did not return a model list.');
+        }
+
+        $ids = [];
+        foreach ($data as $model) {
+            if (is_array($model) && isset($model['id']) && is_string($model['id'])) {
+                $ids[] = $model['id'];
+            }
+        }
+        sort($ids);
+
+        return $ids;
+    }
+
+    /**
+     * Verify a provider/key configuration by listing its models. Returns the model
+     * count on success; throws with the provider's error message on failure.
+     */
+    public function testConnection(array $override = []): int
+    {
+        return count($this->listModels($override));
+    }
+
+    /**
+     * Classify pages into template kinds (home/page/blog/blog-post) in one call, to
+     * seed the "Use as template" dropdowns. Best-effort: returns [] on any failure.
+     *
+     * @param array<int,array{path:string,title:string,outline:string}> $pages
+     * @param string[] $allowedKinds
+     * @return array<string,string> path => kind
+     */
+    public function classifyKinds(array $pages, array $allowedKinds): array
+    {
+        if (!$this->isConfigured() || $pages === []) {
+            return [];
+        }
+
+        $lines = [];
+        foreach ($pages as $index => $page) {
+            $lines[] = ($index + 1) . '. path="' . (string) $page['path'] . '"'
+                . ' title="' . $this->clip((string) $page['title'], 80) . '"'
+                . ' summary="' . $this->clip((string) $page['outline'], 200) . '"';
+        }
+
+        $system = 'You classify web pages into template kinds for a static site builder. '
+            . 'Allowed kinds: ' . implode(', ', $allowedKinds) . '. '
+            . 'home = the site front/landing page; blog = a list or archive of posts; '
+            . 'blog-post = a single dated article/post; page = anything else. '
+            . 'Respond with ONLY a JSON object mapping each exact path to one allowed kind.';
+        $user = "Pages:\n" . implode("\n", $lines);
+
+        try {
+            $decoded = $this->extractJsonObject($this->callModel($system, $user));
+        } catch (RuntimeException) {
+            return [];
+        }
+        if ($decoded === null) {
+            return [];
+        }
+
+        $out = [];
+        foreach ($decoded as $path => $kind) {
+            if (is_string($path) && is_string($kind) && in_array($kind, $allowedKinds, true)) {
+                $out[$path] = $kind;
+            }
+        }
+
+        return $out;
+    }
+
+    /**
+     * Classify kinds for dashboard "Use as template" defaults, cached by path+mtime
+     * so a page is only sent to the model once (until it changes). If there are
+     * uncached pages, one batched call fills them — but no more than once per
+     * CLASSIFY_RETRY_SECONDS, so a slow or failing provider can't stall repeated
+     * dashboard loads.
+     *
+     * @param array<int,array{path:string,title:string,outline:string,mtime:int}> $candidates
+     * @return array<string,string> path => kind
+     */
+    public function cachedKinds(array $candidates, array $allowedKinds): array
+    {
+        if (!$this->isConfigured() || $candidates === []) {
+            return [];
+        }
+
+        $cache = $this->loadClassifyCache();
+        $entries = is_array($cache['entries'] ?? null) ? $cache['entries'] : [];
+        $lastAttempt = (int) ($cache['attempted_at'] ?? 0);
+
+        $result = [];
+        $missing = [];
+        foreach ($candidates as $candidate) {
+            $key = sha1($candidate['path']) . '|' . (int) $candidate['mtime'];
+            if (isset($entries[$key]) && in_array($entries[$key], $allowedKinds, true)) {
+                $result[$candidate['path']] = $entries[$key];
+            } else {
+                $missing[] = $candidate;
+            }
+        }
+
+        if ($missing !== [] && (time() - $lastAttempt) >= self::CLASSIFY_RETRY_SECONDS) {
+            $guesses = $this->classifyKinds(
+                array_map(
+                    static fn(array $c): array => ['path' => $c['path'], 'title' => $c['title'], 'outline' => $c['outline']],
+                    $missing
+                ),
+                $allowedKinds
+            );
+
+            foreach ($missing as $candidate) {
+                if (isset($guesses[$candidate['path']])) {
+                    $kind = $guesses[$candidate['path']];
+                    $result[$candidate['path']] = $kind;
+                    $entries[sha1($candidate['path']) . '|' . (int) $candidate['mtime']] = $kind;
+                }
+            }
+
+            // Cap the cache so it can't grow without bound across many file changes.
+            if (count($entries) > 500) {
+                $entries = array_slice($entries, -500, null, true);
+            }
+
+            $this->saveClassifyCache(['attempted_at' => time(), 'entries' => $entries]);
+        }
+
+        return $result;
+    }
+
+    private function loadClassifyCache(): array
+    {
+        if (!is_file($this->classifyCachePath)) {
+            return [];
+        }
+        $data = require $this->classifyCachePath;
+        return is_array($data) ? $data : [];
+    }
+
+    private function saveClassifyCache(array $data): void
+    {
+        Filesystem::atomicWrite($this->classifyCachePath, "<?php\nreturn " . var_export($data, true) . ";\n");
+    }
+
+    /** Merge form-supplied overrides over stored settings (blank key keeps stored). */
+    private function effective(array $override): array
+    {
+        $stored = $this->settings();
+        $provider = in_array($override['provider'] ?? '', self::PROVIDERS, true)
+            ? (string) $override['provider']
+            : (string) $stored['provider'];
+        $model = isset($override['model']) && $override['model'] !== ''
+            ? (string) $override['model']
+            : (string) $stored['model'];
+        $baseUrl = array_key_exists('base_url', $override)
+            ? rtrim((string) $override['base_url'], '/')
+            : (string) $stored['base_url'];
+        $apiKey = isset($override['api_key']) && $override['api_key'] !== ''
+            ? (string) $override['api_key']
+            : (string) $stored['api_key'];
+
+        return ['provider' => $provider, 'model' => $model, 'base_url' => $baseUrl, 'api_key' => $apiKey];
     }
 
     /**
@@ -452,6 +644,58 @@ final class AiAssistant
         $raw = @file_get_contents($url, false, $context);
         if ($raw === false) {
             throw new RuntimeException('AI request failed.');
+        }
+        $status = 0;
+        foreach (($http_response_header ?? []) as $header) {
+            if (preg_match('#^HTTP/\S+\s+(\d{3})#', (string) $header, $m) === 1) {
+                $status = (int) $m[1];
+            }
+        }
+        return $this->decodeResponse((string) $raw, $status);
+    }
+
+    /** GET JSON from a provider endpoint through the shared SSRF guard. */
+    private function httpGetJson(string $url, array $headers): array
+    {
+        assert_public_url($url);
+
+        if (function_exists('curl_init')) {
+            $ch = curl_init($url);
+            if ($ch === false) {
+                throw new RuntimeException('Unable to initialize the request.');
+            }
+            curl_setopt_array($ch, [
+                CURLOPT_HTTPHEADER => $headers,
+                CURLOPT_RETURNTRANSFER => true,
+                CURLOPT_FOLLOWLOCATION => false,
+                CURLOPT_PROTOCOLS => CURLPROTO_HTTPS | CURLPROTO_HTTP,
+                CURLOPT_TIMEOUT => self::REQUEST_TIMEOUT_SECONDS,
+                CURLOPT_CONNECTTIMEOUT => 15,
+                CURLOPT_USERAGENT => 'WYSiteIWYG',
+            ]);
+            $raw = curl_exec($ch);
+            $error = curl_error($ch);
+            $status = (int) curl_getinfo($ch, CURLINFO_RESPONSE_CODE);
+            curl_close($ch);
+
+            if ($raw === false) {
+                throw new RuntimeException('Request failed: ' . ($error !== '' ? $error : 'no response') . '.');
+            }
+            return $this->decodeResponse((string) $raw, $status);
+        }
+
+        $context = stream_context_create([
+            'http' => [
+                'method' => 'GET',
+                'header' => implode("\r\n", $headers),
+                'timeout' => self::REQUEST_TIMEOUT_SECONDS,
+                'follow_location' => 0,
+                'ignore_errors' => true,
+            ],
+        ]);
+        $raw = @file_get_contents($url, false, $context);
+        if ($raw === false) {
+            throw new RuntimeException('Request failed.');
         }
         $status = 0;
         foreach (($http_response_header ?? []) as $header) {

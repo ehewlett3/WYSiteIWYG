@@ -279,6 +279,62 @@ final class ThemeManager
         $this->setStateKey('builder_theme', $id);
     }
 
+    public function defaultThemeId(): string
+    {
+        return $this->defaultTheme;
+    }
+
+    /**
+     * Delete a theme package from disk. The active theme and the built-in default
+     * fallback are protected (deleting them would break rendering). Any runtime
+     * references (build target, dashboard appearance) pointing at it are cleared.
+     */
+    public function deleteTheme(string $id): void
+    {
+        if (preg_match('/^[a-z0-9-]+$/', $id) !== 1) {
+            throw new RuntimeException('Invalid theme id.');
+        }
+
+        $dir = $this->themePath($id);
+        if (!is_dir($dir)) {
+            throw new RuntimeException('Unknown theme: ' . $id);
+        }
+        if ($id === $this->defaultTheme) {
+            throw new RuntimeException('The built-in default theme cannot be deleted.');
+        }
+        if ($id === $this->currentThemeId()) {
+            throw new RuntimeException('You cannot delete the active theme. Apply a different theme first.');
+        }
+
+        $this->deleteDirectory($dir);
+
+        if ($this->value('builder_theme', '') === $id) {
+            $this->setStateKey('builder_theme', '');
+        }
+        if ($this->value('dashboard_theme', '') === $id) {
+            $this->setStateKey('dashboard_theme', '');
+        }
+    }
+
+    private function deleteDirectory(string $dir): void
+    {
+        $items = new \RecursiveIteratorIterator(
+            new \RecursiveDirectoryIterator($dir, \FilesystemIterator::SKIP_DOTS),
+            \RecursiveIteratorIterator::CHILD_FIRST
+        );
+        foreach ($items as $item) {
+            if ($item->isDir()) {
+                @rmdir($item->getPathname());
+            } else {
+                @unlink($item->getPathname());
+            }
+        }
+
+        if (!@rmdir($dir)) {
+            throw new RuntimeException('Could not fully remove the theme directory. Check file permissions.');
+        }
+    }
+
     public function assertThemeIsValid(string $id): void
     {
         $theme = $this->getTheme($id);

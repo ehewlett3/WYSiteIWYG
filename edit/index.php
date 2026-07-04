@@ -1095,6 +1095,22 @@ try {
         redirect($appUrl . '/index.php');
     }
 
+    if ($action === 'purge-site') {
+        require_admin($user);
+        if (!is_post() || !Csrf::validate($_POST['csrf_token'] ?? null)) {
+            throw new RuntimeException('The clear-site request was rejected.');
+        }
+
+        $removed = $generator->purgeAllPages();
+        Flash::push(
+            'success',
+            $removed > 0
+                ? 'Removed ' . $removed . ' page(s). The site is now empty; assets were left in place.'
+                : 'There were no pages to remove.'
+        );
+        redirect($appUrl . '/index.php');
+    }
+
     if ($action === 'delete-demo') {
         require_admin($user);
         if (!is_post() || !Csrf::validate($_POST['csrf_token'] ?? null)) {
@@ -1179,6 +1195,12 @@ try {
           <form method="post" action="<?= h($appUrl) ?>/index.php?action=delete-demo" data-wysite-confirm="Delete all demo pages and posts? This removes every page flagged as demo content and cannot be undone.">
             <input type="hidden" name="csrf_token" value="<?= h(Csrf::token()) ?>">
             <button class="wysite-button wysite-button--ghost" type="submit">Delete demo content</button>
+          </form>
+          <?php endif; ?>
+          <?php if ($user['is_admin']): ?>
+          <form method="post" action="<?= h($appUrl) ?>/index.php?action=purge-site" data-wysite-confirm="Delete ALL pages from this site? Every HTML page (managed and unmanaged) will be permanently removed. Assets and the editor are kept. This cannot be undone.">
+            <input type="hidden" name="csrf_token" value="<?= h(Csrf::token()) ?>">
+            <button class="wysite-button wysite-button--ghost" type="submit">Delete all pages</button>
           </form>
           <?php endif; ?>
         </div>
@@ -1446,8 +1468,10 @@ try {
             </label>
             <label>
               <span>Model</span>
-              <input type="text" name="model" list="wysite-ai-models" data-wysite-ai-model value="<?= h((string) $aiSettings['model']) ?>" placeholder="Type or load models…" autocomplete="off">
-              <datalist id="wysite-ai-models" data-wysite-ai-model-list></datalist>
+              <input type="text" name="model" data-wysite-ai-model value="<?= h((string) $aiSettings['model']) ?>" placeholder="Model id (type it, or load and pick below)" autocomplete="off">
+              <select data-wysite-ai-model-select class="wysite-theme-select" aria-label="Loaded models">
+                <option value="">Load models to choose from a list…</option>
+              </select>
             </label>
           </div>
           <label>

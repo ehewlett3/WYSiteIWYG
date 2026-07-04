@@ -210,10 +210,18 @@
   const form = document.querySelector('form[action*="action=save-ai-settings"]');
   if (!form || !window.fetch) return;
 
-  const modelList = form.querySelector("[data-wysite-ai-model-list]");
+  const modelInput = form.querySelector("[data-wysite-ai-model]");
+  const modelSelect = form.querySelector("[data-wysite-ai-model-select]");
   const statusEl = form.querySelector("[data-wysite-ai-status]");
   const loadBtn = form.querySelector("[data-wysite-ai-load]");
   const testBtn = form.querySelector("[data-wysite-ai-test]");
+
+  // Picking from the loaded-models select fills the text input (the saved value).
+  modelSelect?.addEventListener("change", () => {
+    if (modelInput && modelSelect.value) {
+      modelInput.value = modelSelect.value;
+    }
+  });
 
   const endpoint = (name) => form.action.split("?")[0] + "?action=" + name;
   const fieldValue = (selector) => {
@@ -254,17 +262,24 @@
     try {
       const data = await call("ai-list-models");
       const models = Array.isArray(data.models) ? data.models : [];
-      if (modelList) {
-        modelList.innerHTML = "";
+      if (modelSelect) {
+        const current = modelInput ? modelInput.value : "";
+        modelSelect.innerHTML = "";
+        const placeholder = document.createElement("option");
+        placeholder.value = "";
+        placeholder.textContent = models.length ? "Choose a model…" : "No models returned";
+        modelSelect.appendChild(placeholder);
         models.forEach((id) => {
           const option = document.createElement("option");
           option.value = id;
-          modelList.appendChild(option);
+          option.textContent = id;
+          if (id === current) option.selected = true;
+          modelSelect.appendChild(option);
         });
       }
       setStatus(
         models.length
-          ? `Loaded ${models.length} model(s) — click the Model field to choose one.`
+          ? `Loaded ${models.length} model(s) — pick one from the list below the Model field.`
           : "The provider returned no models."
       );
     } catch (error) {

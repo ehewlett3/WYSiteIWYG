@@ -406,6 +406,56 @@ final class SiteGenerator
         return $removed;
     }
 
+    /**
+     * Remove every HTML page from the site (managed and unmanaged), then prune any
+     * directories left empty. Assets (images, imported media, stylesheets) and the
+     * /edit/ app are left in place. Returns the number of pages removed. This is the
+     * "start from a clean site" reset.
+     */
+    public function purgeAllPages(): int
+    {
+        $removed = 0;
+        $dirs = [];
+
+        $iterator = new \RecursiveIteratorIterator(
+            new \RecursiveDirectoryIterator($this->rootPath, \FilesystemIterator::SKIP_DOTS),
+            \RecursiveIteratorIterator::LEAVES_ONLY
+        );
+
+        foreach ($iterator as $file) {
+            if (!$file->isFile()) {
+                continue;
+            }
+
+            $full = str_replace('\\', '/', $file->getPathname());
+            $rel = ltrim(substr($full, strlen($this->rootPath)), '/');
+            if ($rel === '' || str_starts_with($rel, 'edit/')) {
+                continue;
+            }
+
+            $ext = strtolower((string) pathinfo($rel, PATHINFO_EXTENSION));
+            if (!in_array($ext, ['html', 'htm'], true)) {
+                continue;
+            }
+
+            if (@unlink($full)) {
+                $dirs[dirname($full)] = true;
+                $removed++;
+            }
+        }
+
+        // Prune directories emptied by the deletion (deepest first), never the root.
+        $dirList = array_keys($dirs);
+        usort($dirList, static fn(string $a, string $b): int => strlen($b) <=> strlen($a));
+        foreach ($dirList as $dir) {
+            if ($dir !== $this->rootPath && is_dir($dir) && $this->isEmptyDirectory($dir)) {
+                @rmdir($dir);
+            }
+        }
+
+        return $removed;
+    }
+
     private function isEmptyDirectory(string $dir): bool
     {
         $entries = @scandir($dir);
@@ -1017,7 +1067,7 @@ final class SiteGenerator
         return '<p>This page is ready for a full post body.</p>';
     }
 
-    private function extractImportedPageBlocks(string $html, string $containerXPath = '', array $blockXpaths = []): array
+    private function extractImportedPageBlocks(string $html, string $containerXPath = '', array $blockXpaths = [], bool $stripChrome = true): array
     {
         $html = trim($html);
         if ($html === '') {
@@ -1035,6 +1085,15 @@ final class SiteGenerator
 
         $xpath = new \DOMXPath($dom);
         $container = $this->resolveImportContainer($dom, $xpath, $containerXPath);
+
+        // Remove site chrome (nav/header/footer) so a page imported into a theme
+        // doesn't duplicate the menu/header/footer the theme template already
+        // provides. The theme supplies those regions; only the page's own content
+        // should land in the editable content block.
+        if ($stripChrome) {
+            $this->removeSiteChrome($dom, $container);
+        }
+
         $containerHtml = $this->stripScripts($this->innerHtml($container));
         if ($containerHtml === '') {
             return [];
@@ -1117,9 +1176,12 @@ final class SiteGenerator
             throw new RuntimeException('The import container XPath did not match any element.');
         }
 
-        $main = $xpath->query('//main[1]');
-        if ($main !== false && $main->length > 0 && $main->item(0) instanceof \DOMElement) {
-            return $main->item(0);
+        // Prefer an explicit main-content landmark; these exclude site chrome.
+        foreach (["//main[1]", "//*[@role='main'][1]"] as $query) {
+            $nodes = $xpath->query($query);
+            if ($nodes !== false && $nodes->length > 0 && $nodes->item(0) instanceof \DOMElement) {
+                return $nodes->item(0);
+            }
         }
 
         $body = $dom->getElementsByTagName('body')->item(0);
@@ -1133,6 +1195,73 @@ final class SiteGenerator
         }
 
         throw new RuntimeException('Unable to determine which part of the HTML document to import.');
+    }
+
+    /**
+     * Remove page-level site chrome (navigation, banner header, footer) from within
+     * an import container, wherever it sits — as a direct child of body or nested in
+     * a layout wrapper. Content-level headers/footers (inside <article>) are kept, as
+     * are the elements a theme legitimately needs; only the site's own repeated
+     * navigation/header/footer are stripped so the theme's versions aren't doubled.
+     */
+    private function removeSiteChrome(\DOMDocument $dom, \DOMElement $container): void
+    {
+        $xpath = new \DOMXPath($dom);
+        $remove = [];
+
+        // Navigation and ARIA landmark chrome, anywhere in the container.
+        $landmarks = $xpath->query(
+            ".//nav | .//*[@role='navigation'] | .//*[@role='banner'] | .//*[@role='contentinfo']",
+            $container
+        );
+        if ($landmarks !== false) {
+            foreach ($landmarks as $element) {
+                if ($element instanceof \DOMElement) {
+                    $remove[] = $element;
+                }
+            }
+        }
+
+        // Page-level <header>/<footer> (those not inside an <article>).
+        $headerFooters = $xpath->query('.//header | .//footer', $container);
+        if ($headerFooters !== false) {
+            foreach ($headerFooters as $element) {
+                if (!$element instanceof \DOMElement) {
+                    continue;
+                }
+                $ancestors = $xpath->query('ancestor::article', $element);
+                if ($ancestors === false || $ancestors->length === 0) {
+                    $remove[] = $element;
+                }
+            }
+        }
+
+        // Common non-semantic chrome wrappers, matched conservatively by id/class.
+        $chromeTokens = [
+            'site-header', 'masthead', 'site-footer', 'colophon', 'site-navigation',
+            'main-navigation', 'primary-navigation', 'top-bar', 'topbar', 'site-branding',
+        ];
+        $divs = $xpath->query('.//div | .//section', $container);
+        if ($divs !== false) {
+            foreach ($divs as $element) {
+                if (!$element instanceof \DOMElement) {
+                    continue;
+                }
+                $tokens = array_map(
+                    'strtolower',
+                    preg_split('/\s+/', trim($element->getAttribute('class') . ' ' . $element->getAttribute('id'))) ?: []
+                );
+                if (array_intersect($tokens, $chromeTokens) !== []) {
+                    $remove[] = $element;
+                }
+            }
+        }
+
+        foreach ($remove as $element) {
+            if ($element->parentNode instanceof \DOMNode) {
+                $element->parentNode->removeChild($element);
+            }
+        }
     }
 
     private function queryImportXPath(\DOMXPath $xpath, \DOMNode $contextNode, string $query): \DOMNodeList

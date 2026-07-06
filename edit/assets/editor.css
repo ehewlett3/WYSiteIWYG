@@ -50,6 +50,16 @@ body.wysite-app-shell {
   align-items: center;
 }
 
+.wysite-shell__header {
+  flex-wrap: wrap;
+  gap: 16px;
+  margin-bottom: 24px;
+}
+
+.wysite-brand {
+  min-width: 0;
+}
+
 .wysite-grid {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
@@ -259,20 +269,22 @@ body.wysite-app-shell {
   color: var(--wysite-ink);
 }
 
+/* Navigation lives in the header, floated to the right of the brand. */
 .wysite-nav {
   display: flex;
   flex-wrap: wrap;
-  gap: 6px;
-  margin: 0 0 24px;
-  padding: 6px;
+  align-items: center;
+  gap: 4px;
+  margin: 0;
+  padding: 5px;
   background: var(--wysite-surface);
   border: 1px solid var(--wysite-line);
-  border-radius: 16px;
+  border-radius: 14px;
   box-shadow: var(--wysite-shadow);
 }
 
 .wysite-nav__link {
-  padding: 9px 16px;
+  padding: 8px 14px;
   border-radius: 10px;
   color: var(--wysite-muted);
   text-decoration: none;
@@ -288,6 +300,69 @@ body.wysite-app-shell {
 .wysite-nav__link.is-active {
   background: linear-gradient(135deg, var(--wysite-accent), #4f8b68);
   color: #ffffff;
+}
+
+/* Username dropdown (rightmost), native <details> so it needs no JS. */
+.wysite-nav__user {
+  position: relative;
+  margin-left: 6px;
+  padding-left: 6px;
+  border-left: 1px solid var(--wysite-line);
+}
+
+.wysite-nav__user-name {
+  list-style: none;
+  cursor: pointer;
+  padding: 8px 14px;
+  border-radius: 10px;
+  font-weight: 800;
+  color: var(--wysite-ink);
+  white-space: nowrap;
+}
+
+.wysite-nav__user-name::-webkit-details-marker {
+  display: none;
+}
+
+.wysite-nav__user-name::after {
+  content: "▾";
+  margin-left: 6px;
+  opacity: 0.6;
+}
+
+.wysite-nav__user[open] > .wysite-nav__user-name {
+  background: rgba(0, 0, 0, 0.05);
+}
+
+.wysite-nav__user-menu {
+  position: absolute;
+  right: 0;
+  top: calc(100% + 6px);
+  z-index: 1200;
+  min-width: 150px;
+  padding: 6px;
+  background: var(--wysite-surface);
+  border: 1px solid var(--wysite-line);
+  border-radius: 12px;
+  box-shadow: var(--wysite-shadow);
+}
+
+.wysite-nav__logout {
+  display: block;
+  width: 100%;
+  text-align: left;
+  padding: 9px 12px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--wysite-ink);
+  font: inherit;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.wysite-nav__logout:hover {
+  background: rgba(0, 0, 0, 0.06);
 }
 
 .wysite-flash {

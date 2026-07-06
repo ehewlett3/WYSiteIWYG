@@ -32,7 +32,7 @@ if (!$auth->isInstalled() && $action !== 'install') {
     redirect($appUrl . '/index.php?action=install');
 }
 
-function render_dashboard_nav(string $appUrl, string $active, bool $isAdmin): string
+function render_dashboard_nav(string $appUrl, ?string $active, array $user): string
 {
     $items = [
         ['id' => 'dashboard', 'label' => 'Dashboard', 'href' => $appUrl . '/index.php', 'admin' => false],
@@ -43,16 +43,32 @@ function render_dashboard_nav(string $appUrl, string $active, bool $isAdmin): st
         ['id' => 'docs', 'label' => 'Docs', 'href' => $appUrl . '/index.php?action=docs', 'admin' => false],
     ];
 
+    // Tabs only render on the dashboard views (when $active is set); sub-pages still
+    // show the username dropdown so Log out stays reachable.
     $links = '';
-    foreach ($items as $item) {
-        if ($item['admin'] && !$isAdmin) {
-            continue;
+    if ($active !== null) {
+        foreach ($items as $item) {
+            if ($item['admin'] && empty($user['is_admin'])) {
+                continue;
+            }
+            $class = 'wysite-nav__link' . ($item['id'] === $active ? ' is-active' : '');
+            $links .= '<a class="' . $class . '" href="' . h($item['href']) . '">' . h($item['label']) . '</a>';
         }
-        $class = 'wysite-nav__link' . ($item['id'] === $active ? ' is-active' : '');
-        $links .= '<a class="' . $class . '" href="' . h($item['href']) . '">' . h($item['label']) . '</a>';
     }
 
-    return '<nav class="wysite-nav">' . $links . '</nav>';
+    // Rightmost item: username with a native <details> dropdown holding Log out
+    // (no inline JS, so it works under the strict dashboard CSP).
+    $userMenu = '<details class="wysite-nav__user">'
+        . '<summary class="wysite-nav__user-name">' . h($user['username']) . '</summary>'
+        . '<div class="wysite-nav__user-menu">'
+        . '<form method="post" action="' . h($appUrl) . '/index.php?action=logout">'
+        . '<input type="hidden" name="csrf_token" value="' . h(Csrf::token()) . '">'
+        . '<button type="submit" class="wysite-nav__logout">Log out</button>'
+        . '</form>'
+        . '</div>'
+        . '</details>';
+
+    return '<nav class="wysite-nav">' . $links . $userMenu . '</nav>';
 }
 
 function layout(string $title, string $body, string $appUrl, string $siteTitle, ?array $user = null, ?string $navActive = null): void
@@ -76,24 +92,14 @@ function layout(string $title, string $body, string $appUrl, string $siteTitle, 
 <body class="wysite-app-shell">
   <div class="wysite-shell">
     <header class="wysite-shell__header">
-      <div>
+      <div class="wysite-brand">
         <p class="wysite-kicker">Filesystem-first static site editing</p>
         <h1><?= h($siteTitle) ?></h1>
       </div>
       <?php if ($user): ?>
-        <div class="wysite-user-chip">
-          <span class="wysite-user-chip__name"><?= h($user['username']) ?></span>
-          <form method="post" action="<?= h($appUrl) ?>/index.php?action=logout">
-            <input type="hidden" name="csrf_token" value="<?= h(Csrf::token()) ?>">
-            <button type="submit" class="wysite-button wysite-button--ghost">Log out</button>
-          </form>
-        </div>
+        <?= render_dashboard_nav($appUrl, $navActive, $user) ?>
       <?php endif; ?>
     </header>
-
-    <?php if ($user && $navActive !== null): ?>
-      <?= render_dashboard_nav($appUrl, $navActive, (bool) ($user['is_admin'] ?? false)) ?>
-    <?php endif; ?>
 
     <?php foreach ($flashes as $flash): ?>
       <div class="wysite-flash wysite-flash--<?= h($flash['type']) ?>"><?= render_flash_message((string) $flash['message']) ?></div>

@@ -17,6 +17,11 @@ WYSiteIWYG is a PHP-powered static site editor that lives entirely inside the si
 - Crawls source-site HTML pages from an external site into local static files, saves feeds/static resources, rewrites source-domain page links, and mirrors referenced assets and feed media into `/assets/imported/`.
 - Allows individual pages to opt out of template rebuilds and theme-apply rewrites through page details.
 - Keeps authentication self-contained with one-way password hashes stored in `edit/storage/users.local.php`.
+- Is location-agnostic: the same output works at the domain root or in any subdirectory, over http or https.
+- Builds a reusable theme from imported pages by tagging menu/content/archive regions, then applies it across the site; themes can be created and deleted from the dashboard.
+- Optionally uses your own AI API key (Anthropic or OpenAI-compatible) to pre-select template regions and guess page types — always as a reviewable suggestion, with manual selection as the fallback. The key is stored in a git-ignored file and never sent to the browser.
+- Runs the dashboard as a multi-page app (Dashboard, Theme, Manager, AI, Users, Docs) with a top navigation menu.
+- Hardens the editor: escaped page metadata, a strict Content-Security-Policy, active-content stripping when rendering imported HTML, and SSRF protection on every outbound fetch.
 
 ## Marker format
 
@@ -55,10 +60,10 @@ Optional file metadata is stored with:
 
 ## Runtime notes
 
-- The active editor runtime currently imports ProseMirror modules from `esm.sh`. A previous attempt to switch to fully local bundled copies caused module-graph issues and was reverted.
+- The editor runtime bundles ProseMirror locally under `edit/assets/vendor/` (a single deduplicated module graph), so it works fully offline with no third-party CDN dependency. Regenerate the vendored copy with `edit/assets/vendor/fetch-prosemirror.py` if needed.
 - This project was built to be dropped into a web root with PHP enabled for the `/edit/` directory.
 - Posts are discovered by hashtags in the `WYSITE:META` comment. The create-post flow defaults to `#blog`, and the dashboard's page-details screen lets you add or remove hashtags on existing pages.
-- The included public pages use absolute `/...` links, which is ideal when the site is served from a domain root. If your site lives in a subdirectory, update those links in the templates to match your deployment base path.
+- Generated pages are location-agnostic: each page gets a relative `<base href>` and base-relative URLs (and mirrored CSS `url()` refs are rewritten relative to the stylesheet), so the same files render correctly at the domain root or in any subdirectory without editing links by hand.
 - The external site importer saves source-site HTML pages as a first migration pass. Page links from the imported host are rewritten to local paths, RSS/XML/JSON-style static resources are imported, media URLs referenced by those resources are mirrored, and WordPress-specific API/admin endpoints are reported as non-essential skips instead of failures. Source-host `/wp-content/` URLs are treated as essential assets when they are linked from imported HTML or feeds, including feed attributes, text nodes, and CDATA. The maximum-pages setting limits HTML pages; discovered static resources are still drained from the queue.
 - Large imports can take several minutes because assets are mirrored as the crawl discovers them. The dashboard streams progress while the crawl runs, including throttled progress updates for large individual assets. The importer extends PHP's execution budget, streams large media directly to disk, fixes imported asset file permissions for public serving, and caps individual HTML/CSS-style assets to avoid exhausting memory. Any skipped asset URLs can be pasted into the dashboard's Backfill specific assets tool for a follow-up pass.
 

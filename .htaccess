@@ -4,6 +4,11 @@ DirectoryIndex index.php index.html
 <IfModule mod_rewrite.c>
 RewriteEngine On
 
+# A deployment may be a Git checkout. Never publish repository metadata, local
+# assistant configuration, or internal continuity notes from the document root.
+RewriteRule (^|/)\.(?:git|claude)(?:/|$) - [R=404,L,NC]
+RewriteRule ^(?:HANDOFF(?:_[A-Z0-9_-]+)?\.md|OPUS_PROMPT\.md)$ - [R=404,L,NC]
+
 # Derive the URL path this site is deployed under (works at the domain root or
 # in any subdirectory) and expose it as %{ENV:WYBASE}. Defaults to "/".
 RewriteRule ^ - [E=WYBASE:/]

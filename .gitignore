@@ -24,3 +24,24 @@ Thumbs.db
 !/README.md
 !/LICENSE
 !/edit/
+!/.github/
+
+# Per-install configuration and credentials must never enter the repository,
+# even if the root allowlist above is broadened later.
+/.claude/
+/HANDOFF*.md
+/OPUS_PROMPT.md
+**/.env
+**/.env.*
+!**/.env.example
+**/*.local.php
+**/*.pem
+**/*.key
+**/*.p12
+**/*.pfx
+**/*.jks
+**/*.keystore
+**/id_rsa
+**/id_dsa
+**/id_ecdsa
+**/id_ed25519

@@ -29,6 +29,7 @@ Thumbs.db
 # Per-install configuration and credentials must never enter the repository,
 # even if the root allowlist above is broadened later.
 /.claude/
+/doc/
 /HANDOFF*.md
 /OPUS_PROMPT.md
 **/.env

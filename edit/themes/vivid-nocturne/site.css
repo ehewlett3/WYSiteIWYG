@@ -233,3 +233,9 @@ th { background: rgba(168, 85, 247, 0.12); color: var(--site-ink); }
   .site-nav .main-menu { flex-direction: column; align-items: flex-start; }
   .main-menu li ul { position: static; opacity: 1; pointer-events: auto; margin-top: 6px; }
 }
+
+/* Site settings: optional logo (Site settings > Logo). */
+.site-logo { display: block; max-height: 48px; width: auto; }
+.post-meta { margin: .25rem 0 .75rem; font-size: .95rem; opacity: .8; letter-spacing: .02em; }
+.pagination { display: flex; flex-wrap: wrap; gap: 1rem; align-items: center; justify-content: center; margin: 2rem 0; }
+.blog-card__image img { display: block; width: 100%; height: auto; border-radius: inherit; margin-bottom: .75rem; }

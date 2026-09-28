@@ -196,3 +196,10 @@ td, th { border: 1px solid var(--parish-line); padding: 10px 12px; text-align: l
   .parish-nav .main-menu { flex-direction: column; align-items: flex-start; }
   .parish-nav .main-menu li ul { position: static; opacity: 1; pointer-events: auto; margin-top: 8px; }
 }
+
+/* Site settings: optional logo (Site settings > Logo). */
+.site-logo { display: block; max-height: 48px; width: auto; }
+.parish-footer { max-width: 72rem; margin: 3rem auto 2rem; padding: 0 1.5rem; text-align: center; opacity: .8; }
+.post-meta { margin: .25rem 0 .75rem; font-size: .95rem; opacity: .8; letter-spacing: .02em; }
+.pagination { display: flex; flex-wrap: wrap; gap: 1rem; align-items: center; justify-content: center; margin: 2rem 0; }
+.blog-card__image img { display: block; width: 100%; height: auto; border-radius: inherit; margin-bottom: .75rem; }

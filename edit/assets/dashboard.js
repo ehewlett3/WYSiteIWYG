@@ -42,8 +42,8 @@
     }
 
     event.preventDefault();
-    const data = new FormData(form);
-    data.append("progress_stream", "1");
+    let jobId = form.dataset.resumeJob || "";
+    delete form.dataset.resumeJob;
     panel.hidden = false;
     log.textContent = "";
     setProgress(0);
@@ -54,33 +54,55 @@
     }
 
     try {
-      const response = await fetch(form.action, {
-        method: "POST",
-        credentials: "same-origin",
-        body: data,
-        headers: { Accept: "application/x-ndjson" },
-      });
-      if (!response.ok || !response.body) {
-        throw new Error("Import request failed.");
-      }
+      // The server works in short batches (WP-7): keep posting the job id back
+      // until it reports the import is complete.
+      let finished = false;
+      while (!finished) {
+        const data = new FormData(form);
+        data.append("progress_stream", "1");
+        if (jobId) {
+          data.append("job_id", jobId);
+        }
+        batchState.next = "";
+        batchState.finished = false;
 
-      const reader = response.body.getReader();
-      const decoder = new TextDecoder();
-      let buffer = "";
-      while (true) {
-        const chunk = await reader.read();
-        if (chunk.done) {
-          break;
+        const response = await fetch(form.action, {
+          method: "POST",
+          credentials: "same-origin",
+          body: data,
+          headers: { Accept: "application/x-ndjson" },
+        });
+        if (!response.ok || !response.body) {
+          throw new Error("Import request failed." + (jobId ? " You can resume it from the Manager." : ""));
         }
 
-        buffer += decoder.decode(chunk.value, { stream: true });
-        const lines = buffer.split("\n");
-        buffer = lines.pop() || "";
-        lines.forEach(readLine);
-      }
+        const reader = response.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = "";
+        while (true) {
+          const chunk = await reader.read();
+          if (chunk.done) {
+            break;
+          }
 
-      if (buffer.trim() !== "") {
-        readLine(buffer);
+          buffer += decoder.decode(chunk.value, { stream: true });
+          const lines = buffer.split("\n");
+          buffer = lines.pop() || "";
+          lines.forEach(readLine);
+        }
+
+        if (buffer.trim() !== "") {
+          readLine(buffer);
+        }
+
+        if (batchState.next) {
+          jobId = batchState.next;
+        } else {
+          finished = true;
+          if (!batchState.finished) {
+            appendLog("The import stopped early. Reload the Manager to resume it.");
+          }
+        }
       }
     } catch (error) {
       appendLog("Error: " + (error.message || "Import failed."));
@@ -106,8 +128,16 @@
     }
   }
 
+  const batchState = { next: "", finished: false };
+
   function handleEvent(event) {
     updateCounts(event);
+    if (event.type === "batch_done" && event.job) {
+      batchState.next = event.job;
+    }
+    if (event.type === "complete" || event.type === "done" || event.type === "fatal") {
+      batchState.finished = true;
+    }
 
     if (event.type === "page_start") {
       appendLog("Fetching " + event.url);
@@ -300,5 +330,137 @@
     } finally {
       testBtn.disabled = false;
     }
+  });
+})();
+
+// --- Managed pages filter (UX-3): text + type, client-side ---
+(() => {
+  document.querySelectorAll("[data-wysite-table-filter]").forEach((controls) => {
+    const table = document.getElementById(controls.dataset.wysiteTableFilter);
+    if (!table) return;
+    const text = controls.querySelector("[data-wysite-filter-text]");
+    const kind = controls.querySelector("[data-wysite-filter-kind]");
+    // Large migrated sites: show 50 matching rows at a time.
+    const pageSize = 50;
+    let limit = pageSize;
+    const more = document.createElement("button");
+    more.type = "button";
+    more.className = "wysite-button wysite-button--ghost";
+    more.hidden = true;
+    table.closest(".wysite-table-wrap")?.insertAdjacentElement("afterend", more);
+    more.addEventListener("click", () => {
+      limit += pageSize;
+      apply();
+    });
+
+    const apply = () => {
+      const needle = (text?.value || "").trim().toLowerCase();
+      const wanted = kind?.value || "";
+      let matched = 0;
+      table.querySelectorAll("tbody tr").forEach((row) => {
+        const matchesText = needle === "" || (row.dataset.search || "").includes(needle);
+        const matchesKind = wanted === "" || row.dataset.kind === wanted;
+        const matches = matchesText && matchesKind;
+        if (matches) {
+          matched++;
+        }
+        row.hidden = !matches || matched > limit;
+      });
+      more.hidden = matched <= limit;
+      more.textContent = `Show more (${matched - Math.min(limit, matched)} hidden)`;
+    };
+    text?.addEventListener("input", () => {
+      limit = pageSize;
+      apply();
+    });
+    kind?.addEventListener("change", () => {
+      limit = pageSize;
+      apply();
+    });
+    apply();
+  });
+})();
+
+// --- Live URL preview for create/move forms (UX-10) ---
+// Mirrors SiteGenerator::normalizeSlug(): lowercase, [a-z0-9/-], and only a
+// first segment of exactly "edit" or "assets" is reserved.
+(() => {
+  const normalize = (value) => value
+    .toLowerCase()
+    .trim()
+    .replace(/[^a-z0-9/-]+/g, "-")
+    .replace(/-+/g, "-")
+    .replace(/^[-/]+|[-/]+$/g, "");
+
+  document.querySelectorAll("[data-wysite-slug-preview]").forEach((slugInput) => {
+    const form = slugInput.closest("form");
+    const source = form?.querySelector("[data-wysite-slug-source]");
+    const preview = form?.querySelector("[data-wysite-url-preview]");
+    const base = slugInput.dataset.wysiteSlugPreview || "/";
+    const permalink = slugInput.dataset.wysitePermalink || "";
+    const update = () => {
+      if (!preview) return;
+      let slug = normalize(slugInput.value || source?.value || "");
+      if (permalink) {
+        const now = new Date();
+        slug = permalink
+          .replace("{slug}", slug.replace(/\//g, "-"))
+          .replace("{yyyy}", String(now.getUTCFullYear()))
+          .replace("{mm}", String(now.getUTCMonth() + 1).padStart(2, "0"));
+      }
+      if (!slug) {
+        preview.hidden = true;
+        return;
+      }
+      preview.hidden = false;
+      if (/^(edit|assets)(\/|$)/.test(slug)) {
+        preview.textContent = `"${slug.split("/")[0]}/" is reserved for the editor and uploads — choose another slug.`;
+        preview.classList.add("is-error");
+      } else {
+        preview.textContent = `Address: ${base}${slug === "index" ? "" : slug + "/"}`;
+        preview.classList.remove("is-error");
+      }
+    };
+    slugInput.addEventListener("input", update);
+    source?.addEventListener("input", update);
+    update();
+  });
+})();
+
+// --- AI template-kind suggestions, loaded after render (UX-7) ---
+(() => {
+  const status = document.querySelector("[data-wysite-ai-kinds-url]");
+  if (!status || !window.fetch) return;
+  status.hidden = false;
+  fetch(status.dataset.wysiteAiKindsUrl, { credentials: "same-origin", headers: { Accept: "application/json" } })
+    .then((response) => (response.ok ? response.json() : null))
+    .then((data) => {
+      const kinds = (data && data.kinds) || {};
+      let applied = 0;
+      document.querySelectorAll("[data-wysite-ai-kind]").forEach((select) => {
+        const kind = kinds[select.dataset.wysiteAiKind];
+        if (kind && select.querySelector(`option[value="${kind}"]`)) {
+          select.value = kind;
+          applied++;
+        }
+      });
+      status.textContent = applied > 0 ? `AI suggested template kinds for ${applied} page(s).` : "No AI suggestions available.";
+    })
+    .catch(() => {
+      status.textContent = "AI suggestions unavailable.";
+    });
+})();
+
+// --- Resume an unfinished crawl (WP-7) ---
+(() => {
+  document.querySelectorAll("[data-wysite-resume-job]").forEach((button) => {
+    button.addEventListener("click", () => {
+      const form = document.querySelector("[data-wysite-external-import-form]");
+      if (!form) return;
+      const url = form.querySelector('input[name="url"]');
+      if (url) url.value = button.dataset.wysiteResumeUrl || url.value;
+      form.dataset.resumeJob = button.dataset.wysiteResumeJob;
+      form.requestSubmit();
+    });
   });
 })();

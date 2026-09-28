@@ -1,0 +1,80 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<rss version="2.0"
+	xmlns:excerpt="http://wordpress.org/export/1.2/excerpt/"
+	xmlns:content="http://purl.org/rss/1.0/modules/content/"
+	xmlns:wfw="http://wellformedweb.org/CommentAPI/"
+	xmlns:dc="http://purl.org/dc/elements/1.1/"
+	xmlns:wp="http://wordpress.org/export/1.2/">
+<channel>
+	<title>Old Parish Blog</title>
+	<link>https://old.example.org</link>
+	<wp:wxr_version>1.2</wp:wxr_version>
+	<item>
+		<title>Easter &amp; Spring</title>
+		<link>https://old.example.org/2024/04/easter-spring/</link>
+		<dc:creator><![CDATA[Fr. John]]></dc:creator>
+		<content:encoded><![CDATA[<!-- wp:paragraph -->
+<p>Christ is risen!</p>
+<!-- /wp:paragraph -->
+
+<!-- wp:image {"id":12} -->
+<figure class="wp-block-image"><img src="https://old.example.org/wp-content/uploads/2024/04/lilies.jpg" alt="Lilies"/></figure>
+<!-- /wp:image -->]]></content:encoded>
+		<excerpt:encoded><![CDATA[A paschal greeting.]]></excerpt:encoded>
+		<wp:post_date_gmt><![CDATA[2024-04-05 09:00:00]]></wp:post_date_gmt>
+		<wp:post_name><![CDATA[easter-spring]]></wp:post_name>
+		<wp:status><![CDATA[publish]]></wp:status>
+		<wp:post_type><![CDATA[post]]></wp:post_type>
+		<category domain="category" nicename="news"><![CDATA[News]]></category>
+		<category domain="post_tag" nicename="feasts"><![CDATA[Feasts]]></category>
+		<category domain="category" nicename="uncategorized"><![CDATA[Uncategorized]]></category>
+	</item>
+	<item>
+		<title>Classic post</title>
+		<link>https://old.example.org/?p=42</link>
+		<dc:creator><![CDATA[admin]]></dc:creator>
+		<content:encoded><![CDATA[First paragraph
+still first.
+
+Second paragraph.
+<ul>
+<li>One</li>
+</ul>]]></content:encoded>
+		<excerpt:encoded><![CDATA[]]></excerpt:encoded>
+		<wp:post_date_gmt><![CDATA[2023-01-02 00:00:00]]></wp:post_date_gmt>
+		<wp:post_name><![CDATA[classic-post]]></wp:post_name>
+		<wp:status><![CDATA[publish]]></wp:status>
+		<wp:post_type><![CDATA[post]]></wp:post_type>
+	</item>
+	<item>
+		<title>Unfinished</title>
+		<link>https://old.example.org/?p=43</link>
+		<content:encoded><![CDATA[<p>Draft text</p>]]></content:encoded>
+		<wp:post_date_gmt><![CDATA[0000-00-00 00:00:00]]></wp:post_date_gmt>
+		<wp:post_date><![CDATA[2024-06-01 12:00:00]]></wp:post_date>
+		<wp:post_name><![CDATA[unfinished]]></wp:post_name>
+		<wp:status><![CDATA[draft]]></wp:status>
+		<wp:post_type><![CDATA[post]]></wp:post_type>
+	</item>
+	<item>
+		<title>About Us</title>
+		<link>https://old.example.org/about-us/</link>
+		<content:encoded><![CDATA[<p>We are a parish. <script>alert(1)</script></p>]]></content:encoded>
+		<wp:status><![CDATA[publish]]></wp:status>
+		<wp:post_type><![CDATA[page]]></wp:post_type>
+		<wp:post_name><![CDATA[about-us]]></wp:post_name>
+	</item>
+	<item>
+		<title>lilies</title>
+		<link>https://old.example.org/2024/04/easter-spring/lilies/</link>
+		<wp:status><![CDATA[inherit]]></wp:status>
+		<wp:post_type><![CDATA[attachment]]></wp:post_type>
+		<wp:attachment_url><![CDATA[https://old.example.org/wp-content/uploads/2024/04/lilies.jpg]]></wp:attachment_url>
+	</item>
+	<item>
+		<title>Menu item</title>
+		<wp:status><![CDATA[publish]]></wp:status>
+		<wp:post_type><![CDATA[nav_menu_item]]></wp:post_type>
+	</item>
+</channel>
+</rss>

@@ -1,7 +1,10 @@
 const previewContext = globalThis.WYSITE_PREVIEW_CONTEXT;
-if (previewContext) {
-  // The preview shell already provides its own fixed admin bar.
-} else {
+// Pages built before the hint-cookie loader still include this module directly,
+// so it checks the hint itself too: no sign-in hint, no request to /edit/.
+const hinted = /(?:^|;\s*)wysite_editor=1/.test(document.cookie);
+
+if (!previewContext && hinted) {
+  // (The preview shell provides its own fixed admin bar.)
   const context = globalThis.WYSITE_PUBLIC_CONTEXT || {};
   const appUrl = typeof context.appUrl === "string" && context.appUrl !== "" ? context.appUrl : "/edit";
 
@@ -17,6 +20,14 @@ if (previewContext) {
     document.head.appendChild(link);
   };
 
+  const makeLink = (className, href, text) => {
+    const link = document.createElement("a");
+    link.className = className;
+    link.href = href;
+    link.textContent = text;
+    return link;
+  };
+
   const createBanner = (payload) => {
     if (!payload.loggedIn || !payload.editUrl || document.querySelector(".wysite-live-banner")) {
       return;
@@ -25,15 +36,21 @@ if (previewContext) {
     ensureStylesheet();
     document.body.classList.add("wysite-live-banner-visible");
 
+    // Built with DOM APIs and textContent: nothing from the response is parsed as HTML.
     const banner = document.createElement("div");
     banner.className = "wysite-live-banner";
-    banner.innerHTML = `
-      <div>Signed in as ${payload.username || "editor"}.</div>
-      <div class="wysite-live-banner__actions">
-        <a class="wysite-live-banner__button wysite-live-banner__button--primary" href="${payload.editUrl}">Edit</a>
-        <a class="wysite-live-banner__button" href="${payload.dashboardUrl || `${appUrl}/index.php`}">Dashboard</a>
-      </div>
-    `;
+
+    const who = document.createElement("div");
+    who.textContent = `Signed in as ${payload.username || "editor"}.`;
+
+    const actions = document.createElement("div");
+    actions.className = "wysite-live-banner__actions";
+    actions.append(
+      makeLink("wysite-live-banner__button wysite-live-banner__button--primary", String(payload.editUrl), "Edit"),
+      makeLink("wysite-live-banner__button", String(payload.dashboardUrl || `${appUrl}/index.php`), "Dashboard"),
+    );
+
+    banner.append(who, actions);
     document.body.prepend(banner);
   };
 

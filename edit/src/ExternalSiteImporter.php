@@ -21,6 +21,10 @@ final class ExternalSiteImporter
     private const ASSET_PROGRESS_BYTES = 2_097_152;
     private const ASSET_PROGRESS_SECONDS = 2.0;
     private const MAX_FETCH_REDIRECTS = 5;
+    /** Default total bytes one import may write (configurable via setByteBudget). */
+    private const DEFAULT_IMPORT_BYTE_BUDGET = 2_147_483_648;
+    /** Stop mirroring when the disk would drop below this much free space. */
+    private const MIN_FREE_DISK_BYTES = 268_435_456;
 
     private const TEMPLATE_FILES = [
         'home' => 'home.html',
@@ -52,6 +56,39 @@ final class ExternalSiteImporter
     private string $rootPath;
     private string $editPath;
     private $progressCallback = null;
+    private int $byteBudget = self::DEFAULT_IMPORT_BYTE_BUDGET;
+    private int $bytesUsed = 0;
+
+    private bool $keepScripts = false;
+
+    /**
+     * WP-5: crawled pages are published under the site root before anyone imports
+     * them, so by default their scripts, event handlers and javascript: URLs are
+     * removed (they would run with the editor's privileges). Styling is kept.
+     */
+    public function setKeepScripts(bool $keep): void
+    {
+        $this->keepScripts = $keep;
+    }
+
+    /** Total bytes a single import run may write to disk (0 keeps the default). */
+    public function setByteBudget(int $bytes): void
+    {
+        $this->byteBudget = $bytes > 0 ? $bytes : self::DEFAULT_IMPORT_BYTE_BUDGET;
+    }
+
+    /** Refuse further downloads once the run's byte budget or the disk is exhausted. */
+    private function assertStorageAvailable(): void
+    {
+        if ($this->bytesUsed >= $this->byteBudget) {
+            throw new RuntimeException('Skipped: this import reached its storage budget of ' . $this->bytesLabel($this->byteBudget) . '.');
+        }
+
+        $free = @disk_free_space($this->rootPath);
+        if (is_float($free) && $free < self::MIN_FREE_DISK_BYTES) {
+            throw new RuntimeException('Skipped: less than ' . $this->bytesLabel(self::MIN_FREE_DISK_BYTES) . ' of disk space is free.');
+        }
+    }
 
     public function __construct(string $rootPath, string $editPath)
     {
@@ -97,15 +134,9 @@ final class ExternalSiteImporter
     {
         $this->templateFilename($kind);
 
-        $relativePath = ltrim(str_replace('\\', '/', trim($relativePath)), '/');
-        if ($relativePath === '' || str_contains($relativePath, '../') || str_starts_with($relativePath, 'edit/')) {
-            throw new RuntimeException('Invalid page path for template source.');
-        }
-
-        $full = $this->rootPath . '/' . $relativePath;
-        if (!is_file($full)) {
-            throw new RuntimeException('Page not found: ' . $relativePath);
-        }
+        $sitePath = new SitePath($this->rootPath, $this->editPath);
+        $relativePath = $sitePath->normalize($relativePath);
+        $full = $sitePath->resolvePage($relativePath, true);
 
         $html = (string) file_get_contents($full);
         $id = gmdate('Ymd-His') . '-' . bin2hex(random_bytes(4));
@@ -263,7 +294,9 @@ final class ExternalSiteImporter
             $this->applyTemplateRole($dom, $element, $role);
         }
 
-        $html = $this->restorePlaceholderTokens($this->stripDomEncodingHack($dom->saveHTML() ?: ''));
+        // Promoted templates become the chrome of every public page: drop scripts,
+        // handlers and unsafe URLs from the imported markup, keep markers/tokens.
+        $html = Sanitizer::document($this->restorePlaceholderTokens($this->stripDomEncodingHack($dom->saveHTML() ?: '')));
         $this->assertTemplateHasRequiredTokens($kind, $html);
 
         $filename = $this->templateFilename($kind);
@@ -280,40 +313,113 @@ final class ExternalSiteImporter
         }
 
         Filesystem::ensureDirectory(dirname($path));
-        Filesystem::atomicWrite($path, $html);
+        Filesystem::writeSitePage($path, $html);
 
         return $relative;
     }
 
+    /**
+     * Crawl a site in one call (runs the resumable job below to completion).
+     */
     public function importSite(string $startUrl, int $maxPages = 50, bool $overwrite = false, ?callable $progressCallback = null): array
     {
+        $jobId = $this->startImportJob($startUrl, $maxPages, $overwrite);
+        do {
+            $step = $this->runImportJob($jobId, 0, $progressCallback);
+        } while (!$step['done']);
+
+        return $step['result'];
+    }
+
+    /**
+     * WP-7: create a resumable crawl job. Its queue and results live in
+     * edit/storage/import-jobs/<id>.json so the browser can drive the import in
+     * short batches (no single request has to outlive proxy/FPM timeouts) and an
+     * interrupted import can be resumed.
+     */
+    public function startImportJob(string $startUrl, int $maxPages = 50, bool $overwrite = false): string
+    {
+        $startUrl = $this->normalizeHttpUrl($startUrl);
+        $startHost = strtolower((string) parse_url($startUrl, PHP_URL_HOST));
+        $sourceHosts = $this->equivalentHosts($startHost);
+        $this->recordImportSource($sourceHosts);
+
+        $id = gmdate('Ymd-His') . '-' . bin2hex(random_bytes(4));
+        $this->saveJob($id, [
+            'id' => $id,
+            'start_url' => $startUrl,
+            'max_pages' => max(1, min(500, $maxPages)),
+            'overwrite' => $overwrite,
+            'source_hosts' => $sourceHosts,
+            'created_at' => gmdate('c'),
+            'updated_at' => gmdate('c'),
+            'done' => false,
+            'started' => false,
+            'bytes_used' => 0,
+            'queue' => [$startUrl],
+            'seen' => [],
+            'pages_visited' => 0,
+            'saved' => [],
+            'skipped' => [],
+            'failed' => [],
+            'duplicates' => [],
+            'limit_skipped' => [],
+            'resources_saved' => [],
+            'nonessential_skipped' => [],
+            'visited_local_paths' => [],
+            'asset_map' => [],
+            'assets_saved' => [],
+            'assets_failed' => [],
+            'query_redirects' => [],
+            'result' => null,
+        ]);
+
+        return $id;
+    }
+
+    /**
+     * Process a job for up to $maxSeconds (0 = until finished).
+     *
+     * @return array{done:bool, job:string, result:array|null, queued:int, saved:int}
+     */
+    public function runImportJob(string $id, int $maxSeconds = 25, ?callable $progressCallback = null): array
+    {
+        $state = $this->loadJob($id);
+        if (!empty($state['done'])) {
+            return ['done' => true, 'job' => $id, 'result' => $state['result'], 'queued' => 0, 'saved' => count($state['saved'])];
+        }
+
         $previousProgressCallback = $this->progressCallback;
         $this->progressCallback = $progressCallback;
+        $this->bytesUsed = (int) $state['bytes_used'];
         $this->refreshExecutionBudget();
+        $started = microtime(true);
 
         try {
-            $startUrl = $this->normalizeHttpUrl($startUrl);
-            $maxPages = max(1, min(500, $maxPages));
-            $startHost = strtolower((string) parse_url($startUrl, PHP_URL_HOST));
-            $sourceHosts = $this->equivalentHosts($startHost);
-            $queue = [$startUrl];
-            $seen = [];
-            $pagesVisited = 0;
-            $saved = [];
-            $skipped = [];
-            $failed = [];
-            $duplicates = [];
-            $limitSkipped = [];
-            $resourcesSaved = [];
-            $nonEssentialSkipped = [];
-            $visitedLocalPaths = [];
-            $assetMap = [];
-            $assetsSaved = [];
-            $assetsFailed = [];
+            $startUrl = (string) $state['start_url'];
+            $maxPages = (int) $state['max_pages'];
+            $overwrite = (bool) $state['overwrite'];
+            $sourceHosts = (array) $state['source_hosts'];
+            $queue = &$state['queue'];
+            $seen = &$state['seen'];
+            $pagesVisited = &$state['pages_visited'];
+            $saved = &$state['saved'];
+            $skipped = &$state['skipped'];
+            $failed = &$state['failed'];
+            $duplicates = &$state['duplicates'];
+            $limitSkipped = &$state['limit_skipped'];
+            $resourcesSaved = &$state['resources_saved'];
+            $nonEssentialSkipped = &$state['nonessential_skipped'];
+            $visitedLocalPaths = &$state['visited_local_paths'];
+            $assetMap = &$state['asset_map'];
+            $assetsSaved = &$state['assets_saved'];
+            $assetsFailed = &$state['assets_failed'];
+            $queryRedirects = &$state['query_redirects'];
 
-            $progress = function (string $type, array $extra = []) use (&$queue, &$seen, &$pagesVisited, &$saved, &$skipped, &$failed, &$duplicates, &$limitSkipped, &$resourcesSaved, &$nonEssentialSkipped, &$assetsSaved, &$assetsFailed, $maxPages): void {
+            $progress = function (string $type, array $extra = []) use (&$queue, &$seen, &$pagesVisited, &$saved, &$skipped, &$failed, &$duplicates, &$limitSkipped, &$resourcesSaved, &$nonEssentialSkipped, &$assetsSaved, &$assetsFailed, $maxPages, $id): void {
                 $this->emitProgress(array_merge([
                     'type' => $type,
+                    'job' => $id,
                     'visited' => $pagesVisited,
                     'visited_urls' => count($seen),
                     'queued' => count($queue),
@@ -331,9 +437,14 @@ final class ExternalSiteImporter
                 ], $extra));
             };
 
-            $progress('start', ['url' => $startUrl]);
+            if (empty($state['started'])) {
+                $state['started'] = true;
+                $progress('start', ['url' => $startUrl]);
+            } else {
+                $progress('resume', ['url' => $startUrl]);
+            }
 
-            while ($queue !== []) {
+            while ($queue !== [] && ($maxSeconds <= 0 || (microtime(true) - $started) < $maxSeconds)) {
                 $this->refreshExecutionBudget();
 
                 $url = array_shift($queue);
@@ -392,8 +503,12 @@ final class ExternalSiteImporter
                             $assetsFailed,
                             $nonEssentialSkipped
                         );
-                        Filesystem::atomicWrite($target, $rewritten['html']);
+                        Filesystem::writeSitePage($target, $this->keepScripts ? $rewritten['html'] : Sanitizer::document($rewritten['html']));
                         $saved[] = $relativePath;
+                        $sourceQuery = (string) parse_url($url, PHP_URL_QUERY);
+                        if ($sourceQuery !== '') {
+                            $queryRedirects[] = ['path' => (string) (parse_url($url, PHP_URL_PATH) ?: '/'), 'query' => $sourceQuery, 'target' => $relativePath];
+                        }
                         $progress('page_saved', ['url' => $url, 'path' => $relativePath, 'found_links' => count($rewritten['links'])]);
 
                         foreach ($rewritten['links'] as $link) {
@@ -454,6 +569,14 @@ final class ExternalSiteImporter
                 }
             }
 
+            if ($queue !== []) {
+                $state['bytes_used'] = $this->bytesUsed;
+                $state['updated_at'] = gmdate('c');
+                $this->saveJob($id, $state);
+                $progress('batch_done', ['message' => 'Pausing; ' . count($queue) . ' URL(s) left.']);
+                return ['done' => false, 'job' => $id, 'result' => null, 'queued' => count($queue), 'saved' => count($saved)];
+            }
+
             $permissionReport = $this->normalizeImportedAssetPermissions();
             if (($permissionReport['files'] + $permissionReport['directories']) > 0) {
                 $progress('asset_permissions_repaired', $permissionReport);
@@ -463,6 +586,9 @@ final class ExternalSiteImporter
             if (($localizeReport['pages'] + $localizeReport['stylesheets']) > 0) {
                 $progress('localized', $localizeReport);
             }
+
+            $this->recordImportedFiles(array_merge($saved, $resourcesSaved));
+            $this->recordQueryRedirects($queryRedirects);
 
             $result = [
                 'saved' => $saved,
@@ -481,23 +607,104 @@ final class ExternalSiteImporter
                 'asset_permissions_fixed' => $permissionReport,
                 'assets_failed' => array_values($assetsFailed),
             ];
+            $state['done'] = true;
+            $state['result'] = $result;
+            $state['bytes_used'] = $this->bytesUsed;
+            $state['updated_at'] = gmdate('c');
+            // Keep only the summary once finished; the queue/maps can be large.
+            $this->saveJob($id, array_intersect_key($state, array_flip(['id', 'start_url', 'max_pages', 'created_at', 'updated_at', 'done', 'result', 'saved'])));
             $progress('complete', ['result' => $result]);
 
-            return $result;
+            return ['done' => true, 'job' => $id, 'result' => $result, 'queued' => 0, 'saved' => count($saved)];
         } finally {
             $this->progressCallback = $previousProgressCallback;
         }
     }
 
+    /** Unfinished crawl jobs, newest first (for the Manager's Resume list). */
+    public function unfinishedImportJobs(): array
+    {
+        $jobs = [];
+        foreach (glob($this->importJobsPath() . '/*.json') ?: [] as $file) {
+            $job = json_decode((string) file_get_contents($file), true);
+            if (is_array($job) && empty($job['done'])) {
+                $jobs[] = [
+                    'id' => (string) $job['id'],
+                    'start_url' => (string) $job['start_url'],
+                    'updated_at' => (string) ($job['updated_at'] ?? ''),
+                    'saved' => count((array) ($job['saved'] ?? [])),
+                    'queued' => count((array) ($job['queue'] ?? [])),
+                ];
+            }
+        }
+        usort($jobs, static fn(array $a, array $b): int => strcmp($b['id'], $a['id']));
+        return $jobs;
+    }
+
+    public function discardImportJob(string $id): void
+    {
+        $this->assertImportId($id);
+        @unlink($this->importJobsPath() . '/' . $id . '.json');
+    }
+
+    private function importJobsPath(): string
+    {
+        return $this->editPath . '/storage/import-jobs';
+    }
+
+    private function loadJob(string $id): array
+    {
+        $this->assertImportId($id);
+        $file = $this->importJobsPath() . '/' . $id . '.json';
+        $job = is_file($file) ? json_decode((string) file_get_contents($file), true) : null;
+        if (!is_array($job)) {
+            throw new RuntimeException('That import job no longer exists.');
+        }
+
+        return $job;
+    }
+
+    private function saveJob(string $id, array $state): void
+    {
+        $this->assertImportId($id);
+        Filesystem::atomicWrite(
+            $this->importJobsPath() . '/' . $id . '.json',
+            (string) json_encode($state, JSON_UNESCAPED_SLASHES | JSON_INVALID_UTF8_SUBSTITUTE),
+            0600
+        );
+    }
+
     /**
-     * Make already-imported output location-agnostic. Raw (unmanaged) imported HTML
-     * pages get a per-page relative <base> and base-relative URLs; mirrored
-     * stylesheet url() refs are rewritten to resolve relative to each CSS file (the
-     * document <base> does not affect CSS url()). Managed pages (with WYSITE markers)
-     * are left to SiteGenerator. Idempotent — safe to re-run as a backfill.
-     *
-     * @return array{pages:int,stylesheets:int}
+     * WP-6: remember query-string source URLs (?p=123, ?page_id=45) and the files
+     * they were saved to, so a redirect map can send old links to the new pages.
      */
+    public function recordQueryRedirects(array $redirects): void
+    {
+        if ($redirects === []) {
+            return;
+        }
+
+        $file = $this->editPath . '/storage/import-redirects.local.json';
+        Filesystem::withLock($file, function () use ($file, $redirects): void {
+            $current = is_file($file) ? json_decode((string) file_get_contents($file), true) : [];
+            $current = is_array($current) ? $current : [];
+            foreach ($redirects as $redirect) {
+                if (is_array($redirect) && isset($redirect['query'], $redirect['target'])) {
+                    $current[(string) ($redirect['path'] ?? '/') . '?' . $redirect['query']] = $redirect;
+                }
+            }
+            Filesystem::atomicWrite($file, (string) json_encode($current, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES), 0600);
+        });
+    }
+
+    /** @return array<int, array{path:string, query:string, target:string}> */
+    public function queryRedirects(): array
+    {
+        $file = $this->editPath . '/storage/import-redirects.local.json';
+        $data = is_file($file) ? json_decode((string) file_get_contents($file), true) : [];
+        return array_values(is_array($data) ? $data : []);
+    }
+
     public function relocalizeImportedOutput(): array
     {
         $pages = 0;
@@ -532,7 +739,7 @@ final class ExternalSiteImporter
                 }
                 $localized = UrlLocalizer::localizeHtml($html, $rel);
                 if ($localized !== $html) {
-                    Filesystem::atomicWrite($full, $localized);
+                    Filesystem::writeSitePage($full, $localized);
                     $pages++;
                 }
                 continue;
@@ -542,7 +749,7 @@ final class ExternalSiteImporter
                 $css = (string) file_get_contents($full);
                 $localized = UrlLocalizer::localizeCssUrls($css, dirname($rel));
                 if ($localized !== $css) {
-                    Filesystem::atomicWrite($full, $localized);
+                    Filesystem::writeSitePage($full, $localized);
                     $stylesheets++;
                 }
             }
@@ -553,6 +760,7 @@ final class ExternalSiteImporter
 
     public function importAssetUrls(array $urls): array
     {
+        $this->bytesUsed = 0;
         $this->refreshExecutionBudget();
 
         $assetMap = [];
@@ -578,6 +786,55 @@ final class ExternalSiteImporter
             'asset_permissions_fixed' => $this->normalizeImportedAssetPermissions(),
             'updated_files' => $this->rewriteImportedAssetReferences($urlToLocalPath),
         ];
+    }
+
+    /**
+     * Remember which root files the crawler created (import-manifest.local.json),
+     * so "Delete all pages" can remove them without touching other apps' HTML.
+     */
+    private function recordImportedFiles(array $paths): void
+    {
+        $manifest = $this->editPath . '/storage/import-manifest.local.json';
+        Filesystem::withLock($manifest, function () use ($manifest, $paths): void {
+            $current = is_file($manifest) ? json_decode((string) file_get_contents($manifest), true) : [];
+            $current = is_array($current) ? $current : [];
+            foreach ($paths as $path) {
+                if (is_string($path) && $path !== '') {
+                    $current[$path] = gmdate('c');
+                }
+            }
+            ksort($current);
+            Filesystem::atomicWrite($manifest, (string) json_encode($current, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES), 0600);
+        });
+    }
+
+    /** Remember the crawled site's hostnames for the migration report (WP-4). */
+    public function recordImportSource(array $hosts): void
+    {
+        $path = $this->editPath . '/storage/import-sources.local.json';
+        $current = is_file($path) ? json_decode((string) file_get_contents($path), true) : [];
+        $current = is_array($current) ? $current : [];
+        $merged = array_values(array_unique(array_merge($current, array_map('strtolower', $hosts))));
+        Filesystem::atomicWrite($path, (string) json_encode($merged, JSON_PRETTY_PRINT), 0600);
+    }
+
+    /** @return string[] hostnames of sites imported so far */
+    public function importedSourceHosts(): array
+    {
+        $path = $this->editPath . '/storage/import-sources.local.json';
+        $data = is_file($path) ? json_decode((string) file_get_contents($path), true) : [];
+        return is_array($data) ? array_values(array_filter($data, 'is_string')) : [];
+    }
+
+    /** @return string[] root-relative paths the crawler created that still exist */
+    public function importedFiles(): array
+    {
+        $manifest = $this->editPath . '/storage/import-manifest.local.json';
+        $data = is_file($manifest) ? json_decode((string) file_get_contents($manifest), true) : [];
+        return array_values(array_filter(
+            array_keys(is_array($data) ? $data : []),
+            fn(string $path): bool => is_file($this->rootPath . '/' . $path)
+        ));
     }
 
     private function countWordPressContentAssetPaths(array $assetsSaved): int
@@ -1494,10 +1751,17 @@ final class ExternalSiteImporter
                 'assets_failed' => count($assetsFailed),
             ]);
 
+            $this->assertStorageAvailable();
             $asset = $this->downloadAssetToTemp($canonicalUrl);
+            $this->bytesUsed += (int) ($asset['bytes'] ?? (is_file($asset['path']) ? filesize($asset['path']) : 0));
+            if ($this->bytesUsed > $this->byteBudget) {
+                @unlink($asset['path']);
+                throw new RuntimeException('Skipped: this import reached its storage budget of ' . $this->bytesLabel($this->byteBudget) . '.');
+            }
             $relativePath = $this->localAssetPathForUrl($canonicalUrl, $asset['content_type']);
             $assetMap[$canonicalUrl] = $relativePath;
             $target = $this->rootPath . '/' . $relativePath;
+            AssetPolicy::ensureAssetsHtaccess($this->rootPath);
 
             if ($this->assetLooksLikeCss($canonicalUrl, $asset['content_type'])) {
                 $contents = (string) file_get_contents($asset['path']);
@@ -1613,6 +1877,8 @@ final class ExternalSiteImporter
      */
     private function streamRequestOnce(string $url, int $timeoutSeconds, int $maxBytes, string $acceptHeader): array
     {
+        // Connect to the IP the SSRF check validated (no DNS rebinding window).
+        $pin = pin_url($url);
         $context = stream_context_create([
             'http' => [
                 'timeout' => $timeoutSeconds,
@@ -1620,11 +1886,12 @@ final class ExternalSiteImporter
                 'max_redirects' => 1,
                 'ignore_errors' => true,
                 'user_agent' => 'WYSiteIWYG Migration Importer',
-                'header' => $acceptHeader,
+                'header' => $pin['host_header'] . "\r\n" . $acceptHeader,
             ],
+            'ssl' => $pin['ssl'],
         ]);
 
-        $handle = @fopen($url, 'rb', false, $context);
+        $handle = @fopen($pin['url'], 'rb', false, $context);
         if (!is_resource($handle)) {
             throw new RuntimeException('Unable to fetch resource.');
         }
@@ -1775,6 +2042,7 @@ final class ExternalSiteImporter
         $maxBytes = $this->assetLooksLikeCss($url, '') ? self::MAX_REWRITABLE_ASSET_BYTES : self::MAX_STREAMED_ASSET_BYTES;
         $abortReason = null;
 
+        $pin = pin_url($url);
         $ch = curl_init($url);
         if ($ch === false) {
             fclose($out);
@@ -1782,10 +2050,15 @@ final class ExternalSiteImporter
         }
 
         curl_setopt_array($ch, [
+            // Connect to the IP the SSRF check validated (no DNS rebinding window).
+            CURLOPT_RESOLVE => [$pin['resolve']],
             CURLOPT_FILE => $out,
             CURLOPT_FOLLOWLOCATION => false,
             CURLOPT_PROTOCOLS => CURLPROTO_HTTP | CURLPROTO_HTTPS,
-            CURLOPT_TIMEOUT => 0,
+            // Bounded, but generous for large media; abort stalled transfers early.
+            CURLOPT_TIMEOUT => 1800,
+            CURLOPT_LOW_SPEED_LIMIT => 1024,
+            CURLOPT_LOW_SPEED_TIME => 120,
             CURLOPT_CONNECTTIMEOUT => 30,
             CURLOPT_BUFFERSIZE => 1024 * 1024,
             CURLOPT_USERAGENT => 'WYSiteIWYG Migration Importer',
@@ -1938,6 +2211,7 @@ final class ExternalSiteImporter
      */
     private function streamDownloadOnce(string $url, string $tmpPath): array
     {
+        $pin = pin_url($url);
         $context = stream_context_create([
             'http' => [
                 'timeout' => self::LARGE_ASSET_FETCH_TIMEOUT_SECONDS,
@@ -1945,11 +2219,12 @@ final class ExternalSiteImporter
                 'max_redirects' => 1,
                 'ignore_errors' => true,
                 'user_agent' => 'WYSiteIWYG Migration Importer',
-                'header' => "Accept: */*\r\n",
+                'header' => $pin['host_header'] . "\r\nAccept: */*\r\n",
             ],
+            'ssl' => $pin['ssl'],
         ]);
 
-        $handle = @fopen($url, 'rb', false, $context);
+        $handle = @fopen($pin['url'], 'rb', false, $context);
         if (!is_resource($handle)) {
             throw new RuntimeException('Unable to fetch asset.');
         }
@@ -2126,7 +2401,7 @@ final class ExternalSiteImporter
             }
 
             if ($next !== $contents) {
-                Filesystem::atomicWrite($fullPath, $next);
+                Filesystem::writeSitePage($fullPath, $next);
                 $updated++;
             }
         }
@@ -2535,7 +2810,7 @@ final class ExternalSiteImporter
             $segments[$lastIndex] = $this->appendSlugBeforeExtension($segments[$lastIndex], $querySlug);
         }
 
-        return implode('/', $segments);
+        return AssetPolicy::safeRelativePath(implode('/', $segments));
     }
 
     private function localUrlForPageUrl(string $url): string
@@ -2584,7 +2859,7 @@ final class ExternalSiteImporter
             '<title>Redirecting</title></head><body>' .
             '<p><a href="' . h($assetUrl) . '">Open mirrored resource</a></p>' .
             '</body></html>';
-        Filesystem::atomicWrite($target, $html);
+        Filesystem::writeSitePage($target, $html);
 
         return $relativePath;
     }
@@ -2624,7 +2899,9 @@ final class ExternalSiteImporter
             $segments[$lastIndex] = $this->appendSlugBeforeExtension($segments[$lastIndex], $querySlug);
         }
 
-        return 'assets/imported/' . $host . '/' . implode('/', $segments);
+        // Keep the remote name only when its type is on the publish allowlist, so a
+        // compromised source can't plant shell.php/.phtml/.phar under /assets/.
+        return 'assets/imported/' . $host . '/' . AssetPolicy::safeRelativePath(implode('/', $segments));
     }
 
     private function equivalentHosts(string $host): array
@@ -2900,7 +3177,7 @@ final class ExternalSiteImporter
 
     private function restorePlaceholderTokens(string $html): string
     {
-        return preg_replace('/%7B%7B([A-Z0-9_]+)%7D%7D/i', '{{$1}}', $html) ?? $html;
+        return restore_placeholder_tokens($html);
     }
 
     private function recordSkippedUrl(array &$skipped, string $url, string $message): void

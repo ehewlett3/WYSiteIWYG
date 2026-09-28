@@ -109,6 +109,9 @@ final class AiAssistant
             $apiKey = '';
         } elseif ($apiKey === '') {
             $apiKey = (string) $current['api_key'];
+            if ($apiKey !== '' && ($baseUrl !== (string) $current['base_url'] || $provider !== (string) $current['provider'])) {
+                throw new RuntimeException('Re-enter the API key when changing the provider or endpoint (the saved key is only sent where it was saved for).');
+            }
         }
 
         $data = [
@@ -120,7 +123,6 @@ final class AiAssistant
         ];
 
         Filesystem::atomicWrite($this->settingsPath, "<?php\nreturn " . var_export($data, true) . ";\n");
-        @chmod($this->settingsPath, 0600);
     }
 
     /**
@@ -307,6 +309,13 @@ final class AiAssistant
         $apiKey = isset($override['api_key']) && $override['api_key'] !== ''
             ? (string) $override['api_key']
             : (string) $stored['api_key'];
+
+        // Never send the stored key to an endpoint it wasn't saved for, or anyone
+        // with admin access could point it at their own server and capture it.
+        $usesStoredKey = !(isset($override['api_key']) && $override['api_key'] !== '');
+        if ($usesStoredKey && $apiKey !== '' && ($baseUrl !== (string) $stored['base_url'] || $provider !== (string) $stored['provider'])) {
+            throw new RuntimeException('Re-enter the API key to use it with a different provider or endpoint.');
+        }
 
         return ['provider' => $provider, 'model' => $model, 'base_url' => $baseUrl, 'api_key' => $apiKey];
     }
@@ -598,7 +607,7 @@ final class AiAssistant
      */
     private function httpPostJson(string $url, array $headers, array $payload): array
     {
-        assert_public_url($url);
+        $pin = pin_url($url);
         $body = json_encode($payload, JSON_UNESCAPED_SLASHES);
         if ($body === false) {
             throw new RuntimeException('Unable to encode the AI request.');
@@ -619,6 +628,8 @@ final class AiAssistant
                 CURLOPT_TIMEOUT => self::REQUEST_TIMEOUT_SECONDS,
                 CURLOPT_CONNECTTIMEOUT => 15,
                 CURLOPT_USERAGENT => 'WYSiteIWYG',
+                // Connect to the IP the SSRF check validated (no DNS rebinding).
+                CURLOPT_RESOLVE => [$pin['resolve']],
             ]);
             $raw = curl_exec($ch);
             $error = curl_error($ch);
@@ -634,14 +645,15 @@ final class AiAssistant
         $context = stream_context_create([
             'http' => [
                 'method' => 'POST',
-                'header' => implode("\r\n", $headers),
+                'header' => implode("\r\n", array_merge([$pin['host_header']], $headers)),
                 'content' => $body,
                 'timeout' => self::REQUEST_TIMEOUT_SECONDS,
                 'follow_location' => 0,
                 'ignore_errors' => true,
             ],
+            'ssl' => $pin['ssl'],
         ]);
-        $raw = @file_get_contents($url, false, $context);
+        $raw = @file_get_contents($pin['url'], false, $context);
         if ($raw === false) {
             throw new RuntimeException('AI request failed.');
         }
@@ -657,7 +669,7 @@ final class AiAssistant
     /** GET JSON from a provider endpoint through the shared SSRF guard. */
     private function httpGetJson(string $url, array $headers): array
     {
-        assert_public_url($url);
+        $pin = pin_url($url);
 
         if (function_exists('curl_init')) {
             $ch = curl_init($url);
@@ -672,6 +684,8 @@ final class AiAssistant
                 CURLOPT_TIMEOUT => self::REQUEST_TIMEOUT_SECONDS,
                 CURLOPT_CONNECTTIMEOUT => 15,
                 CURLOPT_USERAGENT => 'WYSiteIWYG',
+                // Connect to the IP the SSRF check validated (no DNS rebinding).
+                CURLOPT_RESOLVE => [$pin['resolve']],
             ]);
             $raw = curl_exec($ch);
             $error = curl_error($ch);
@@ -687,13 +701,14 @@ final class AiAssistant
         $context = stream_context_create([
             'http' => [
                 'method' => 'GET',
-                'header' => implode("\r\n", $headers),
+                'header' => implode("\r\n", array_merge([$pin['host_header']], $headers)),
                 'timeout' => self::REQUEST_TIMEOUT_SECONDS,
                 'follow_location' => 0,
                 'ignore_errors' => true,
             ],
+            'ssl' => $pin['ssl'],
         ]);
-        $raw = @file_get_contents($url, false, $context);
+        $raw = @file_get_contents($pin['url'], false, $context);
         if ($raw === false) {
             throw new RuntimeException('Request failed.');
         }

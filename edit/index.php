@@ -22,6 +22,12 @@ $appUrl = $app['appUrl'];
 $rootPath = $app['rootPath'];
 $siteBaseUrl = $app['siteBaseUrl'];
 $siteTitle = $app['siteTitle'];
+$installToken = $app['installToken'];
+$revisions = $app['revisions'];
+$settings = $app['settings'];
+$systemCheck = $app['systemCheck'];
+$siteReport = $app['report'];
+$backups = $app['backups'];
 
 // CSS variable overrides for the chosen dashboard theme (empty = built-in look).
 $GLOBALS['WYSITE_DASHBOARD_CSS'] = $themes->dashboardCssVariables();
@@ -40,6 +46,7 @@ function render_dashboard_nav(string $appUrl, ?string $active, array $user): str
         ['id' => 'manager', 'label' => 'Manager', 'href' => $appUrl . '/index.php?action=manager', 'admin' => true],
         ['id' => 'ai', 'label' => 'AI', 'href' => $appUrl . '/index.php?action=ai', 'admin' => true],
         ['id' => 'users', 'label' => 'Users', 'href' => $appUrl . '/index.php?action=users', 'admin' => true],
+        ['id' => 'settings', 'label' => 'Settings', 'href' => $appUrl . '/index.php?action=settings', 'admin' => true],
         ['id' => 'docs', 'label' => 'Docs', 'href' => $appUrl . '/index.php?action=docs', 'admin' => false],
     ];
 
@@ -61,6 +68,7 @@ function render_dashboard_nav(string $appUrl, ?string $active, array $user): str
     $userMenu = '<details class="wysite-nav__user">'
         . '<summary class="wysite-nav__user-name">' . h($user['username']) . '</summary>'
         . '<div class="wysite-nav__user-menu">'
+        . '<a class="wysite-nav__logout" href="' . h($appUrl) . '/index.php?action=account">Change my password</a>'
         . '<form method="post" action="' . h($appUrl) . '/index.php?action=logout">'
         . '<input type="hidden" name="csrf_token" value="' . h(Csrf::token()) . '">'
         . '<button type="submit" class="wysite-nav__logout">Log out</button>'
@@ -163,6 +171,157 @@ function require_admin(array $user): void
 }
 
 /**
+ * Sensitive account changes re-check the signed-in user's own password, so a
+ * hijacked session (e.g. script running in an admin's browser) can't mint admins
+ * or lock people out on its own.
+ */
+function require_reauth($auth, array $user, array $data): void
+{
+    if (!$auth->verifyPassword((string) $user['username'], (string) ($data['current_password'] ?? ''))) {
+        throw new RuntimeException('Please re-enter your own password to confirm that change.');
+    }
+}
+
+/** Return to a dashboard view after an action (instead of always the Dashboard). */
+/**
+ * Optimistic concurrency for in-page saves: the preview carries the file's sha1
+ * and saves send it back. If someone else saved in between, refuse rather than
+ * silently overwrite their work.
+ */
+function assert_page_unchanged($repository, string $path, array $data): void
+{
+    $baseHash = (string) ($data['baseHash'] ?? '');
+    if ($baseHash === '') {
+        return;
+    }
+
+    if (!hash_equals(sha1($repository->getPage($path)['html']), $baseHash)) {
+        json_response(['ok' => false, 'conflict' => true, 'message' => 'This page changed since you opened it (another tab or editor saved it). Reload to get the latest version, then reapply your edit.'], 409);
+    }
+}
+
+function redirect_to_view(string $appUrl, string $view = 'dashboard'): never
+{
+    redirect($appUrl . '/index.php' . ($view === 'dashboard' ? '' : '?action=' . rawurlencode($view)));
+}
+
+/**
+ * Validate an uploaded image and store it under assets/uploads/<subdir>/ with a
+ * random name. Works without ext-fileinfo (falls back to getimagesize()).
+ * Returns the root-relative path.
+ */
+function store_uploaded_image(array $upload, string $rootPath, string $subdir, bool $allowIcon = false): string
+{
+    if (($upload['error'] ?? UPLOAD_ERR_NO_FILE) !== UPLOAD_ERR_OK) {
+        throw new RuntimeException('No image was uploaded successfully.');
+    }
+
+    $tmpPath = (string) ($upload['tmp_name'] ?? '');
+    if ($tmpPath === '' || !is_uploaded_file($tmpPath) && !is_file($tmpPath)) {
+        throw new RuntimeException('The uploaded image could not be processed.');
+    }
+
+    $size = (int) ($upload['size'] ?? 0);
+    if ($size <= 0 || $size > 10 * 1024 * 1024) {
+        throw new RuntimeException('Images must be smaller than 10 MB.');
+    }
+
+    $mime = '';
+    if (class_exists(finfo::class)) {
+        $mime = (string) (new finfo(FILEINFO_MIME_TYPE))->file($tmpPath);
+    } elseif (function_exists('getimagesize')) {
+        $info = @getimagesize($tmpPath);
+        $mime = is_array($info) ? (string) ($info['mime'] ?? '') : '';
+    }
+
+    $extensions = [
+        'image/jpeg' => 'jpg',
+        'image/png' => 'png',
+        'image/gif' => 'gif',
+        'image/webp' => 'webp',
+        'image/avif' => 'avif',
+    ];
+    if ($allowIcon) {
+        $extensions += ['image/vnd.microsoft.icon' => 'ico', 'image/x-icon' => 'ico'];
+    }
+
+    $extension = $extensions[$mime] ?? null;
+    if ($extension === null) {
+        throw new RuntimeException('Only ' . ($allowIcon ? 'ICO, ' : '') . 'JPG, PNG, GIF, WebP, and AVIF images are supported.');
+    }
+
+    $relativePath = 'assets/uploads/' . trim($subdir, '/') . '/' . bin2hex(random_bytes(16)) . '.' . $extension;
+    $targetPath = $rootPath . '/' . $relativePath;
+    Filesystem::ensureDirectory(dirname($targetPath));
+    \WYSiteIWYG\AssetPolicy::ensureAssetsHtaccess($rootPath);
+
+    $contents = file_get_contents($tmpPath);
+    if ($contents === false) {
+        throw new RuntimeException('The uploaded image could not be read.');
+    }
+    Filesystem::atomicWrite($targetPath, $contents);
+
+    return $relativePath;
+}
+
+/** Render SystemCheck rows as a table. */
+function render_system_rows(array $rows): string
+{
+    $labels = ['pass' => 'OK', 'warn' => 'Warning', 'fail' => 'Problem'];
+    $html = '<div class="wysite-table-wrap"><table class="wysite-table wysite-system"><tbody>';
+    foreach ($rows as $row) {
+        $html .= '<tr class="is-' . h($row['status']) . '"><td><span class="wysite-status wysite-status--' . h($row['status']) . '">'
+            . h($labels[$row['status']] ?? $row['status']) . '</span></td><td><strong>' . h($row['label']) . '</strong></td><td>' . h($row['detail']) . '</td></tr>';
+    }
+    return $html . '</tbody></table></div>';
+}
+
+/** Truncate to $length characters, multibyte-aware when mbstring is available. */
+function mb_substr_safe(string $value, int $length): string
+{
+    return function_exists('mb_substr') ? mb_substr($value, 0, $length) : substr($value, 0, $length);
+}
+
+/** Human label for a page kind (UX-12). */
+function kind_label(string $kind): string
+{
+    return [
+        'home' => 'Home',
+        'page' => 'Page',
+        'blog-post' => 'Blog post',
+        'blog' => 'Blog index',
+    ][$kind] ?? ucfirst(str_replace('-', ' ', $kind));
+}
+
+/** Public URL of a page path under the site base (for display and links). */
+function public_page_url(string $siteBaseUrl, string $relativePath): string
+{
+    $clean = ltrim($relativePath, '/');
+    if ($clean === 'index.html') {
+        return $siteBaseUrl;
+    }
+    if (str_ends_with($clean, '/index.html')) {
+        return $siteBaseUrl . substr($clean, 0, -strlen('index.html'));
+    }
+
+    return $siteBaseUrl . (preg_replace('/\.html?$/i', '', $clean) ?? $clean) . '/';
+}
+
+/** Summarize a deployDemoSite() result for a flash message. */
+function demo_deploy_message(array $result): string
+{
+    $message = 'Deployed the demo site: ' . $result['created'] . ' page(s) created, ' . $result['refreshed'] . ' refreshed.';
+    if ($result['skipped'] !== []) {
+        $message .= "\n- Skipped (already exists, left untouched): " . implode(', ', $result['skipped']);
+    }
+    foreach ($result['warnings'] as $warning) {
+        $message .= "\n- " . $warning;
+    }
+
+    return $message;
+}
+
+/**
  * A cheap, no-AI default template kind for an unmanaged HTML file, from its path.
  * Used as the baseline for the "Use as template" dropdown; AI classification (when
  * configured) refines it.
@@ -231,19 +390,37 @@ try {
             redirect($appUrl . '/index.php');
         }
 
+        $tokenError = '';
+        try {
+            $installToken->ensure();
+        } catch (Throwable $error) {
+            $tokenError = $error->getMessage();
+        }
+        $siteHasPages = (glob($rootPath . '/*.html') ?: []) !== [] || (glob($rootPath . '/*.htm') ?: []) !== [];
+        $systemRows = $systemCheck->run();
+
         if (is_post()) {
+            if (\WYSiteIWYG\SystemCheck::hasFailures($systemRows)) {
+                throw new RuntimeException('Fix the problems listed under "Server check" before installing.');
+            }
+
             $data = request_data();
             if (!Csrf::validate($data['csrf_token'] ?? null)) {
                 throw new RuntimeException('Your session expired. Refresh and try again.');
             }
 
+            if (!$installToken->verify((string) ($data['setup_token'] ?? ''))) {
+                throw new RuntimeException('The setup token was not correct. Copy it from ' . \WYSiteIWYG\InstallToken::RELATIVE_PATH . ' on the server.');
+            }
+
             $auth->bootstrapAdmin(trim((string) ($data['username'] ?? '')), (string) ($data['password'] ?? ''));
+            $installToken->clear();
             $auth->attempt(trim((string) ($data['username'] ?? '')), (string) ($data['password'] ?? ''));
             Flash::push('success', 'WYSiteIWYG is ready. Your admin account has been created.');
 
             if (!empty($data['install_demo'])) {
-                $created = $generator->deployDemoSite(require __DIR__ . '/docs/content.php');
-                Flash::push('success', 'Deployed the demo site with ' . $created . ' documentation page(s). Delete it anytime from the dashboard.');
+                $deployed = $generator->deployDemoSite(require __DIR__ . '/docs/content.php');
+                Flash::push('success', demo_deploy_message($deployed) . ' Delete it anytime from the Manager.');
             }
 
             redirect($appUrl . '/index.php');
@@ -257,8 +434,26 @@ try {
             <h2>Create the first administrator</h2>
             <p>The credentials are stored as one-way <?= h($hashSummary['algorithm']) ?> password hashes in <code>edit/storage/users.local.php</code>, so the editor can stay self-contained inside the <code>/edit/</code> folder without encouraging commits of live password data.</p>
           </div>
+          <details class="wysite-system-summary"<?= \WYSiteIWYG\SystemCheck::hasFailures($systemRows) ? ' open' : '' ?>>
+            <summary>Server check: <?= \WYSiteIWYG\SystemCheck::hasFailures($systemRows) ? 'problems found' : 'ready' ?></summary>
+            <?= render_system_rows($systemRows) ?>
+          </details>
           <form method="post" class="wysite-form">
             <input type="hidden" name="csrf_token" value="<?= h(Csrf::token()) ?>">
+            <label>
+              <span>Setup token</span>
+              <input type="text" name="setup_token" required autocomplete="off" spellcheck="false">
+            </label>
+            <?php if ($tokenError !== ''): ?>
+              <p class="wysite-flash wysite-flash--error">The setup token could not be created (<?= h($tokenError) ?>). Make <code>edit/storage/</code> writable by the web server, or set the <code>WYSITE_INSTALL_TOKEN</code> environment variable, then reload.</p>
+            <?php endif; ?>
+            <p class="wysite-muted">
+              <?php if ($installToken->usesEnvironment()): ?>
+                Enter the value of the <code>WYSITE_INSTALL_TOKEN</code> environment variable.
+              <?php else: ?>
+                To prove you control this server, open <code><?= h(\WYSiteIWYG\InstallToken::RELATIVE_PATH) ?></code> (via SSH, SFTP, or your host's file manager) and copy the token it contains. The file is deleted once setup finishes.
+              <?php endif; ?>
+            </p>
             <label>
               <span>Username</span>
               <input type="text" name="username" required minlength="3" maxlength="32">
@@ -268,9 +463,12 @@ try {
               <input type="password" name="password" required minlength="10">
             </label>
             <label class="wysite-checkbox">
-              <input type="checkbox" name="install_demo" value="1" checked>
+              <input type="checkbox" name="install_demo" value="1"<?= $siteHasPages ? '' : ' checked' ?>>
               <span>Also install the demo site — the built-in documentation pages, deployed to the site root as editable content. Leave unchecked if you are dropping <code>/edit/</code> into an existing site.</span>
             </label>
+            <?php if ($siteHasPages): ?>
+              <p class="wysite-flash wysite-flash--error">This folder already contains HTML pages, so the demo is off by default. Installing it alongside an existing site adds documentation pages next to yours; existing pages are never overwritten.</p>
+            <?php endif; ?>
             <button class="wysite-button" type="submit">Create administrator</button>
           </form>
         </main>
@@ -344,45 +542,15 @@ try {
         }
 
         $upload = $_FILES['image'] ?? null;
-        if (!is_array($upload) || ($upload['error'] ?? UPLOAD_ERR_NO_FILE) !== UPLOAD_ERR_OK) {
+        if (!is_array($upload)) {
             json_response(['ok' => false, 'message' => 'No image was uploaded successfully.'], 400);
         }
 
-        $tmpPath = (string) ($upload['tmp_name'] ?? '');
-        if ($tmpPath === '' || !is_file($tmpPath)) {
-            json_response(['ok' => false, 'message' => 'The uploaded image could not be processed.'], 400);
+        try {
+            $relativePath = store_uploaded_image($upload, $rootPath, gmdate('Y/m'));
+        } catch (RuntimeException $error) {
+            json_response(['ok' => false, 'message' => $error->getMessage()], 400);
         }
-
-        $size = (int) ($upload['size'] ?? 0);
-        if ($size <= 0 || $size > 10 * 1024 * 1024) {
-            json_response(['ok' => false, 'message' => 'Images must be smaller than 10 MB.'], 400);
-        }
-
-        $finfo = new finfo(FILEINFO_MIME_TYPE);
-        $mime = (string) $finfo->file($tmpPath);
-        $extensions = [
-            'image/jpeg' => 'jpg',
-            'image/png' => 'png',
-            'image/gif' => 'gif',
-            'image/webp' => 'webp',
-            'image/avif' => 'avif',
-        ];
-        $extension = $extensions[$mime] ?? null;
-        if ($extension === null) {
-            json_response(['ok' => false, 'message' => 'Only JPG, PNG, GIF, WebP, and AVIF images are supported.'], 400);
-        }
-
-        $relativeDir = 'assets/uploads/' . gmdate('Y/m');
-        $relativePath = $relativeDir . '/' . bin2hex(random_bytes(16)) . '.' . $extension;
-        $targetPath = $rootPath . '/' . $relativePath;
-
-        Filesystem::ensureDirectory(dirname($targetPath));
-        $contents = file_get_contents($tmpPath);
-        if ($contents === false) {
-            json_response(['ok' => false, 'message' => 'The uploaded image could not be read.'], 400);
-        }
-
-        Filesystem::atomicWrite($targetPath, $contents);
 
         $publicUrl = $siteBaseUrl . ltrim($relativePath, '/');
         json_response([
@@ -421,13 +589,30 @@ try {
                     'pageKind' => $page['kind'],
                     'activeTemplatePath' => $repository->activeTemplateRelativePath($page['kind']),
                     'selectionSaveEnabled' => false,
+                    'isAdmin' => !empty($user['is_admin']),
                 ],
                 $nonce
             );
         } else {
-            echo $repository->renderPreviewHtml($path, $appUrl, $siteBaseUrl, Csrf::token(), $user['username'], $nonce);
+            echo $repository->renderPreviewHtml($path, $appUrl, $siteBaseUrl, Csrf::token(), $user['username'], $nonce, [
+                'isAdmin' => !empty($user['is_admin']),
+            ]);
         }
         return;
+    }
+
+    if ($action === 'pages-index') {
+        // Published pages for the editor's link picker, as base-relative URLs.
+        $index = [];
+        foreach ($repository->listPages() as $indexPage) {
+            if (($indexPage['paged'] ?? '') !== '') {
+                continue;
+            }
+            $url = ltrim((string) $indexPage['url'], '/');
+            $index[] = ['title' => (string) $indexPage['title'], 'url' => $url === '' ? './' : $url, 'kind' => $indexPage['kind']];
+        }
+        usort($index, static fn(array $a, array $b): int => strcasecmp($a['title'], $b['title']));
+        json_response(['ok' => true, 'pages' => $index]);
     }
 
     if ($action === 'block') {
@@ -444,17 +629,30 @@ try {
 
         $path = (string) ($data['path'] ?? '');
         $name = (string) ($data['name'] ?? '');
-        $html = (string) ($data['html'] ?? '');
         $block = $repository->getBlock($path, $name);
+        if (!empty($block['admin_only'])) {
+            // Raw-HTML block (SEC-4 step 4): only admins may change it, and their
+            // markup is kept as written apart from PHP tags and marker comments.
+            if (empty($user['is_admin'])) {
+                json_response(['ok' => false, 'message' => 'This block holds raw HTML and is admin-only.'], 403);
+            }
+            $html = str_replace(['<?', '?>'], ['&lt;?', '?&gt;'], (string) ($data['html'] ?? ''));
+            $html = preg_replace('/<!--\s*WYSITE:.*?-->/s', '', $html) ?? $html;
+        } else {
+            // Never trust the browser-side schema: strip scripts, handlers, unsafe
+            // URLs and marker comments before anything reaches a public page.
+            $html = \WYSiteIWYG\Sanitizer::html((string) ($data['html'] ?? ''));
+        }
+        assert_page_unchanged($repository, $path, $data);
 
         if (($block['type'] ?? '') === 'menu' || $name === 'main-menu') {
             $generator->syncMenu($html);
-            json_response(['ok' => true, 'message' => 'The shared menu was updated across pages and templates.']);
+            json_response(['ok' => true, 'message' => 'The shared menu was updated across pages and templates.', 'fileHash' => sha1($repository->getPage($path)['html'])]);
         }
 
         $html = $generator->normalizeEditableBlockHtml((string) ($block['type'] ?? ''), $html);
         $repository->updateBlock($path, $name, $html);
-        json_response(['ok' => true, 'message' => 'The page was saved.']);
+        json_response(['ok' => true, 'message' => 'The page was saved.', 'fileHash' => sha1($repository->getPage($path)['html'])]);
     }
 
     if ($action === 'save-selection') {
@@ -464,9 +662,9 @@ try {
         }
 
         $path = (string) ($data['path'] ?? '');
-        $html = (string) ($data['html'] ?? '');
-        $domPath = $data['domPath'] ?? null;
         $scope = (string) ($data['scope'] ?? 'page');
+        $html = \WYSiteIWYG\Sanitizer::html((string) ($data['html'] ?? ''), $scope === 'template' ? 'import' : 'content');
+        $domPath = $data['domPath'] ?? null;
         $page = $repository->getPage($path);
         $kind = (string) ($page['kind'] ?? 'page');
 
@@ -475,6 +673,12 @@ try {
         }
 
         if ($scope === 'template') {
+            // Templates are site-wide chrome; like theme apply, only admins change them.
+            if (empty($user['is_admin'])) {
+                json_response(['ok' => false, 'message' => 'Template sections are admin-only. Ask an administrator to change the site-wide header, footer, or layout.'], 400);
+            }
+
+            $backups->create('template-edit');
             $templatePath = $repository->updateSelectedElementInActiveTemplate($kind, $domPath, $html);
             $updatedPages = $generator->rebuildPagesUsingTemplate($kind);
             json_response([
@@ -485,8 +689,9 @@ try {
             ]);
         }
 
+        assert_page_unchanged($repository, $path, $data);
         $repository->updateSelectedElement($path, $domPath, $html);
-        json_response(['ok' => true, 'message' => 'The selected section was saved.']);
+        json_response(['ok' => true, 'message' => 'The selected section was saved.', 'fileHash' => sha1($repository->getPage($path)['html'])]);
     }
 
     if ($action === 'create-page') {
@@ -494,8 +699,13 @@ try {
             throw new RuntimeException('The page creation request was rejected.');
         }
 
-        $path = $generator->createPage((string) ($_POST['title'] ?? ''), (string) ($_POST['slug'] ?? ''));
-        Flash::push('success', 'Created ' . $path . '.');
+        $title = trim((string) ($_POST['title'] ?? ''));
+        $isDraft = !empty($_POST['draft']);
+        $path = $generator->createPage($title, (string) ($_POST['slug'] ?? ''), $isDraft);
+        if (!empty($_POST['add_to_menu'])) {
+            $generator->addMenuLink($path, $title);
+        }
+        Flash::push('success', ($isDraft ? 'Created a draft of ' : 'Created ') . \WYSiteIWYG\SitePath::publicPath($path) . ($isDraft ? ' — it stays private until you publish it from Page details.' : '.'));
         redirect($appUrl . '/index.php?action=preview&path=' . rawurlencode($path));
     }
 
@@ -504,14 +714,72 @@ try {
             throw new RuntimeException('The blog creation request was rejected.');
         }
 
+        $isDraft = !empty($_POST['draft']);
         $path = $generator->createBlogPost(
             (string) ($_POST['title'] ?? ''),
             (string) ($_POST['slug'] ?? ''),
             (string) ($_POST['excerpt'] ?? ''),
-            (string) ($_POST['hashtags'] ?? '#blog')
+            (string) ($_POST['hashtags'] ?? '#blog'),
+            null,
+            $isDraft
         );
-        Flash::push('success', 'Created ' . $path . ' and refreshed the hashtag landing pages.');
+        if (!empty($_POST['add_to_menu'])) {
+            $generator->addMenuLink($path, trim((string) ($_POST['title'] ?? '')));
+        }
+        Flash::push('success', $isDraft
+            ? 'Created a draft post. It stays off the blog and feeds until you publish it from Page details.'
+            : 'Created ' . $path . ' and refreshed the hashtag landing pages.');
         redirect($appUrl . '/index.php?action=preview&path=' . rawurlencode($path));
+    }
+
+    if ($action === 'dismiss-checklist') {
+        require_admin($user);
+        if (!is_post() || !Csrf::validate($_POST['csrf_token'] ?? null)) {
+            throw new RuntimeException('The request was rejected.');
+        }
+        $settings->update(['checklist_dismissed' => true]);
+        redirect_to_view($appUrl, 'dashboard');
+    }
+
+    if ($action === 'set-block-access') {
+        require_admin($user);
+        if (!is_post() || !Csrf::validate($_POST['csrf_token'] ?? null)) {
+            throw new RuntimeException('The request was rejected.');
+        }
+        $path = (string) ($_POST['path'] ?? '');
+        $page = $repository->getPage($path);
+        $names = array_column($page['blocks'], 'name');
+        $chosen = array_values(array_intersect($names, (array) ($_POST['admin_blocks'] ?? [])));
+        $repository->updateMetadata($page['path'], ['admin_blocks' => implode(',', $chosen)]);
+        Flash::push('success', $chosen === [] ? 'All blocks are editable by editors again.' : 'Raw-HTML (admin-only) blocks: ' . implode(', ', $chosen) . '.');
+        redirect($appUrl . '/index.php?action=metadata&path=' . rawurlencode($page['path']));
+    }
+
+    if (in_array($action, ['publish-page', 'unpublish-page', 'move-page', 'delete-page'], true)) {
+        if (!is_post() || !Csrf::validate($_POST['csrf_token'] ?? null)) {
+            throw new RuntimeException('The page request was rejected.');
+        }
+
+        $path = (string) ($_POST['path'] ?? '');
+        if ($action === 'publish-page') {
+            $public = $generator->publishDraft($path);
+            Flash::push('success', 'Published ' . $public . '.');
+            redirect($appUrl . '/index.php?action=metadata&path=' . rawurlencode($public));
+        }
+        if ($action === 'unpublish-page') {
+            $draft = $generator->unpublishPage($path);
+            Flash::push('success', 'Unpublished. The page is now a private draft.');
+            redirect($appUrl . '/index.php?action=metadata&path=' . rawurlencode($draft));
+        }
+        if ($action === 'move-page') {
+            $moved = $generator->movePage($path, (string) ($_POST['slug'] ?? ''));
+            Flash::push('success', 'Moved to ' . \WYSiteIWYG\SitePath::publicPath($moved) . (\WYSiteIWYG\SitePath::isDraft($moved) ? '.' : '. The old address redirects to the new one and menu links were updated.'));
+            redirect($appUrl . '/index.php?action=metadata&path=' . rawurlencode($moved));
+        }
+
+        $warning = $generator->deletePage($path);
+        Flash::push($warning === null ? 'success' : 'error', 'Deleted ' . \WYSiteIWYG\SitePath::publicPath($path) . '. Its last version is kept in the page history.' . ($warning !== null ? "\n- " . $warning : ''));
+        redirect_to_view($appUrl, 'dashboard');
     }
 
     if ($action === 'metadata') {
@@ -530,7 +798,9 @@ try {
               </div>
               <a class="wysite-button wysite-button--ghost" href="<?= h($appUrl) ?>/index.php?action=preview&path=<?= rawurlencode($page['path']) ?>">Back to page</a>
             </div>
-            <p class="wysite-muted">Add hashtags here to have a page appear automatically on matching landing pages like <code>/blog/</code>, <code>/launch/</code>, or <code>/workflow/</code>.</p>
+            <?php $isTagIndex = ($meta['generated'] ?? '') === 'tag-index'; ?>
+            <?php $publicUrl = public_page_url($siteBaseUrl, \WYSiteIWYG\SitePath::publicPath($page['path'])); ?>
+            <p class="wysite-muted">Public URL<?= \WYSiteIWYG\SitePath::isDraft($page['path']) ? ' (once published)' : '' ?>: <a href="<?= h($publicUrl) ?>" target="_blank" rel="noreferrer"><code><?= h($publicUrl) ?></code></a> · File: <code><?= h($page['path']) ?></code></p>
 
             <form method="post" action="<?= h($appUrl) ?>/index.php?action=save-metadata" class="wysite-form">
               <input type="hidden" name="csrf_token" value="<?= h(Csrf::token()) ?>">
@@ -539,6 +809,20 @@ try {
                 <span>Title</span>
                 <input type="text" name="title" required value="<?= h((string) ($meta['title'] ?? '')) ?>">
               </label>
+              <?php if ($isTagIndex): ?>
+                <p class="wysite-muted">Type: <?= h(kind_label('blog')) ?> (generated from hashtags)</p>
+              <?php else: ?>
+              <label>
+                <span>Type</span>
+                <select name="kind" class="wysite-theme-select">
+                  <?php $typeOptions = $page['path'] === 'index.html' ? ['home', 'page', 'blog-post'] : ['page', 'blog-post']; ?>
+                  <?php foreach ($typeOptions as $option): ?>
+                    <option value="<?= h($option) ?>"<?= $page['kind'] === $option ? ' selected' : '' ?>><?= h(kind_label($option)) ?></option>
+                  <?php endforeach; ?>
+                </select>
+              </label>
+              <p class="wysite-muted">Blog posts show a date and appear on <code>/blog/</code> and on a landing page for each hashtag (e.g. <code>#launch</code> → <code>/launch/</code>). Pages ignore hashtags. Changing the type re-renders this page with the matching template; its content is kept.</p>
+              <?php endif; ?>
               <label>
                 <span>Excerpt / snippet</span>
                 <textarea name="excerpt" rows="3"><?= h((string) ($meta['excerpt'] ?? '')) ?></textarea>
@@ -551,6 +835,14 @@ try {
                 <span>Hashtags</span>
                 <input type="text" name="hashtags" placeholder="#blog #launch" value="<?= h((string) ($meta['hashtags'] ?? '')) ?>">
               </label>
+              <label>
+                <span>Author <em>(optional; shown on blog cards)</em></span>
+                <input type="text" name="author" maxlength="120" value="<?= h((string) ($meta['author'] ?? '')) ?>">
+              </label>
+              <label>
+                <span>Featured image <em>(optional; an assets/… path or https:// URL, used on blog cards and link previews)</em></span>
+                <input type="text" name="image" placeholder="assets/uploads/2026/09/photo.jpg" value="<?= h((string) ($meta['image'] ?? '')) ?>">
+              </label>
               <label class="wysite-checkbox">
                 <input type="checkbox" name="exclude_template" value="1" <?= (($meta['exclude_template'] ?? '') === '1') ? 'checked' : '' ?>>
                 <span>Exclude this page from template rebuilds and theme apply operations</span>
@@ -560,6 +852,121 @@ try {
                 <a class="wysite-button wysite-button--ghost" href="<?= h($appUrl) ?>/index.php">Back to dashboard</a>
               </div>
             </form>
+          </section>
+
+          <?php $isDraftPage = \WYSiteIWYG\SitePath::isDraft($page['path']); ?>
+          <?php if (!$isTagIndex): ?>
+          <section class="wysite-panel">
+            <div class="wysite-panel__heading">
+              <div>
+                <p class="wysite-kicker">Status &amp; address</p>
+                <h3><?= $isDraftPage ? 'Draft — not public yet' : 'Published' ?></h3>
+              </div>
+            </div>
+            <div class="wysite-grid">
+              <article>
+                <?php if ($isDraftPage): ?>
+                  <p class="wysite-muted">Only signed-in editors can see this page. Publishing makes it live at <code><?= h(public_page_url($siteBaseUrl, \WYSiteIWYG\SitePath::publicPath($page['path']))) ?></code> and adds it to the blog and feeds if it is a post.</p>
+                  <form method="post" action="<?= h($appUrl) ?>/index.php?action=publish-page">
+                    <input type="hidden" name="csrf_token" value="<?= h(Csrf::token()) ?>">
+                    <input type="hidden" name="path" value="<?= h($page['path']) ?>">
+                    <button class="wysite-button" type="submit">Publish now</button>
+                  </form>
+                  <form method="post" action="<?= h($appUrl) ?>/index.php?action=save-metadata" class="wysite-form">
+                    <input type="hidden" name="csrf_token" value="<?= h(Csrf::token()) ?>">
+                    <input type="hidden" name="path" value="<?= h($page['path']) ?>">
+                    <input type="hidden" name="schedule_only" value="1">
+                    <label><span>Or publish automatically on <em>(checked whenever someone opens the dashboard or saves)</em></span><input type="date" name="publish_at" value="<?= h((string) ($meta['publish_at'] ?? '')) ?>"></label>
+                    <button class="wysite-button wysite-button--ghost" type="submit">Save schedule</button>
+                  </form>
+                <?php elseif ($page['path'] !== 'index.html'): ?>
+                  <p class="wysite-muted">Unpublishing removes the page from the site (and the blog and feeds) and keeps it as a private draft.</p>
+                  <form method="post" action="<?= h($appUrl) ?>/index.php?action=unpublish-page" data-wysite-confirm="Take this page offline and turn it back into a draft?">
+                    <input type="hidden" name="csrf_token" value="<?= h(Csrf::token()) ?>">
+                    <input type="hidden" name="path" value="<?= h($page['path']) ?>">
+                    <button class="wysite-button wysite-button--ghost" type="submit">Unpublish</button>
+                  </form>
+                <?php endif; ?>
+              </article>
+              <?php if ($page['path'] !== 'index.html'): ?>
+              <article>
+                <form method="post" action="<?= h($appUrl) ?>/index.php?action=move-page" class="wysite-form">
+                  <input type="hidden" name="csrf_token" value="<?= h(Csrf::token()) ?>">
+                  <input type="hidden" name="path" value="<?= h($page['path']) ?>">
+                  <label><span>Move to a new address</span><input type="text" name="slug" required data-wysite-slug-preview="<?= h($siteBaseUrl) ?>" placeholder="<?= h(trim(preg_replace('#(/index)?\.html?$#', '', \WYSiteIWYG\SitePath::publicPath($page['path'])) ?? '', '/')) ?>"></label>
+                  <button class="wysite-button wysite-button--ghost" type="submit">Move</button>
+                </form>
+                <form method="post" action="<?= h($appUrl) ?>/index.php?action=delete-page" data-wysite-confirm="Delete this page? Its last version is kept in the page history.">
+                  <input type="hidden" name="csrf_token" value="<?= h(Csrf::token()) ?>">
+                  <input type="hidden" name="path" value="<?= h($page['path']) ?>">
+                  <button class="wysite-button wysite-button--ghost" type="submit">Delete page</button>
+                </form>
+              </article>
+              <?php endif; ?>
+            </div>
+          </section>
+          <?php endif; ?>
+
+          <?php if ($user['is_admin'] && $page['blocks'] !== []): ?>
+          <?php $adminBlocks = $repository->adminOnlyBlocks($meta); ?>
+          <section class="wysite-panel">
+            <div class="wysite-panel__heading">
+              <div>
+                <p class="wysite-kicker">Raw HTML blocks</p>
+                <h3>Admin-only sections</h3>
+              </div>
+              <p class="wysite-muted">A raw-HTML block keeps exactly what an administrator writes (for example a widget's script). Editors can see it but cannot change it.</p>
+            </div>
+            <form method="post" action="<?= h($appUrl) ?>/index.php?action=set-block-access" class="wysite-form">
+              <input type="hidden" name="csrf_token" value="<?= h(Csrf::token()) ?>">
+              <input type="hidden" name="path" value="<?= h($page['path']) ?>">
+              <?php foreach ($page['blocks'] as $pageBlock): ?>
+                <?php if ($pageBlock['type'] === 'menu') { continue; } ?>
+                <label class="wysite-checkbox">
+                  <input type="checkbox" name="admin_blocks[]" value="<?= h($pageBlock['name']) ?>"<?= in_array($pageBlock['name'], $adminBlocks, true) ? ' checked' : '' ?>>
+                  <span><?= h($pageBlock['label']) ?> <code><?= h($pageBlock['name']) ?></code></span>
+                </label>
+              <?php endforeach; ?>
+              <button class="wysite-button wysite-button--ghost" type="submit">Save block access</button>
+            </form>
+          </section>
+          <?php endif; ?>
+
+          <?php $history = $revisions->list($page['path']); ?>
+          <section class="wysite-panel">
+            <div class="wysite-panel__heading">
+              <div>
+                <p class="wysite-kicker">History</p>
+                <h3>Earlier versions</h3>
+              </div>
+              <p class="wysite-muted">A copy is kept each time this page is saved or rebuilt (the newest 20).</p>
+            </div>
+            <?php if ($history === []): ?>
+              <p class="wysite-muted">No earlier versions yet.</p>
+            <?php else: ?>
+              <div class="wysite-table-wrap">
+                <table class="wysite-table">
+                  <thead><tr><th>Saved (UTC)</th><th>Size</th><th></th></tr></thead>
+                  <tbody>
+                    <?php foreach ($history as $revision): ?>
+                      <tr>
+                        <td><?= h(gmdate('Y-m-d H:i:s', $revision['time'])) ?></td>
+                        <td><?= h(number_format($revision['bytes'] / 1024, 1)) ?> KB</td>
+                        <td class="wysite-table__actions">
+                          <a class="wysite-button wysite-button--ghost" href="<?= h($appUrl) ?>/index.php?action=revision-view&path=<?= rawurlencode($page['path']) ?>&id=<?= rawurlencode($revision['id']) ?>" target="_blank" rel="noreferrer">View</a>
+                          <form method="post" action="<?= h($appUrl) ?>/index.php?action=restore-revision" data-wysite-confirm="Restore the version saved <?= h(gmdate('Y-m-d H:i', $revision['time'])) ?> UTC? The current version is kept in the history.">
+                            <input type="hidden" name="csrf_token" value="<?= h(Csrf::token()) ?>">
+                            <input type="hidden" name="path" value="<?= h($page['path']) ?>">
+                            <input type="hidden" name="id" value="<?= h($revision['id']) ?>">
+                            <button class="wysite-button wysite-button--ghost" type="submit">Restore</button>
+                          </form>
+                        </td>
+                      </tr>
+                    <?php endforeach; ?>
+                  </tbody>
+                </table>
+              </div>
+            <?php endif; ?>
           </section>
         </main>
         <?php
@@ -574,7 +981,21 @@ try {
 
         $path = (string) ($_POST['path'] ?? '');
         $page = $repository->getPage($path);
+        $path = $page['path'];
         $existingMeta = $page['meta'];
+
+        if (!empty($_POST['schedule_only'])) {
+            $publishAt = trim((string) ($_POST['publish_at'] ?? ''));
+            if ($publishAt !== '' && preg_match('/^\d{4}-\d{2}-\d{2}$/', $publishAt) !== 1) {
+                throw new RuntimeException('Choose a valid publish date.');
+            }
+            if (!\WYSiteIWYG\SitePath::isDraft($path)) {
+                throw new RuntimeException('Only drafts can be scheduled.');
+            }
+            $repository->updateMetadata($path, ['publish_at' => $publishAt]);
+            Flash::push('success', $publishAt !== '' ? 'This draft will be published on ' . $publishAt . '.' : 'Removed the publishing schedule.');
+            redirect($appUrl . '/index.php?action=metadata&path=' . rawurlencode($path));
+        }
         $hashtags = trim((string) ($_POST['hashtags'] ?? ''));
         $date = trim((string) ($_POST['date'] ?? ''));
 
@@ -582,8 +1003,27 @@ try {
             $kind = 'blog';
             $hashtags = '';
         } else {
-            $kind = $hashtags !== '' ? 'blog-post' : 'page';
+            // The type only changes when the user picks a different one; hashtags
+            // no longer imply "post", and a homepage is never silently demoted.
+            $allowed = $path === 'index.html' ? ['home', 'page', 'blog-post'] : ['page', 'blog-post'];
+            $requested = (string) ($_POST['kind'] ?? $page['kind']);
+            $kind = in_array($requested, $allowed, true) ? $requested : $page['kind'];
+            if ($kind === 'blog-post') {
+                $hashtags = $hashtags !== '' ? $hashtags : '#blog';
+            } else {
+                $hashtags = '';
+            }
         }
+
+        // Validate before writing anything, so a tag/page collision can't leave the
+        // page half-updated.
+        $generator->assertTagsWritable($hashtags);
+
+        $image = trim((string) ($_POST['image'] ?? ''));
+        if ($image !== '' && preg_match('#^(https?://[^\s"<>]+|/?assets/[A-Za-z0-9._/%-]+)$#i', $image) !== 1) {
+            throw new RuntimeException('The featured image must be an assets/… path or an http(s) URL.');
+        }
+        $author = trim(preg_replace('/\s+/', ' ', (string) ($_POST['author'] ?? '')) ?? '');
 
         $repository->updateMetadata(
             $path,
@@ -593,17 +1033,138 @@ try {
                 'date' => $kind === 'blog-post'
                     ? ($date !== '' ? $date : (string) ($existingMeta['date'] ?? gmdate('Y-m-d')))
                     : '',
-                'hashtags' => $kind === 'blog-post' ? $hashtags : '',
+                'hashtags' => $hashtags,
                 'kind' => $kind,
                 'tag' => (string) ($existingMeta['tag'] ?? ''),
                 'generated' => (string) ($existingMeta['generated'] ?? ''),
                 'exclude_template' => !empty($_POST['exclude_template']) ? '1' : '',
+                'author' => mb_substr_safe($author, 120),
+                'image' => preg_match('#^https?://#i', $image) === 1 ? $image : ltrim($image, '/'),
             ]
         );
 
+        if ($kind !== $page['kind']) {
+            $generator->rebuildPage($path);
+        }
+
         $generator->rebuildTagPages();
-        Flash::push('success', 'Updated the page details and refreshed the hashtag landing pages.');
+        Flash::push('success', 'Updated the page details' . ($kind !== $page['kind'] ? ' and changed its type to ' . kind_label($kind) : '') . '.');
         redirect($appUrl . '/index.php?action=preview&path=' . rawurlencode($path));
+    }
+
+    if ($action === 'revision-view') {
+        $path = $repository->sitePath()->normalize((string) ($_GET['path'] ?? ''));
+        $html = $revisions->read($path, (string) ($_GET['id'] ?? ''));
+        // Show the old version as a static page: the preview CSP blocks every
+        // script (there is no nonce here), so nothing in it runs in this origin.
+        \WYSiteIWYG\send_csp('preview');
+        $html = preg_replace('#\s*<base\b[^>]*>#i', '', $html) ?? $html;
+        $baseTag = '<base href="' . h($siteBaseUrl) . '">';
+        echo preg_match('#<head\b[^>]*>#i', $html) === 1
+            ? (preg_replace('#(<head\b[^>]*>)#i', '$1' . $baseTag, $html, 1) ?? $html)
+            : $baseTag . $html;
+        return;
+    }
+
+    if ($action === 'restore-revision') {
+        if (!is_post() || !Csrf::validate($_POST['csrf_token'] ?? null)) {
+            throw new RuntimeException('The restore request was rejected.');
+        }
+
+        $path = $repository->sitePath()->normalize((string) ($_POST['path'] ?? ''));
+        $revisions->restore($path, (string) ($_POST['id'] ?? ''));
+        $generator->rebuildTagPages();
+        Flash::push('success', 'Restored an earlier version of ' . $path . '. The version it replaced is kept in the history.');
+        redirect($appUrl . '/index.php?action=metadata&path=' . rawurlencode($path));
+    }
+
+    if ($action === 'backup-download') {
+        require_admin($user);
+        $file = $backups->archivePath((string) ($_GET['name'] ?? ''));
+        header('Content-Type: application/zip');
+        header('Content-Disposition: attachment; filename="wysite-' . basename($file) . '"');
+        header('Content-Length: ' . (string) filesize($file));
+        readfile($file);
+        return;
+    }
+
+    if ($action === 'restore-backup') {
+        require_admin($user);
+        if (!is_post() || !Csrf::validate($_POST['csrf_token'] ?? null)) {
+            throw new RuntimeException('The restore request was rejected.');
+        }
+
+        $backups->create('before-restore');
+        $count = $backups->restore((string) ($_POST['name'] ?? ''));
+        Flash::push('success', 'Restored ' . $count . ' file(s) from the backup. A backup of the state just before the restore was saved too.');
+        redirect_to_view($appUrl, 'manager');
+    }
+
+    if ($action === 'save-settings') {
+        require_admin($user);
+        if (!is_post() || !Csrf::validate($_POST['csrf_token'] ?? null)) {
+            throw new RuntimeException('The settings request was rejected.');
+        }
+
+        $input = [
+            'site_name' => (string) ($_POST['site_name'] ?? ''),
+            'tagline' => (string) ($_POST['tagline'] ?? ''),
+            'language' => (string) ($_POST['language'] ?? 'en'),
+            'canonical_base_url' => (string) ($_POST['canonical_base_url'] ?? ''),
+            'footer_html' => (string) ($_POST['footer_html'] ?? ''),
+            'live_banner' => !empty($_POST['live_banner']),
+            'url_style' => (string) ($_POST['url_style'] ?? 'folder'),
+            'post_permalink' => (string) ($_POST['post_permalink'] ?? '{slug}'),
+            'posts_per_page' => (int) ($_POST['posts_per_page'] ?? 10),
+            'exclude_paths' => (string) ($_POST['exclude_paths'] ?? ''),
+            'embed_hosts' => (string) ($_POST['embed_hosts'] ?? ''),
+            'import_byte_budget_mb' => (int) ($_POST['import_byte_budget_mb'] ?? 2048),
+            'keep_imported_scripts' => !empty($_POST['keep_imported_scripts']),
+            'search_url' => (string) ($_POST['search_url'] ?? ''),
+            'form_endpoint' => (string) ($_POST['form_endpoint'] ?? ''),
+        ];
+
+        foreach (['logo' => false, 'favicon' => true] as $field => $allowIcon) {
+            $upload = $_FILES[$field . '_file'] ?? null;
+            if (is_array($upload) && ($upload['error'] ?? UPLOAD_ERR_NO_FILE) !== UPLOAD_ERR_NO_FILE) {
+                $input[$field] = store_uploaded_image($upload, $rootPath, 'site', $allowIcon);
+            } elseif (!empty($_POST['remove_' . $field])) {
+                $input[$field] = '';
+            }
+        }
+
+        $settings->update($input);
+        $rebuilt = $generator->rebuildAllPages();
+        Flash::push('success', 'Saved site settings and rebuilt ' . $rebuilt . ' page(s).');
+        redirect_to_view($appUrl, 'settings');
+    }
+
+    if ($action === 'save-theme-variables') {
+        require_admin($user);
+        if (!is_post() || !Csrf::validate($_POST['csrf_token'] ?? null)) {
+            throw new RuntimeException('The theme customization request was rejected.');
+        }
+
+        $themeId = $themes->currentThemeId();
+        $values = [];
+        foreach ($themes->variables($themeId) as $variable) {
+            $raw = (string) ($_POST['var'][$variable['name']] ?? '');
+            if (!empty($_POST['reset'])) {
+                continue;
+            }
+            $clean = \WYSiteIWYG\ThemeManager::cleanVariableValue($variable['type'], $raw);
+            if ($raw !== '' && $clean === '') {
+                throw new RuntimeException('"' . $raw . '" is not a valid value for ' . $variable['label'] . '.');
+            }
+            $values[$variable['name']] = $clean;
+        }
+
+        $all = (array) $settings->get('theme_variables');
+        $all[$themeId] = $values;
+        $settings->update(['theme_variables' => $all]);
+        $generator->publishStylesheet($themeId);
+        Flash::push('success', !empty($_POST['reset']) ? 'Restored the theme\'s default look.' : 'Saved your theme customizations.');
+        redirect_to_view($appUrl, 'themes');
     }
 
     if ($action === 'apply-theme') {
@@ -613,9 +1174,10 @@ try {
         }
 
         $themeId = trim((string) ($_POST['theme'] ?? ''));
+        $backups->create('apply-theme');
         $generator->applyTheme($themeId);
-        Flash::push('success', 'Applied the ' . $themes->getTheme($themeId)['name'] . ' theme across the site.');
-        redirect($appUrl . '/index.php');
+        Flash::push('success', 'Applied the ' . $themes->getTheme($themeId)['name'] . ' theme across the site. A backup of the previous look is in Manager → Backups.');
+        redirect_to_view($appUrl, 'themes');
     }
 
     if ($action === 'delete-theme') {
@@ -628,7 +1190,7 @@ try {
         $themeName = $themes->getTheme($themeId)['name'] ?? $themeId;
         $themes->deleteTheme($themeId);
         Flash::push('success', 'Deleted the "' . $themeName . '" theme.');
-        redirect($appUrl . '/index.php');
+        redirect_to_view($appUrl, 'themes');
     }
 
     if ($action === 'set-dashboard-theme') {
@@ -645,7 +1207,7 @@ try {
                 ? 'Dashboard appearance reset to the built-in default.'
                 : 'Dashboard now uses the ' . $themes->getTheme($themeId)['name'] . ' appearance.'
         );
-        redirect($appUrl . '/index.php');
+        redirect_to_view($appUrl, 'themes');
     }
 
     if ($action === 'save-ai-settings') {
@@ -663,7 +1225,21 @@ try {
             'enabled' => !empty($_POST['enabled']),
         ]);
         Flash::push('success', 'Saved AI assistant settings.');
-        redirect($appUrl . '/index.php');
+        redirect_to_view($appUrl, 'ai');
+    }
+
+    if ($action === 'ai-kinds') {
+        require_admin($user);
+        $aiCandidates = array_map(
+            static fn(array $c): array => [
+                'path' => $c['path'],
+                'title' => $c['title'],
+                'outline' => $c['excerpt'],
+                'mtime' => (int) (@filemtime($rootPath . '/' . $c['path']) ?: 0),
+            ],
+            $repository->listImportCandidates()
+        );
+        json_response(['ok' => true, 'kinds' => $ai->cachedKinds($aiCandidates, ['home', 'page', 'blog', 'blog-post'])]);
     }
 
     if ($action === 'ai-list-models') {
@@ -713,7 +1289,7 @@ try {
         $newThemeId = $themes->createTheme((string) ($_POST['name'] ?? ''));
         $themes->setBuilderTheme($newThemeId);
         Flash::push('success', 'Created theme "' . $themes->getTheme($newThemeId)['name'] . '" and selected it as the build target. Add templates by choosing "Use as template" on imported pages.');
-        redirect($appUrl . '/index.php');
+        redirect_to_view($appUrl, 'manager');
     }
 
     if ($action === 'set-builder-theme') {
@@ -730,7 +1306,7 @@ try {
                 ? 'Cleared the template build target.'
                 : 'Now building templates into the "' . $themes->getTheme($themeId)['name'] . '" theme.'
         );
-        redirect($appUrl . '/index.php');
+        redirect_to_view($appUrl, 'manager');
     }
 
     if ($action === 'template-from-page') {
@@ -741,7 +1317,7 @@ try {
 
         if ($themes->builderThemeId() === '') {
             Flash::push('error', 'Create or select a build-target theme in the Template Manager before adding templates.');
-            redirect($appUrl . '/index.php');
+            redirect_to_view($appUrl, 'manager');
         }
 
         $source = $externalImporter->cacheLocalTemplateSource(
@@ -764,7 +1340,7 @@ try {
         $builderTheme = $themes->builderThemeId();
         if ($builderTheme === '') {
             Flash::push('error', 'No build-target theme selected.');
-            redirect($appUrl . '/index.php');
+            redirect_to_view($appUrl, 'manager');
         }
 
         $kind = (string) ($_POST['kind'] ?? '');
@@ -776,13 +1352,18 @@ try {
         } else {
             Flash::push('error', 'No ' . $kind . ' template to clear in the selected theme.');
         }
-        redirect($appUrl . '/index.php');
+        redirect_to_view($appUrl, 'manager');
     }
 
     if ($action === 'external-template-fetch') {
         require_admin($user);
         if (!is_post() || !Csrf::validate($_POST['csrf_token'] ?? null)) {
             throw new RuntimeException('The external template import request was rejected.');
+        }
+
+        if ($themes->builderThemeId() === '') {
+            Flash::push('error', 'Create or select a build-target theme in the Template manager before fetching a template source.');
+            redirect_to_view($appUrl, 'manager');
         }
 
         $source = $externalImporter->cacheTemplateSource(
@@ -856,13 +1437,21 @@ try {
             };
 
             try {
-                $results = $externalImporter->importSite(
-                    (string) ($_POST['url'] ?? ''),
-                    (int) ($_POST['max_pages'] ?? 50),
-                    !empty($_POST['overwrite']),
-                    $sendProgress
-                );
-                $sendProgress(['type' => 'done', 'result' => $results]);
+                // One short batch per request; the browser posts the job id back
+                // until the crawl is complete (WP-7).
+                $jobId = trim((string) ($_POST['job_id'] ?? ''));
+                if ($jobId === '') {
+                    $jobId = $externalImporter->startImportJob(
+                        (string) ($_POST['url'] ?? ''),
+                        (int) ($_POST['max_pages'] ?? 50),
+                        !empty($_POST['overwrite'])
+                    );
+                }
+                $step = $externalImporter->runImportJob($jobId, 25, $sendProgress);
+                if ($step['done']) {
+                    $generator->writeMigrationRedirects($externalImporter->queryRedirects());
+                    $sendProgress(['type' => 'done', 'result' => $step['result']]);
+                }
             } catch (Throwable $error) {
                 $sendProgress(['type' => 'fatal', 'message' => $error->getMessage()]);
             }
@@ -874,6 +1463,7 @@ try {
             (int) ($_POST['max_pages'] ?? 50),
             !empty($_POST['overwrite'])
         );
+        $generator->writeMigrationRedirects($externalImporter->queryRedirects());
 
         $message = 'External site import finished.' .
             "\n- Saved HTML pages: " . count($results['saved']) .
@@ -898,7 +1488,53 @@ try {
         }
 
         Flash::push($results['failed'] === [] && ($results['assets_failed'] ?? []) === [] ? 'success' : 'error', $message);
-        redirect($appUrl . '/index.php');
+        redirect_to_view($appUrl, 'manager');
+    }
+
+    if ($action === 'discard-import-job') {
+        require_admin($user);
+        if (!is_post() || !Csrf::validate($_POST['csrf_token'] ?? null)) {
+            throw new RuntimeException('The request was rejected.');
+        }
+        $externalImporter->discardImportJob((string) ($_POST['job'] ?? ''));
+        Flash::push('success', 'Discarded the unfinished import. Files it already saved are kept.');
+        redirect_to_view($appUrl, 'manager');
+    }
+
+    if ($action === 'wxr-import') {
+        require_admin($user);
+        if (!is_post() || !Csrf::validate($_POST['csrf_token'] ?? null)) {
+            throw new RuntimeException('The WordPress import request was rejected.');
+        }
+
+        $upload = $_FILES['wxr'] ?? null;
+        if (!is_array($upload) || ($upload['error'] ?? UPLOAD_ERR_NO_FILE) !== UPLOAD_ERR_OK || !is_uploaded_file((string) $upload['tmp_name'])) {
+            throw new RuntimeException('Choose the .xml file from WordPress → Tools → Export.');
+        }
+
+        $backups->create('wxr-import');
+        $wxr = new \WYSiteIWYG\WxrImporter($generator, $repository);
+        $imported = $wxr->import((string) $upload['tmp_name'], !empty($_POST['overwrite']));
+        $externalImporter->recordImportSource($imported['source_hosts']);
+        $externalImporter->recordQueryRedirects($imported['query_redirects'] ?? []);
+        $generator->writeMigrationRedirects($externalImporter->queryRedirects());
+
+        $message = 'WordPress import finished.'
+            . "\n- Published pages and posts: " . count($imported['created'])
+            . "\n- Drafts (private until published): " . count($imported['drafts'])
+            . "\n- Skipped (already exist): " . count($imported['skipped']);
+        if (!empty($_POST['mirror_media']) && $imported['attachments'] !== []) {
+            $assets = $externalImporter->importAssetUrls($imported['attachments']);
+            $message .= "\n- Media mirrored: " . count($assets['assets_saved']) . ' (failed: ' . count($assets['assets_failed']) . ')';
+        } elseif ($imported['attachments'] !== []) {
+            $message .= "\n- Media not mirrored: " . count($imported['attachments']) . ' file(s) still load from the old site';
+        }
+        foreach (array_slice($imported['failed'], 0, 5) as $failure) {
+            $message .= "\n- Failed: " . $failure;
+        }
+
+        Flash::push($imported['failed'] === [] ? 'success' : 'error', $message);
+        redirect($appUrl . '/index.php?action=report');
     }
 
     if ($action === 'external-assets-import') {
@@ -920,7 +1556,7 @@ try {
         }
 
         Flash::push($results['assets_failed'] === [] ? 'success' : 'error', $message);
-        redirect($appUrl . '/index.php');
+        redirect_to_view($appUrl, 'manager');
     }
 
     if ($action === 'import') {
@@ -951,6 +1587,14 @@ try {
               <label>
                 <span>Excerpt</span>
                 <textarea name="excerpt" rows="3"><?= h((string) ($candidate['excerpt'] ?? '')) ?></textarea>
+              </label>
+              <label>
+                <span>Import as</span>
+                <select name="kind" class="wysite-theme-select">
+                  <option value="auto">Detect automatically (WordPress posts become blog posts)</option>
+                  <option value="page">Page</option>
+                  <option value="blog-post">Blog post</option>
+                </select>
               </label>
               <label>
                 <span>Import Container XPath</span>
@@ -990,6 +1634,7 @@ try {
                 'excerpt' => trim((string) ($_POST['excerpt'] ?? '')),
                 'container_xpath' => $containerXPath,
                 'block_xpaths' => $blockXpaths,
+                'kind' => (string) ($_POST['kind'] ?? 'auto'),
             ]
         );
 
@@ -1006,15 +1651,41 @@ try {
         $candidates = $repository->listImportCandidates();
         if ($candidates === []) {
             Flash::push('success', 'There were no unmanaged HTML files to import.');
-            redirect($appUrl . '/index.php');
+            redirect_to_view($appUrl, 'manager');
         }
 
+        $backups->create('import-all');
+        // WP-1: when AI is configured, its classification breaks ties for pages the
+        // post detector didn't recognise.
+        $aiKinds = [];
+        if ($ai->isConfigured()) {
+            try {
+                $aiKinds = $ai->cachedKinds(array_map(static fn(array $c): array => [
+                    'path' => $c['path'],
+                    'title' => $c['title'],
+                    'outline' => $c['excerpt'],
+                    'mtime' => (int) (@filemtime($rootPath . '/' . $c['path']) ?: 0),
+                ], $candidates), ['home', 'page', 'blog', 'blog-post']);
+            } catch (Throwable) {
+                $aiKinds = [];
+            }
+        }
+
+        $postCount = 0;
         foreach ($candidates as $candidate) {
-            $generator->importExistingPage($candidate['path']);
+            $kind = 'auto';
+            if (($aiKinds[$candidate['path']] ?? '') === 'blog-post' && $generator->detectPost((string) @file_get_contents($rootPath . '/' . $candidate['path'])) === null) {
+                $kind = 'blog-post';
+            }
+            if ($generator->importExistingPage($candidate['path'], ['kind' => $kind], false) === 'blog-post') {
+                $postCount++;
+            }
         }
+        $generator->rebuildTagPages();
+        $redirects = $generator->writeMigrationRedirects($externalImporter->queryRedirects());
 
-        Flash::push('success', 'Imported ' . count($candidates) . ' existing HTML file(s) into the current theme.');
-        redirect($appUrl . '/index.php');
+        Flash::push('success', ($redirects['archives'] + $redirects['queries'] > 0 ? 'Redirected ' . $redirects['archives'] . ' old category/tag archive(s) and ' . $redirects['queries'] . ' query-string URL(s) to their new pages. ' : '') . 'Imported ' . count($candidates) . ' existing HTML file(s) into the current theme (' . $postCount . ' detected as blog posts, with their dates and tags).');
+        redirect_to_view($appUrl, 'manager');
     }
 
     if ($action === 'create-user') {
@@ -1023,14 +1694,14 @@ try {
             throw new RuntimeException('The user creation request was rejected.');
         }
 
-        $auth->createUser(
-            trim((string) ($_POST['username'] ?? '')),
-            (string) ($_POST['password'] ?? ''),
-            !empty($_POST['is_admin'])
-        );
+        $makeAdmin = !empty($_POST['is_admin']);
+        if ($makeAdmin) {
+            require_reauth($auth, $user, $_POST);
+        }
 
+        $auth->createUser(trim((string) ($_POST['username'] ?? '')), (string) ($_POST['password'] ?? ''), $makeAdmin);
         Flash::push('success', 'Created user ' . trim((string) ($_POST['username'] ?? '')) . '.');
-        redirect($appUrl . '/index.php');
+        redirect_to_view($appUrl, 'users');
     }
 
     if ($action === 'update-password') {
@@ -1039,9 +1710,24 @@ try {
             throw new RuntimeException('The password update request was rejected.');
         }
 
+        require_reauth($auth, $user, $_POST);
         $auth->updatePassword(trim((string) ($_POST['username'] ?? '')), (string) ($_POST['password'] ?? ''));
         Flash::push('success', 'Updated the password for ' . trim((string) ($_POST['username'] ?? '')) . '.');
-        redirect($appUrl . '/index.php');
+        redirect_to_view($appUrl, 'users');
+    }
+
+    if ($action === 'set-role') {
+        require_admin($user);
+        if (!is_post() || !Csrf::validate($_POST['csrf_token'] ?? null)) {
+            throw new RuntimeException('The role change request was rejected.');
+        }
+
+        require_reauth($auth, $user, $_POST);
+        $target = trim((string) ($_POST['username'] ?? ''));
+        $makeAdmin = ($_POST['role'] ?? '') === 'admin';
+        $auth->setAdmin($target, $makeAdmin);
+        Flash::push('success', $target . ' is now ' . ($makeAdmin ? 'an administrator.' : 'an editor.'));
+        redirect_to_view($appUrl, $target === $user['username'] && !$makeAdmin ? 'dashboard' : 'users');
     }
 
     if ($action === 'delete-user') {
@@ -1050,9 +1736,25 @@ try {
             throw new RuntimeException('The delete-user request was rejected.');
         }
 
+        require_reauth($auth, $user, $_POST);
         $auth->deleteUser(trim((string) ($_POST['username'] ?? '')));
         Flash::push('success', 'The account was removed.');
-        redirect($appUrl . '/index.php');
+        redirect_to_view($appUrl, 'users');
+    }
+
+    if ($action === 'change-own-password') {
+        if (!is_post() || !Csrf::validate($_POST['csrf_token'] ?? null)) {
+            throw new RuntimeException('The password change request was rejected.');
+        }
+
+        $new = (string) ($_POST['password'] ?? '');
+        if ($new !== (string) ($_POST['password_confirm'] ?? '')) {
+            throw new RuntimeException('The new passwords did not match.');
+        }
+
+        $auth->changeOwnPassword($user['username'], (string) ($_POST['current_password'] ?? ''), $new);
+        Flash::push('success', 'Your password was changed.');
+        redirect_to_view($appUrl, 'account');
     }
 
     if ($action === 'docs') {
@@ -1118,14 +1820,157 @@ try {
             throw new RuntimeException('The deploy-demo request was rejected.');
         }
 
-        $created = $generator->deployDemoSite(require __DIR__ . '/docs/content.php');
-        Flash::push(
-            'success',
-            $created > 0
-                ? 'Deployed the demo site with ' . $created . ' documentation page(s).'
-                : 'The demo site was refreshed from the documentation.'
-        );
-        redirect($appUrl . '/index.php');
+        $deployed = $generator->deployDemoSite(require __DIR__ . '/docs/content.php');
+        Flash::push($deployed['warnings'] === [] ? 'success' : 'error', demo_deploy_message($deployed));
+        redirect_to_view($appUrl, 'manager');
+    }
+
+    if ($action === 'convert-folder-urls') {
+        require_admin($user);
+        if (!is_post() || !Csrf::validate($_POST['csrf_token'] ?? null)) {
+            throw new RuntimeException('The conversion request was rejected.');
+        }
+
+        $backups->create('folder-urls');
+        $converted = $generator->convertToFolderUrls();
+        $settings->update(['url_style' => 'folder']);
+        $message = 'Converted ' . count($converted['moved']) . ' page(s) to folder URLs. Public addresses are unchanged; the old .html files now redirect.';
+        if ($converted['skipped'] !== []) {
+            $message .= "\n- Skipped (a folder page already exists): " . implode(', ', $converted['skipped']);
+        }
+        Flash::push('success', $message);
+        redirect_to_view($appUrl, 'manager');
+    }
+
+    if ($action === 'apply-report-fix') {
+        require_admin($user);
+        if (!is_post() || !Csrf::validate($_POST['csrf_token'] ?? null)) {
+            throw new RuntimeException('The fix request was rejected.');
+        }
+
+        $fix = (string) ($_POST['fix'] ?? '');
+        if (!in_array($fix, ['remove-comment-forms', 'replace-search-forms', 'retarget-forms'], true)) {
+            throw new RuntimeException('Unknown fix.');
+        }
+        $siteHost = (string) parse_url((string) ($settings->get('canonical_base_url') ?: $app['siteOrigin']), PHP_URL_HOST);
+        $changed = $siteReport->applyFix($fix, (string) $settings->get('search_url'), $siteHost, (string) $settings->get('form_endpoint'));
+        Flash::push('success', 'Updated ' . $changed . ' page(s). Earlier versions are in each page\'s history.');
+        redirect($appUrl . '/index.php?action=report');
+    }
+
+    if ($action === 'redirects-download') {
+        require_admin($user);
+        $file = __DIR__ . '/storage/redirects.txt';
+        if (!is_file($file)) {
+            throw new RuntimeException('No redirect map has been generated yet.');
+        }
+        header('Content-Type: text/plain; charset=utf-8');
+        header('Content-Disposition: attachment; filename="redirects.txt"');
+        readfile($file);
+        return;
+    }
+
+    if ($action === 'report') {
+        require_admin($user);
+        $knownEmbeds = $settings->embedHosts() ?: \WYSiteIWYG\Sanitizer::defaultEmbedHosts();
+        $migration = $siteReport->migrationReport($externalImporter->importedSourceHosts(), $knownEmbeds);
+        $fixCounts = [];
+        foreach ($migration as $findings) {
+            foreach ($findings as $finding) {
+                if (!empty($finding['fix'])) {
+                    $fixCounts[$finding['fix']] = ($fixCounts[$finding['fix']] ?? 0) + 1;
+                }
+            }
+        }
+        $fixLabels = [
+            'remove-comment-forms' => ['Remove comment forms', 'Comment forms can\'t work on a static site.'],
+            'replace-search-forms' => ['Replace search forms', 'Uses the external search URL from Site settings (' . ($settings->get('search_url') ?: 'not set') . ').'],
+            'retarget-forms' => ['Point forms at the form endpoint', 'Uses the form endpoint from Site settings (' . ($settings->get('form_endpoint') ?: 'not set') . ').'],
+        ];
+        ob_start();
+        ?>
+        <main class="wysite-dashboard">
+          <section class="wysite-panel">
+            <div class="wysite-panel__heading">
+              <div>
+                <p class="wysite-kicker">Site report</p>
+                <h2><?= count($migration) ?> page(s) need a look</h2>
+              </div>
+              <a class="wysite-button wysite-button--ghost" href="<?= h($appUrl) ?>/index.php?action=manager">Back to Manager</a>
+            </div>
+            <p class="wysite-muted">Broken internal links and missing assets on every page, plus what a WordPress migration typically breaks (forms, search, comments, embeds, links and scripts still on the old site<?= $externalImporter->importedSourceHosts() !== [] ? ': ' . h(implode(', ', $externalImporter->importedSourceHosts())) : '' ?>).</p>
+            <?php if (is_file(__DIR__ . '/storage/redirects.txt')): ?>
+              <p class="wysite-muted">Old query-string URLs (<code>?p=123</code>) redirect to their new pages through a block in the root <code>.htaccess</code>. On nginx or other servers, <a href="<?= h($appUrl) ?>/index.php?action=redirects-download">download the redirect list</a> and add it to the server config.</p>
+            <?php endif; ?>
+            <?php if ($fixCounts !== []): ?>
+              <div class="wysite-hero-actions">
+                <?php foreach ($fixCounts as $fix => $count): ?>
+                  <form method="post" action="<?= h($appUrl) ?>/index.php?action=apply-report-fix" data-wysite-confirm="<?= h($fixLabels[$fix][0]) ?> on every page (<?= (int) $count ?> found)? <?= h($fixLabels[$fix][1]) ?>">
+                    <input type="hidden" name="csrf_token" value="<?= h(Csrf::token()) ?>">
+                    <input type="hidden" name="fix" value="<?= h($fix) ?>">
+                    <button class="wysite-button wysite-button--ghost" type="submit"><?= h($fixLabels[$fix][0]) ?> (<?= (int) $count ?>)</button>
+                  </form>
+                <?php endforeach; ?>
+              </div>
+            <?php endif; ?>
+            <?php if ($migration === []): ?>
+              <p>Nothing found — every internal link resolves and no migration issues were detected.</p>
+            <?php else: ?>
+              <div class="wysite-table-wrap">
+                <table class="wysite-table">
+                  <thead><tr><th>Page</th><th>Issue</th><th>Detail</th></tr></thead>
+                  <tbody>
+                    <?php foreach ($migration as $reportPath => $findings): ?>
+                      <?php foreach ($findings as $index => $finding): ?>
+                        <tr>
+                          <td><?php if ($index === 0): ?><a href="<?= h($appUrl) ?>/index.php?action=preview&path=<?= rawurlencode($reportPath) ?>"><code><?= h($reportPath) ?></code></a><?php endif; ?></td>
+                          <td><?= h($finding['type']) ?></td>
+                          <td><?= h($finding['detail']) ?></td>
+                        </tr>
+                      <?php endforeach; ?>
+                    <?php endforeach; ?>
+                  </tbody>
+                </table>
+              </div>
+            <?php endif; ?>
+          </section>
+        </main>
+        <?php
+        layout('Site report', (string) ob_get_clean(), $appUrl, $siteTitle, $user);
+        return;
+    }
+
+    if ($action === 'purge-preview') {
+        require_admin($user);
+        $purgeFiles = $generator->purgeCandidates($externalImporter->importedFiles());
+        ob_start();
+        ?>
+        <main class="wysite-dashboard">
+          <section class="wysite-panel">
+            <div class="wysite-panel__heading">
+              <div>
+                <p class="wysite-kicker">Delete all pages</p>
+                <h2><?= count($purgeFiles) ?> file(s) will be deleted</h2>
+              </div>
+              <a class="wysite-button wysite-button--ghost" href="<?= h($appUrl) ?>/index.php?action=manager">Cancel</a>
+            </div>
+            <p class="wysite-muted">Only pages managed by WYSiteIWYG, its redirect stubs, and HTML created by the site importer are removed. Other HTML under the site root, assets, and the editor are left alone. A backup is taken first (Manager → Backups).</p>
+            <?php if ($purgeFiles === []): ?>
+              <p>There are no pages to delete.</p>
+            <?php else: ?>
+              <ul class="wysite-file-list">
+                <?php foreach ($purgeFiles as $purgeFile): ?><li><code><?= h($purgeFile) ?></code></li><?php endforeach; ?>
+              </ul>
+              <form method="post" action="<?= h($appUrl) ?>/index.php?action=purge-site" data-wysite-confirm="Delete these <?= count($purgeFiles) ?> file(s)? You can restore them from the backup taken just before.">
+                <input type="hidden" name="csrf_token" value="<?= h(Csrf::token()) ?>">
+                <button class="wysite-button" type="submit">Delete <?= count($purgeFiles) ?> file(s)</button>
+              </form>
+            <?php endif; ?>
+          </section>
+        </main>
+        <?php
+        layout('Delete all pages', (string) ob_get_clean(), $appUrl, $siteTitle, $user);
+        return;
     }
 
     if ($action === 'purge-site') {
@@ -1134,14 +1979,15 @@ try {
             throw new RuntimeException('The clear-site request was rejected.');
         }
 
-        $removed = $generator->purgeAllPages();
+        $backups->create('purge');
+        $removed = $generator->purgeAllPages($externalImporter->importedFiles());
         Flash::push(
             'success',
             $removed > 0
-                ? 'Removed ' . $removed . ' page(s). The site is now empty; assets were left in place.'
+                ? 'Removed ' . $removed . ' page(s). Assets were left in place; restore from Manager → Backups if needed.'
                 : 'There were no pages to remove.'
         );
-        redirect($appUrl . '/index.php');
+        redirect_to_view($appUrl, 'manager');
     }
 
     if ($action === 'delete-demo') {
@@ -1150,6 +1996,7 @@ try {
             throw new RuntimeException('The delete-demo request was rejected.');
         }
 
+        $backups->create('delete-demo');
         $removed = $generator->deleteDemoContent();
         Flash::push(
             'success',
@@ -1157,627 +2004,23 @@ try {
                 ? 'Removed ' . $removed . ' demo page(s).'
                 : 'There was no demo content to remove.'
         );
-        redirect($appUrl . '/index.php');
+        redirect_to_view($appUrl, 'manager');
     }
 
     // ---- Multi-page dashboard router ----
-    $view = in_array($action, ['themes', 'manager', 'ai', 'users'], true) ? $action : 'dashboard';
-    if (in_array($view, ['manager', 'ai', 'users'], true) && !$user['is_admin']) {
-        redirect($appUrl . '/index.php');
+    $view = in_array($action, ['themes', 'manager', 'ai', 'users', 'account', 'settings'], true) ? $action : 'dashboard';
+    if (in_array($view, ['manager', 'ai', 'users', 'settings'], true) && !$user['is_admin']) {
+        redirect_to_view($appUrl, 'dashboard');
     }
 
     $availableThemes = $generator->availableThemes();
     $currentTheme = $generator->currentTheme();
 
     ob_start();
-    if ($view === 'dashboard'):
-        $pages = $repository->listPages();
-    ?>
-    <main class="wysite-dashboard">
-      <section class="wysite-panel wysite-panel--hero">
-        <div>
-          <p class="wysite-kicker">Transparent editing</p>
-          <h2>Edit the real HTML, in place.</h2>
-          <p>Open a page, click the in-page badge, and edit the static file directly. Editable sections are delimited with HTML comments, so the output stays static.</p>
-        </div>
-        <div class="wysite-hero-actions">
-          <a class="wysite-button" href="<?= h($appUrl) ?>/index.php?action=preview&path=index.html">Edit homepage</a>
-          <a class="wysite-button wysite-button--ghost" href="<?= h($siteBaseUrl) ?>" target="_blank" rel="noreferrer">Open live site</a>
-        </div>
-      </section>
-
-      <section class="wysite-grid">
-        <article class="wysite-panel">
-          <h3>Create a page</h3>
-          <form method="post" action="<?= h($appUrl) ?>/index.php?action=create-page" class="wysite-form">
-            <input type="hidden" name="csrf_token" value="<?= h(Csrf::token()) ?>">
-            <label>
-              <span>Page title</span>
-              <input type="text" name="title" required>
-            </label>
-            <label>
-              <span>Slug</span>
-              <input type="text" name="slug" placeholder="about/team">
-            </label>
-            <button class="wysite-button" type="submit">Create page</button>
-          </form>
-        </article>
-
-        <article class="wysite-panel">
-          <h3>Create a blog post</h3>
-          <form method="post" action="<?= h($appUrl) ?>/index.php?action=create-post" class="wysite-form">
-            <input type="hidden" name="csrf_token" value="<?= h(Csrf::token()) ?>">
-            <label>
-              <span>Post title</span>
-              <input type="text" name="title" required>
-            </label>
-            <label>
-              <span>Slug</span>
-              <input type="text" name="slug" placeholder="launch-notes">
-            </label>
-            <label>
-              <span>Excerpt</span>
-              <textarea name="excerpt" rows="3" required></textarea>
-            </label>
-            <label>
-              <span>Hashtags</span>
-              <input type="text" name="hashtags" value="#blog" placeholder="#blog #workflow">
-            </label>
-            <button class="wysite-button" type="submit">Create post</button>
-          </form>
-        </article>
-      </section>
-
-      <section class="wysite-panel">
-        <div class="wysite-panel__heading">
-          <div>
-            <p class="wysite-kicker">Managed pages</p>
-            <h3>Pages managed by WYSiteIWYG</h3>
-          </div>
-          <p class="wysite-muted">Static HTML files containing WYSiteIWYG marker comments.</p>
-        </div>
-        <div class="wysite-table-wrap">
-          <table class="wysite-table">
-            <thead>
-              <tr>
-                <th>Page</th>
-                <th>Type</th>
-                <th>Template</th>
-                <th>Hashtags</th>
-                <th>Blocks</th>
-                <th></th>
-              </tr>
-            </thead>
-            <tbody>
-              <?php foreach ($pages as $page): ?>
-                <tr>
-                  <td>
-                    <strong><?= h($page['title']) ?></strong>
-                    <div class="wysite-muted"><?= h($page['path']) ?></div>
-                  </td>
-                  <td><?= h($page['kind']) ?></td>
-                  <td><?= !empty($page['exclude_template']) ? 'Excluded' : 'Included' ?></td>
-                  <td><?= h($page['hashtags'] !== '' ? $page['hashtags'] : '—') ?></td>
-                  <td><?= h(implode(', ', array_map(static fn(array $block): string => $block['label'], $page['blocks']))) ?></td>
-                  <td class="wysite-table__actions">
-                    <a class="wysite-button wysite-button--ghost" href="<?= h($appUrl) ?>/index.php?action=preview&path=<?= rawurlencode($page['path']) ?>">Edit</a>
-                    <?php if (($page['generated'] ?? '') !== 'tag-index'): ?>
-                      <a class="wysite-button wysite-button--ghost" href="<?= h($appUrl) ?>/index.php?action=metadata&path=<?= rawurlencode($page['path']) ?>">Details</a>
-                    <?php endif; ?>
-                  </td>
-                </tr>
-              <?php endforeach; ?>
-            </tbody>
-          </table>
-        </div>
-      </section>
-    </main>
-    <?php
-    elseif ($view === 'themes'):
-        $dashboardThemeId = $themes->dashboardThemeId();
-    ?>
-    <main class="wysite-dashboard">
-      <section class="wysite-panel">
-        <div class="wysite-panel__heading">
-          <div>
-            <p class="wysite-kicker">Theme selector</p>
-            <h3>Preview a theme, then apply it to your site</h3>
-          </div>
-          <div class="wysite-hero-actions">
-            <p class="wysite-muted">Current theme: <?= h($currentTheme['name']) ?></p>
-            <?php if ($user['is_admin']): ?>
-            <a class="wysite-button" href="<?= h($appUrl) ?>/index.php?action=manager">New theme</a>
-            <?php endif; ?>
-          </div>
-        </div>
-        <div class="wysite-theme-grid">
-          <?php foreach ($availableThemes as $theme): ?>
-            <article class="wysite-theme-card <?= $theme['id'] === $currentTheme['id'] ? 'is-current' : '' ?>">
-              <?php if ($theme['id'] === $currentTheme['id']): ?>
-                <span class="wysite-theme-chip">Current</span>
-              <?php endif; ?>
-              <div>
-                <h3><?= h($theme['name']) ?></h3>
-                <p><?= h($theme['description']) ?></p>
-                <?php if ($theme['inspiration'] !== ''): ?>
-                  <p class="wysite-muted"><?= h($theme['inspiration']) ?></p>
-                <?php endif; ?>
-                <?php if ($theme['preview_blurb'] !== ''): ?>
-                  <p class="wysite-muted"><?= h($theme['preview_blurb']) ?></p>
-                <?php endif; ?>
-              </div>
-              <div class="wysite-theme-actions">
-                <a class="wysite-button wysite-button--ghost" href="<?= h($appUrl) ?>/index.php?action=preview&path=index.html&theme=<?= rawurlencode($theme['id']) ?>">Preview Home</a>
-                <?php if ($user['is_admin']): ?>
-                  <form method="post" action="<?= h($appUrl) ?>/index.php?action=apply-theme">
-                    <input type="hidden" name="csrf_token" value="<?= h(Csrf::token()) ?>">
-                    <input type="hidden" name="theme" value="<?= h($theme['id']) ?>">
-                    <button class="wysite-button" type="submit">Apply Theme</button>
-                  </form>
-                  <?php if ($theme['id'] !== $currentTheme['id'] && $theme['id'] !== $themes->defaultThemeId()): ?>
-                  <form method="post" action="<?= h($appUrl) ?>/index.php?action=delete-theme" data-wysite-confirm="Delete the &quot;<?= h($theme['name']) ?>&quot; theme? This permanently removes its files and cannot be undone.">
-                    <input type="hidden" name="csrf_token" value="<?= h(Csrf::token()) ?>">
-                    <input type="hidden" name="theme" value="<?= h($theme['id']) ?>">
-                    <button class="wysite-button wysite-button--ghost" type="submit">Delete</button>
-                  </form>
-                  <?php endif; ?>
-                <?php endif; ?>
-              </div>
-            </article>
-          <?php endforeach; ?>
-        </div>
-      </section>
-
-      <?php if ($user['is_admin']): ?>
-      <section class="wysite-panel">
-        <div class="wysite-panel__heading">
-          <div>
-            <p class="wysite-kicker">Dashboard theme</p>
-            <h3>Theme for the editor itself</h3>
-          </div>
-        </div>
-        <form method="post" action="<?= h($appUrl) ?>/index.php?action=set-dashboard-theme" class="wysite-form">
-          <input type="hidden" name="csrf_token" value="<?= h(Csrf::token()) ?>">
-          <label>
-            <span>Dashboard theme</span>
-            <select name="dashboard_theme" class="wysite-theme-select">
-              <option value="default"<?= $dashboardThemeId === '' ? ' selected' : '' ?>>Default (built-in)</option>
-              <?php foreach ($availableThemes as $theme): ?>
-                <?php if (!empty($theme['has_dashboard'])): ?>
-                <option value="<?= h($theme['id']) ?>"<?= $theme['id'] === $dashboardThemeId ? ' selected' : '' ?>><?= h($theme['name']) ?></option>
-                <?php endif; ?>
-              <?php endforeach; ?>
-            </select>
-          </label>
-          <button class="wysite-button" type="submit">Save dashboard theme</button>
-        </form>
-      </section>
-      <?php endif; ?>
-    </main>
-    <?php
-    elseif ($view === 'manager'):
-        $hasDemoContent = $generator->hasDemoContent();
-        $importCandidates = $repository->listImportCandidates();
-        $kindGuesses = [];
-        foreach ($importCandidates as $candidate) {
-            $kindGuesses[$candidate['path']] = guess_template_kind($candidate['path']);
-        }
-        if ($importCandidates !== [] && $ai->isConfigured()) {
-            $aiCandidates = array_map(
-                static fn(array $c): array => [
-                    'path' => $c['path'],
-                    'title' => $c['title'],
-                    'outline' => $c['excerpt'],
-                    'mtime' => (int) (@filemtime($rootPath . '/' . $c['path']) ?: 0),
-                ],
-                $importCandidates
-            );
-            foreach ($ai->cachedKinds($aiCandidates, ['home', 'page', 'blog', 'blog-post']) as $path => $kind) {
-                $kindGuesses[$path] = $kind;
-            }
-        }
-        $builderThemeId = $themes->builderThemeId();
-        $templateKinds = [
-            'home' => 'Home / front page',
-            'page' => 'Page',
-            'blog' => 'Blog index / archive',
-            'blog-post' => 'Blog post',
-        ];
-        $builderTemplates = [];
-        if ($builderThemeId !== '') {
-            foreach ($templateKinds as $templateKind => $templateLabel) {
-                $filename = basename($repository->activeTemplateRelativePath($templateKind));
-                $builderTemplates[$templateKind] = is_file($rootPath . '/edit/themes/' . $builderThemeId . '/' . $filename);
-            }
-        }
-    ?>
-    <main class="wysite-dashboard">
-      <section class="wysite-panel">
-        <div class="wysite-panel__heading">
-          <div>
-            <p class="wysite-kicker">Site content</p>
-            <h3>Demo &amp; bulk actions</h3>
-          </div>
-        </div>
-        <div class="wysite-hero-actions">
-          <?php if (!$hasDemoContent): ?>
-          <form method="post" action="<?= h($appUrl) ?>/index.php?action=deploy-demo">
-            <input type="hidden" name="csrf_token" value="<?= h(Csrf::token()) ?>">
-            <button class="wysite-button" type="submit">Deploy demo site</button>
-          </form>
-          <?php else: ?>
-          <form method="post" action="<?= h($appUrl) ?>/index.php?action=delete-demo" data-wysite-confirm="Delete all demo pages and posts? This removes every page flagged as demo content and cannot be undone.">
-            <input type="hidden" name="csrf_token" value="<?= h(Csrf::token()) ?>">
-            <button class="wysite-button wysite-button--ghost" type="submit">Delete demo content</button>
-          </form>
-          <?php endif; ?>
-          <form method="post" action="<?= h($appUrl) ?>/index.php?action=purge-site" data-wysite-confirm="Delete ALL pages from this site? Every HTML page (managed and unmanaged) will be permanently removed. Assets and the editor are kept. This cannot be undone.">
-            <input type="hidden" name="csrf_token" value="<?= h(Csrf::token()) ?>">
-            <button class="wysite-button wysite-button--ghost" type="submit">Delete all pages</button>
-          </form>
-        </div>
-      </section>
-
-      <section class="wysite-panel">
-        <div class="wysite-panel__heading">
-          <div>
-            <p class="wysite-kicker">Template manager</p>
-            <h3>Build a theme from your pages</h3>
-          </div>
-          <p class="wysite-muted">Select or create a theme to build into, then choose "Use as template" on the pages below to add its templates. This does not touch your live site until you Apply the theme.</p>
-        </div>
-
-        <div class="wysite-grid">
-          <article class="wysite-panel">
-            <h3>Build target</h3>
-            <form method="post" action="<?= h($appUrl) ?>/index.php?action=set-builder-theme" class="wysite-form">
-              <input type="hidden" name="csrf_token" value="<?= h(Csrf::token()) ?>">
-              <label>
-                <span>Building templates into</span>
-                <select name="theme" class="wysite-theme-select">
-                  <option value="">— none selected —</option>
-                  <?php foreach ($availableThemes as $theme): ?>
-                  <option value="<?= h($theme['id']) ?>"<?= $theme['id'] === $builderThemeId ? ' selected' : '' ?>><?= h($theme['name']) ?></option>
-                  <?php endforeach; ?>
-                </select>
-              </label>
-              <button class="wysite-button" type="submit">Set build target</button>
-            </form>
-          </article>
-          <article class="wysite-panel">
-            <h3>Create a new theme</h3>
-            <form method="post" action="<?= h($appUrl) ?>/index.php?action=create-theme" class="wysite-form">
-              <input type="hidden" name="csrf_token" value="<?= h(Csrf::token()) ?>">
-              <label>
-                <span>Theme name</span>
-                <input type="text" name="name" required placeholder="e.g. Kamloops Mission">
-              </label>
-              <button class="wysite-button" type="submit">Create &amp; select</button>
-            </form>
-          </article>
-        </div>
-
-        <?php if ($builderThemeId === ''): ?>
-          <p class="wysite-muted">No build target selected. Create a theme (recommended for an imported site) or pick one above, then add templates from the pages below.</p>
-        <?php else: ?>
-          <p class="wysite-muted">Templates for <strong><?= h($themes->getTheme($builderThemeId)['name']) ?></strong> (<code>edit/themes/<?= h($builderThemeId) ?>/</code>). Apply this theme from the Theme page when it's complete.</p>
-          <div class="wysite-table-wrap">
-            <table class="wysite-table">
-              <thead><tr><th>Kind</th><th>Status</th><th></th></tr></thead>
-              <tbody>
-                <?php foreach ($templateKinds as $templateKind => $templateLabel): ?>
-                <tr>
-                  <td><?= h($templateLabel) ?><?php if ($templateKind === 'home'): ?> <span class="wysite-muted">(optional; falls back to Page)</span><?php endif; ?></td>
-                  <td><?= !empty($builderTemplates[$templateKind]) ? 'Established' : '<span class="wysite-muted">Not set</span>' ?></td>
-                  <td class="wysite-table__actions">
-                    <?php if (!empty($builderTemplates[$templateKind])): ?>
-                    <form method="post" action="<?= h($appUrl) ?>/index.php?action=clear-template" data-wysite-confirm="Clear the <?= h($templateLabel) ?> template from this theme?">
-                      <input type="hidden" name="csrf_token" value="<?= h(Csrf::token()) ?>">
-                      <input type="hidden" name="kind" value="<?= h($templateKind) ?>">
-                      <button class="wysite-button wysite-button--ghost" type="submit">Clear</button>
-                    </form>
-                    <?php endif; ?>
-                  </td>
-                </tr>
-                <?php endforeach; ?>
-              </tbody>
-            </table>
-          </div>
-        <?php endif; ?>
-      </section>
-
-      <section class="wysite-panel">
-        <div class="wysite-panel__heading">
-          <div>
-            <p class="wysite-kicker">External migration tools</p>
-            <h3>Import templates or crawl a static copy of another site</h3>
-          </div>
-        </div>
-        <div class="wysite-grid">
-          <article>
-            <h3>Build a template from a URL</h3>
-            <p class="wysite-muted">Fetch one external page, select the menu and content regions in the browser, and promote those selections into an active template file in <code>/edit/templates/</code>.</p>
-            <form method="post" action="<?= h($appUrl) ?>/index.php?action=external-template-fetch" class="wysite-form">
-              <input type="hidden" name="csrf_token" value="<?= h(Csrf::token()) ?>">
-              <label>
-                <span>Source URL</span>
-                <input type="url" name="url" required placeholder="https://example.com/about/">
-              </label>
-              <label>
-                <span>Template type</span>
-                <select name="kind" class="wysite-theme-select">
-                  <option value="page">Page template</option>
-                  <option value="blog-post">Blog post template</option>
-                  <option value="blog">Blog / archive template</option>
-                </select>
-              </label>
-              <button class="wysite-button" type="submit">Fetch and Select Sections</button>
-            </form>
-          </article>
-
-          <article>
-            <h3>Import an external site</h3>
-            <p class="wysite-muted">Crawl source-site HTML pages from a starting URL, save feeds and other static resources locally, rewrite source-domain page links, and mirror referenced assets and feed media into <code>/assets/imported/</code>. This is intended as a first migration pass for WordPress-style sites before importing pages into WYSite blocks.</p>
-            <form method="post" action="<?= h($appUrl) ?>/index.php?action=external-site-import" class="wysite-form" data-wysite-external-import-form="1" data-wysite-confirm="Import HTML pages, feeds, and referenced assets from this external site? Existing local files will only be replaced if overwrite is checked.">
-              <input type="hidden" name="csrf_token" value="<?= h(Csrf::token()) ?>">
-              <label>
-                <span>Starting URL</span>
-                <input type="url" name="url" required placeholder="https://example.com/">
-              </label>
-              <label>
-                <span>Maximum pages</span>
-                <input type="number" name="max_pages" min="1" max="500" value="50">
-              </label>
-              <label class="wysite-checkbox">
-                <input type="checkbox" name="overwrite" value="1">
-                <span>Overwrite existing local HTML files</span>
-              </label>
-              <button class="wysite-button" type="submit">Import Site</button>
-            </form>
-            <div class="wysite-import-progress" data-wysite-external-import-progress hidden>
-              <div class="wysite-import-progress__bar"><span data-wysite-import-progress-bar></span></div>
-              <p class="wysite-muted" data-wysite-import-progress-status>Preparing import...</p>
-              <pre class="wysite-import-progress__log" data-wysite-import-progress-log></pre>
-            </div>
-          </article>
-
-          <article>
-            <h3>Backfill specific assets</h3>
-            <p class="wysite-muted">Use this as a repair pass for individual media URLs that were blocked, discovered later, or listed in an import report. Assets are streamed into <code>/assets/imported/</code>, then matching references in local HTML/CSS/JS files are rewritten.</p>
-            <form method="post" action="<?= h($appUrl) ?>/index.php?action=external-assets-import" class="wysite-form">
-              <input type="hidden" name="csrf_token" value="<?= h(Csrf::token()) ?>">
-              <label>
-                <span>Asset URLs</span>
-                <textarea name="asset_urls" rows="7" placeholder="https://example.com/wp-content/uploads/audio.m4a"></textarea>
-              </label>
-              <button class="wysite-button" type="submit">Backfill Assets</button>
-            </form>
-          </article>
-        </div>
-      </section>
-
-      <section class="wysite-panel">
-        <div class="wysite-panel__heading">
-          <div>
-            <p class="wysite-kicker">Unmanaged pages</p>
-            <h3>HTML files not yet added to WYSiteIWYG</h3>
-          </div>
-          <?php if ($importCandidates !== []): ?>
-            <form method="post" action="<?= h($appUrl) ?>/index.php?action=import-all" data-wysite-confirm="Import all <?= h((string) count($importCandidates)) ?> unmanaged HTML file(s) with the current theme? This will rewrite those files on disk.">
-              <input type="hidden" name="csrf_token" value="<?= h(Csrf::token()) ?>">
-              <button class="wysite-button" type="submit">Import All</button>
-            </form>
-          <?php endif; ?>
-        </div>
-        <p class="wysite-muted">These files are present on the server but do not yet contain WYSiteIWYG markers. Importing applies the current theme and wraps the imported content in editable Page Content blocks.</p>
-
-        <?php if ($importCandidates === []): ?>
-          <p class="wysite-muted">No unmanaged HTML files were found outside <code>/edit/</code>.</p>
-        <?php else: ?>
-          <div class="wysite-table-wrap">
-            <table class="wysite-table">
-              <thead>
-                <tr>
-                  <th>File</th>
-                  <th>Detected Title</th>
-                  <th>Excerpt</th>
-                  <th></th>
-                </tr>
-              </thead>
-              <tbody>
-                <?php foreach ($importCandidates as $candidate): ?>
-                  <tr>
-                    <td><code><?= h($candidate['path']) ?></code></td>
-                    <td><?= h($candidate['title']) ?></td>
-                    <td><?= h($candidate['excerpt'] !== '' ? $candidate['excerpt'] : '—') ?></td>
-                    <td class="wysite-table__actions">
-                      <form method="post" action="<?= h($appUrl) ?>/index.php?action=import-page" data-wysite-confirm="Import <?= h($candidate['path']) ?> with the current theme?">
-                        <input type="hidden" name="csrf_token" value="<?= h(Csrf::token()) ?>">
-                        <input type="hidden" name="path" value="<?= h($candidate['path']) ?>">
-                        <input type="hidden" name="title" value="<?= h($candidate['title']) ?>">
-                        <input type="hidden" name="excerpt" value="<?= h($candidate['excerpt']) ?>">
-                        <input type="hidden" name="container_xpath" value="">
-                        <input type="hidden" name="block_xpaths" value="">
-                        <button class="wysite-button wysite-button--ghost" type="submit">Import</button>
-                      </form>
-                      <a class="wysite-button wysite-button--ghost" href="<?= h($appUrl) ?>/index.php?action=import&path=<?= rawurlencode($candidate['path']) ?>">Advanced</a>
-                      <?php $guessKind = $kindGuesses[$candidate['path']] ?? 'page'; ?>
-                      <form method="post" action="<?= h($appUrl) ?>/index.php?action=template-from-page">
-                        <input type="hidden" name="csrf_token" value="<?= h(Csrf::token()) ?>">
-                        <input type="hidden" name="path" value="<?= h($candidate['path']) ?>">
-                        <select name="kind" class="wysite-theme-select" aria-label="Template kind">
-                          <option value="home"<?= $guessKind === 'home' ? ' selected' : '' ?>>Home template</option>
-                          <option value="page"<?= $guessKind === 'page' ? ' selected' : '' ?>>Page template</option>
-                          <option value="blog"<?= $guessKind === 'blog' ? ' selected' : '' ?>>Blog index template</option>
-                          <option value="blog-post"<?= $guessKind === 'blog-post' ? ' selected' : '' ?>>Blog post template</option>
-                        </select>
-                        <button class="wysite-button wysite-button--ghost" type="submit">Use as template</button>
-                      </form>
-                    </td>
-                  </tr>
-                <?php endforeach; ?>
-              </tbody>
-            </table>
-          </div>
-        <?php endif; ?>
-      </section>
-    </main>
-    <?php
-    elseif ($view === 'ai'):
-        $aiSettings = $ai->publicSettings();
-    ?>
-    <main class="wysite-dashboard">
-      <section class="wysite-panel">
-        <div class="wysite-panel__heading">
-          <div>
-            <p class="wysite-kicker">AI assistance (optional)</p>
-            <h3>Auto-tag template regions with your own API key</h3>
-          </div>
-          <p class="wysite-muted">
-            <?php if ($aiSettings['enabled'] && $aiSettings['has_key']): ?>
-              Active — “Use as template” will pre-select regions for you to review.
-            <?php else: ?>
-              Off — template regions are selected manually. Add a key to enable pre-selection.
-            <?php endif; ?>
-          </p>
-        </div>
-        <p class="wysite-muted">When enabled, choosing “Use as template” sends a compact structural outline of the page (tags, ids, classes, short snippets — not the full page) to your chosen model, which proposes which element fills each template role. The picks are pre-loaded into the region designer for you to confirm or change; nothing is saved without your review. Your API key is stored in <code>edit/storage/ai.local.php</code> (git-ignored) and is never sent to the browser.</p>
-        <form method="post" action="<?= h($appUrl) ?>/index.php?action=save-ai-settings" class="wysite-form">
-          <input type="hidden" name="csrf_token" value="<?= h(Csrf::token()) ?>">
-          <div class="wysite-grid">
-            <label>
-              <span>Provider</span>
-              <select name="provider" class="wysite-theme-select">
-                <option value="anthropic"<?= $aiSettings['provider'] === 'anthropic' ? ' selected' : '' ?>>Anthropic (Claude)</option>
-                <option value="openai"<?= $aiSettings['provider'] === 'openai' ? ' selected' : '' ?>>OpenAI-compatible</option>
-              </select>
-            </label>
-            <label>
-              <span>Model</span>
-              <input type="text" name="model" data-wysite-ai-model value="<?= h((string) $aiSettings['model']) ?>" placeholder="Model id (type it, or load and pick below)" autocomplete="off">
-              <select data-wysite-ai-model-select class="wysite-theme-select" aria-label="Loaded models">
-                <option value="">Load models to choose from a list…</option>
-              </select>
-            </label>
-          </div>
-          <label>
-            <span>API key <?= $aiSettings['has_key'] ? '<em>(a key is saved — leave blank to keep it)</em>' : '<em>(none saved yet)</em>' ?></span>
-            <input type="password" name="api_key" data-wysite-ai-key autocomplete="off" placeholder="<?= $aiSettings['has_key'] ? '••••••••••••' : 'Paste your API key' ?>">
-          </label>
-          <label>
-            <span>Custom endpoint base URL <em>(optional; for self-hosted or OpenAI-compatible gateways)</em></span>
-            <input type="url" name="base_url" data-wysite-ai-baseurl value="<?= h((string) $aiSettings['base_url']) ?>" placeholder="https://api.openai.com">
-          </label>
-          <div class="wysite-ai-controls">
-            <label class="wysite-checkbox">
-              <input type="checkbox" name="enabled" value="1" <?= $aiSettings['enabled'] ? 'checked' : '' ?>>
-              <span>Enable AI region pre-selection</span>
-            </label>
-            <div class="wysite-ai-controls__buttons">
-              <button type="button" class="wysite-button wysite-button--ghost" data-wysite-ai-load>Load models</button>
-              <button type="button" class="wysite-button wysite-button--ghost" data-wysite-ai-test>Test connection</button>
-            </div>
-          </div>
-          <p class="wysite-muted" data-wysite-ai-status hidden></p>
-          <?php if ($aiSettings['has_key']): ?>
-          <label class="wysite-checkbox">
-            <input type="checkbox" name="clear_key" value="1">
-            <span>Remove the saved API key</span>
-          </label>
-          <?php endif; ?>
-          <button class="wysite-button" type="submit">Save AI settings</button>
-        </form>
-      </section>
-    </main>
-    <?php
-    elseif ($view === 'users'):
-        $users = $auth->allUsers();
-    ?>
-    <main class="wysite-dashboard">
-      <section class="wysite-grid">
-        <article class="wysite-panel">
-          <h3>Create a user</h3>
-          <form method="post" action="<?= h($appUrl) ?>/index.php?action=create-user" class="wysite-form">
-            <input type="hidden" name="csrf_token" value="<?= h(Csrf::token()) ?>">
-            <label>
-              <span>Username</span>
-              <input type="text" name="username" required>
-            </label>
-            <label>
-              <span>Password</span>
-              <input type="password" name="password" required minlength="10">
-            </label>
-            <label class="wysite-checkbox">
-              <input type="checkbox" name="is_admin" value="1">
-              <span>Administrator</span>
-            </label>
-            <button class="wysite-button" type="submit">Create user</button>
-          </form>
-        </article>
-
-        <article class="wysite-panel">
-          <h3>Reset a password</h3>
-          <form method="post" action="<?= h($appUrl) ?>/index.php?action=update-password" class="wysite-form">
-            <input type="hidden" name="csrf_token" value="<?= h(Csrf::token()) ?>">
-            <label>
-              <span>Username</span>
-              <input type="text" name="username" required>
-            </label>
-            <label>
-              <span>New password</span>
-              <input type="password" name="password" required minlength="10">
-            </label>
-            <button class="wysite-button" type="submit">Update password</button>
-          </form>
-        </article>
-      </section>
-
-      <section class="wysite-panel">
-        <div class="wysite-panel__heading">
-          <div>
-            <p class="wysite-kicker">User management</p>
-            <h3>Accounts</h3>
-          </div>
-        </div>
-        <div class="wysite-table-wrap">
-          <table class="wysite-table">
-            <thead>
-              <tr>
-                <th>User</th>
-                <th>Role</th>
-                <th>Created</th>
-                <th></th>
-              </tr>
-            </thead>
-            <tbody>
-              <?php foreach ($users as $account): ?>
-                <tr>
-                  <td><?= h($account['username']) ?></td>
-                  <td><?= $account['is_admin'] ? 'Admin' : 'Editor' ?></td>
-                  <td><?= h((string) $account['created_at']) ?></td>
-                  <td class="wysite-table__actions">
-                    <?php if ($account['username'] !== $user['username']): ?>
-                      <form method="post" action="<?= h($appUrl) ?>/index.php?action=delete-user">
-                        <input type="hidden" name="csrf_token" value="<?= h(Csrf::token()) ?>">
-                        <input type="hidden" name="username" value="<?= h($account['username']) ?>">
-                        <button class="wysite-button wysite-button--ghost" type="submit">Delete</button>
-                      </form>
-                    <?php endif; ?>
-                  </td>
-                </tr>
-              <?php endforeach; ?>
-            </tbody>
-          </table>
-        </div>
-      </section>
-    </main>
-    <?php
-    endif;
-    $viewTitles = ['dashboard' => 'Dashboard', 'themes' => 'Theme', 'manager' => 'Manager', 'ai' => 'AI', 'users' => 'Users'];
+    include __DIR__ . '/views/' . $view . '.php';
+    $viewTitles = ['dashboard' => 'Dashboard', 'themes' => 'Theme', 'manager' => 'Manager', 'ai' => 'AI', 'users' => 'Users', 'account' => 'Account', 'settings' => 'Settings'];
     layout($viewTitles[$view], (string) ob_get_clean(), $appUrl, $siteTitle, $user, $view);
 } catch (Throwable $error) {
-    Flash::push('error', $error->getMessage());
-
     $accept = (string) ($_SERVER['HTTP_ACCEPT'] ?? '');
     if ($accept !== '' && str_contains($accept, 'application/x-ndjson')) {
         header('Content-Type: application/x-ndjson; charset=utf-8');
@@ -1816,5 +2059,7 @@ try {
         return;
     }
 
+    // Signed-out errors (bad login, bad setup token) are shown after the redirect.
+    Flash::push('error', $error->getMessage());
     redirect($appUrl . '/index.php?action=login');
 }

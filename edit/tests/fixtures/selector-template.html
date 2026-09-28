@@ -1,0 +1,21 @@
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <!-- WYSITE:META title="{{TITLE}}" kind="page" -->
+  <link rel="stylesheet" href="{{THEME_CSS_HREF}}">
+  <title>{{TITLE}}</title>
+</head>
+<body class="{{BODY_CLASS}}">
+  <header class='site-header' data-x="a > b">
+    <a class="brand" href="{{X}} y"><img src="{{LOGO}}" alt=""></a>
+    <svg viewBox="0 0 10 10"><linearGradient id="g"><stop offset="0"/></linearGradient><circle cx="5" cy="5" r="4" fill="url(#g)"/></svg>
+  </header>
+  <template id="card"><article class="card"><slot name="t"></slot></article></template>
+  <main>
+    <section class="intro"><p>Old intro</p><section class="nested"><p>Nested</p></section></section>
+    <section class="second"><p>Second</p></section>
+  </main>
+  <footer><p>Footer &copy; <script>var a = "<section>";</script></p></footer>
+  {{WYSITE_PUBLIC_BRIDGE}}
+</body>
+</html>

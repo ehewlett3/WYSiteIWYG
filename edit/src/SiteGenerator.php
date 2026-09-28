@@ -7,33 +7,54 @@ use RuntimeException;
 
 final class SiteGenerator
 {
+    /** META fields the templates write themselves; everything else is carried over. */
+    private const TEMPLATE_META_KEYS = ['title', 'kind', 'date', 'excerpt', 'hashtags', 'tag', 'generated', 'tags'];
+
     private string $rootPath;
     private BlockRepository $repository;
     private ThemeManager $themes;
     private string $siteBaseUrl;
+    private SiteSettings $settings;
+    private string $siteOrigin;
 
-    public function __construct(string $rootPath, BlockRepository $repository, ThemeManager $themes, string $siteBaseUrl = '/')
-    {
+    /**
+     * @param string $siteOrigin scheme://host of the current request, used for
+     *                           absolute URLs (canonical, feeds) when no canonical
+     *                           base URL is configured in Site settings.
+     */
+    public function __construct(
+        string $rootPath,
+        BlockRepository $repository,
+        ThemeManager $themes,
+        string $siteBaseUrl = '/',
+        ?SiteSettings $settings = null,
+        string $siteOrigin = ''
+    ) {
         $this->rootPath = rtrim($rootPath, '/');
         $this->repository = $repository;
         $this->themes = $themes;
         $this->siteBaseUrl = '/' . trim($siteBaseUrl, '/');
         $this->siteBaseUrl = $this->siteBaseUrl === '/' ? '/' : $this->siteBaseUrl . '/';
+        $this->settings = $settings ?? new SiteSettings($this->rootPath . '/edit/storage/site.local.php');
+        $this->siteOrigin = rtrim($siteOrigin, '/');
+        $this->repository->setExcludedPaths($this->settings->excludedPaths());
     }
 
-    public function createPage(string $title, string $slug): string
+    public function settings(): SiteSettings
+    {
+        return $this->settings;
+    }
+
+    public function createPage(string $title, string $slug, bool $draft = false): string
     {
         $title = trim($title);
         $slug = $this->normalizeSlug($slug !== '' ? $slug : $title);
-        $path = $slug === 'index' ? 'index.html' : $slug . '.html';
-        $target = $this->rootPath . '/' . $path;
-
-        if (is_file($target)) {
-            throw new RuntimeException('That page already exists.');
-        }
+        $this->assertSlugAvailable($slug);
+        $path = $this->pagePathForSlug($slug);
+        $target = $this->repository->resolvePath(($draft ? SitePath::DRAFT_PREFIX : '') . $path);
 
         $html = $this->renderKind(
-            'page',
+            $path === 'index.html' ? 'home' : 'page',
             $this->themes->currentThemeId(),
             [
                 'path' => $path,
@@ -50,17 +71,34 @@ final class SiteGenerator
             '/assets/site.css'
         );
 
+        if ($draft) {
+            $html = $this->injectMetaExtras($html, ['status' => 'draft']);
+        }
+
         Filesystem::ensureDirectory(dirname($target));
-        Filesystem::atomicWrite($target, $html);
-        return $path;
+        Filesystem::writeSitePage($target, $html);
+        return ($draft ? SitePath::DRAFT_PREFIX : '') . $path;
     }
 
-    public function importExistingPage(string $relativePath, array $options = []): void
+    /**
+     * Turn an unmanaged HTML file into a managed page at the same path (so its
+     * URL, e.g. a WordPress permalink, is kept). WordPress posts are detected and
+     * imported as blog posts with their date, tags and body (WP-1); pass
+     * $options['kind'] = 'page' | 'blog-post' to override detection.
+     *
+     * @return string the kind the page was imported as
+     */
+    public function importExistingPage(string $relativePath, array $options = [], bool $rebuildTags = true): string
     {
         $candidate = $this->repository->getImportCandidate($relativePath);
         $meta = $candidate['meta'];
-        $title = trim((string) ($options['title'] ?? ($meta['title'] ?? $candidate['title'] ?? basename($relativePath))));
-        $excerpt = trim((string) ($options['excerpt'] ?? ($meta['excerpt'] ?? $candidate['excerpt'] ?? '')));
+        $post = $this->detectPost($candidate['html']);
+        $kind = in_array($options['kind'] ?? 'auto', ['page', 'blog-post'], true)
+            ? (string) $options['kind']
+            : ($post !== null ? 'blog-post' : 'page');
+
+        $title = trim((string) ($options['title'] ?? ($post['title'] ?? $meta['title'] ?? $candidate['title'] ?? basename($relativePath))));
+        $excerpt = trim((string) ($options['excerpt'] ?? ($post['excerpt'] ?? $meta['excerpt'] ?? $candidate['excerpt'] ?? '')));
         $containerXPath = trim((string) ($options['container_xpath'] ?? ''));
         $blockXpaths = array_values(
             array_filter(
@@ -72,16 +110,47 @@ final class SiteGenerator
             )
         );
 
+        if ($kind === 'blog-post') {
+            $content = $containerXPath === '' && ($post['content'] ?? '') !== ''
+                ? (string) $post['content']
+                : implode("\n", $this->extractImportedPageBlocks($candidate['html'], $containerXPath, $blockXpaths));
+            $tags = $this->usableImportTags($post['tags'] ?? []);
+            $html = $this->renderKind(
+                'blog-post',
+                $this->themes->currentThemeId(),
+                [
+                    'path' => $candidate['path'],
+                    'title' => $title !== '' ? $title : basename($relativePath),
+                    'excerpt' => $excerpt,
+                    'date' => (string) ($post['date'] ?? '') ?: gmdate('Y-m-d', (int) (@filemtime($this->repository->resolvePath($candidate['path'])) ?: time())),
+                    'hashtags' => $this->hashtagsString($tags),
+                    'main_menu' => $this->currentMenuHtml(),
+                    'tag_links' => $this->renderTagLinks($tags),
+                    'blog_post_content' => $content !== '' ? $content : $this->defaultBlogPostContent(),
+                    'author' => (string) ($post['author'] ?? ''),
+                    'image' => (string) ($post['image'] ?? ''),
+                    'meta_extra' => array_filter(['author' => (string) ($post['author'] ?? ''), 'image' => (string) ($post['image'] ?? '')]),
+                ],
+                '/assets/site.css'
+            );
+
+            Filesystem::writeSitePage($this->repository->resolvePath($candidate['path']), $html);
+            if ($rebuildTags) {
+                $this->rebuildTagPages();
+            }
+            return 'blog-post';
+        }
+
         $blocks = $this->extractImportedPageBlocks($candidate['html'], $containerXPath, $blockXpaths);
         if ($blocks === []) {
             $blocks = [$this->defaultPageContent()];
         }
 
         $html = $this->renderKind(
-            'page',
+            $candidate['path'] === 'index.html' ? 'home' : 'page',
             $this->themes->currentThemeId(),
             [
-                'path' => $relativePath,
+                'path' => $candidate['path'],
                 'title' => $title !== '' ? $title : basename($relativePath),
                 'excerpt' => $excerpt,
                 'hashtags' => '',
@@ -91,25 +160,206 @@ final class SiteGenerator
             '/assets/site.css'
         );
 
-        Filesystem::atomicWrite($this->rootPath . '/' . ltrim($relativePath, '/'), $html);
+        Filesystem::writeSitePage($this->repository->resolvePath($candidate['path']), $html);
+        return 'page';
     }
 
-    public function createBlogPost(string $title, string $slug, string $excerpt, string $hashtags = '#blog'): string
+    /**
+     * Create a managed page or post from imported data (WXR import) at an exact
+     * path. Returns the written path ("draft:"-prefixed for drafts), or null when
+     * something already exists there and $overwrite is off.
+     *
+     * @param array{title?:string, date?:string, tags?:string[], excerpt?:string, author?:string, content?:string} $data
+     */
+    public function createFromImport(string $path, string $kind, array $data, bool $draft = false, bool $overwrite = false): ?string
+    {
+        $path = $this->repository->sitePath()->normalize($path);
+        $target = ($draft ? SitePath::DRAFT_PREFIX : '') . $path;
+        $abs = $this->repository->resolvePath($target);
+        $publicExists = is_file($this->repository->resolvePath($path));
+        if ((is_file($abs) || ($draft && $publicExists)) && !$overwrite) {
+            return null;
+        }
+
+        $content = Sanitizer::html((string) ($data['content'] ?? ''), 'import');
+        $title = trim((string) ($data['title'] ?? '')) ?: basename(dirname('/' . $path));
+        $extra = array_filter([
+            'author' => trim((string) ($data['author'] ?? '')),
+            'status' => $draft ? 'draft' : '',
+        ]);
+
+        if ($kind === 'blog-post') {
+            $tags = $this->usableImportTags((array) ($data['tags'] ?? []));
+            $html = $this->renderKind('blog-post', $this->themes->currentThemeId(), [
+                'path' => $path,
+                'title' => $title,
+                'excerpt' => trim((string) ($data['excerpt'] ?? '')),
+                'date' => (string) ($data['date'] ?? '') ?: gmdate('Y-m-d'),
+                'hashtags' => $this->hashtagsString($tags),
+                'main_menu' => $this->currentMenuHtml(),
+                'tag_links' => $this->renderTagLinks($tags),
+                'blog_post_content' => $content !== '' ? $content : $this->defaultBlogPostContent(),
+                'author' => $extra['author'] ?? '',
+                'meta_extra' => $extra,
+            ], '/assets/site.css');
+        } else {
+            $html = $this->renderKind($path === 'index.html' ? 'home' : 'page', $this->themes->currentThemeId(), [
+                'path' => $path,
+                'title' => $title,
+                'excerpt' => trim((string) ($data['excerpt'] ?? '')),
+                'hashtags' => '',
+                'main_menu' => $this->currentMenuHtml(),
+                'page_content_blocks' => [$content !== '' ? $content : $this->defaultPageContent()],
+                'meta_extra' => $extra,
+            ], '/assets/site.css');
+        }
+
+        Filesystem::ensureDirectory(dirname($abs));
+        if ($draft) {
+            Filesystem::atomicWrite($abs, $html);
+        } else {
+            Filesystem::writeSitePage($abs, $html);
+        }
+
+        return $target;
+    }
+
+    /**
+     * WP-1: recognise a WordPress (or similar) single post and pull out its date,
+     * tags, excerpt, author, featured image, and article body. Null for non-posts.
+     *
+     * @return array{title:string, date:string, tags:string[], excerpt:string, author:string, image:string, content:string}|null
+     */
+    public function detectPost(string $html): ?array
+    {
+        if (trim($html) === '' || !class_exists(\DOMDocument::class)) {
+            return null;
+        }
+
+        $dom = new \DOMDocument('1.0', 'UTF-8');
+        libxml_use_internal_errors(true);
+        $dom->loadHTML('<?xml encoding="UTF-8">' . $html);
+        libxml_clear_errors();
+        $xpath = new \DOMXPath($dom);
+        $first = static function (string $query) use ($xpath): ?\DOMNode {
+            $nodes = $xpath->query($query);
+            return $nodes !== false && $nodes->length > 0 ? $nodes->item(0) : null;
+        };
+        $attr = static fn(?\DOMNode $node, string $name): string => $node instanceof \DOMElement ? trim($node->getAttribute($name)) : '';
+
+        $date = $attr($first("//meta[@property='article:published_time']"), 'content');
+        $jsonLd = [];
+        foreach ($xpath->query("//script[@type='application/ld+json']") ?: [] as $script) {
+            $decoded = json_decode((string) $script->textContent, true);
+            if (is_array($decoded)) {
+                $jsonLd[] = $decoded;
+            }
+        }
+        $findInLd = static function (array $data, string $key) use (&$findInLd): string {
+            foreach ($data as $k => $v) {
+                if ($k === $key && is_string($v)) {
+                    return $v;
+                }
+                if (is_array($v)) {
+                    $found = $findInLd($v, $key);
+                    if ($found !== '') {
+                        return $found;
+                    }
+                }
+            }
+            return '';
+        };
+        foreach ($jsonLd as $data) {
+            $date = $date !== '' ? $date : $findInLd($data, 'datePublished');
+        }
+
+        $bodyClass = ' ' . $attr($first('//body'), 'class') . ' ';
+        $isSingle = str_contains($bodyClass, ' single-post ') || (str_contains($bodyClass, ' single ') && !str_contains($bodyClass, ' page '));
+        $time = $first("//article//time[@datetime] | //*[contains(concat(' ', normalize-space(@class), ' '), ' entry-date ')][@datetime]");
+        if ($date === '' && ($isSingle || $first('//article') !== null)) {
+            $date = $attr($time, 'datetime');
+        }
+
+        if ($date === '' && !$isSingle) {
+            return null;
+        }
+
+        $timestamp = $date !== '' ? strtotime($date) : false;
+
+        $tags = [];
+        foreach ($xpath->query("//a[contains(concat(' ', normalize-space(@rel), ' '), ' tag ') or contains(concat(' ', normalize-space(@rel), ' '), ' category ')]") ?: [] as $link) {
+            $tag = $this->normalizeTag((string) $link->textContent);
+            if ($tag !== '' && !in_array($tag, $tags, true)) {
+                $tags[] = $tag;
+            }
+        }
+
+        $content = '';
+        foreach ([
+            "//*[contains(concat(' ', normalize-space(@class), ' '), ' entry-content ')]",
+            "//*[contains(concat(' ', normalize-space(@class), ' '), ' wp-block-post-content ')]",
+            "//article//*[contains(concat(' ', normalize-space(@class), ' '), ' post-content ')]",
+            "//*[@itemprop='articleBody']",
+        ] as $query) {
+            $node = $first($query);
+            if ($node instanceof \DOMElement) {
+                $content = Sanitizer::html($this->innerHtml($node), 'import');
+                break;
+            }
+        }
+
+        $title = $attr($first("//meta[@property='og:title']"), 'content');
+        if ($title === '') {
+            $heading = $first("//article//h1 | //h1[contains(concat(' ', normalize-space(@class), ' '), ' entry-title ')]");
+            $title = $heading !== null ? trim((string) $heading->textContent) : '';
+        }
+
+        $author = $attr($first("//meta[@name='author']"), 'content');
+        if ($author === '') {
+            $byline = $first("//*[contains(concat(' ', normalize-space(@class), ' '), ' author ')]//*[contains(concat(' ', normalize-space(@class), ' '), ' fn ') or contains(concat(' ', normalize-space(@class), ' '), ' url ')]");
+            $author = $byline !== null ? trim((string) $byline->textContent) : '';
+        }
+
+        return [
+            'title' => $title,
+            'date' => $timestamp !== false ? gmdate('Y-m-d', $timestamp) : '',
+            'tags' => $tags,
+            'excerpt' => $attr($first("//meta[@property='og:description']"), 'content') ?: $attr($first("//meta[@name='description']"), 'content'),
+            'author' => $author,
+            'image' => $attr($first("//meta[@property='og:image']"), 'content'),
+            'content' => $content,
+        ];
+    }
+
+    /** Imported tags that can have a landing page (no collisions, no "uncategorized"). */
+    private function usableImportTags(array $tags): array
+    {
+        $usable = [];
+        foreach ($tags as $tag) {
+            if ($tag === 'uncategorized' || $this->firstTagConflict([$tag]) !== null) {
+                continue;
+            }
+            $usable[] = $tag;
+        }
+
+        return $usable !== [] ? array_values(array_unique(array_merge(['blog'], $usable))) : ['blog'];
+    }
+
+    public function createBlogPost(string $title, string $slug, string $excerpt, string $hashtags = '#blog', ?string $permalink = null, bool $draft = false): string
     {
         $title = trim($title);
         $excerpt = trim($excerpt);
-        $slug = $this->normalizeFlatSlug($slug !== '' ? $slug : $title);
+        $slug = $this->postSlugPath($this->normalizeFlatSlug($slug !== '' ? $slug : $title), gmdate('Y-m-d'), $permalink);
         $tags = $this->normalizeTagList($hashtags !== '' ? $hashtags : '#blog');
         if ($tags === []) {
             $tags = ['blog'];
         }
 
-        $path = $slug . '.html';
-        $target = $this->rootPath . '/' . $path;
+        $this->assertSlugAvailable($slug);
+        $path = $this->pagePathForSlug($slug);
+        $target = $this->repository->resolvePath(($draft ? SitePath::DRAFT_PREFIX : '') . $path);
 
-        if (is_file($target)) {
-            throw new RuntimeException('That blog post already exists.');
-        }
+        $this->assertTagsWritable($this->hashtagsString($tags));
 
         $html = $this->renderKind(
             'blog-post',
@@ -127,7 +377,15 @@ final class SiteGenerator
             '/assets/site.css'
         );
 
-        Filesystem::atomicWrite($target, $html);
+        if ($draft) {
+            // Drafts live outside the web root and stay off tag pages and feeds.
+            Filesystem::ensureDirectory(dirname($target));
+            Filesystem::atomicWrite($target, $this->injectMetaExtras($html, ['status' => 'draft']));
+            return SitePath::DRAFT_PREFIX . $path;
+        }
+
+        Filesystem::ensureDirectory(dirname($target));
+        Filesystem::writeSitePage($target, $html);
         $this->rebuildTagPages();
 
         return $path;
@@ -138,49 +396,332 @@ final class SiteGenerator
         $this->rebuildTagPages($themeId, $cssHref);
     }
 
+    /**
+     * Regenerate every hashtag landing page (paginated), its RSS feed, and the
+     * sitemap. The post list is computed once for the whole rebuild (BLOG-9).
+     */
     public function rebuildTagPages(?string $themeId = null, ?string $cssHref = null): void
     {
         $themeId ??= $this->themes->currentThemeId();
         $cssHref ??= '/assets/site.css';
 
         $pages = $this->repository->listPages();
+        $allPosts = $this->repository->listBlogPosts();
         $tags = ['blog' => true];
 
         foreach ($pages as $page) {
+            if (($page['status'] ?? '') === 'draft') {
+                continue;
+            }
             foreach ($page['tags'] as $tag) {
                 $tags[$tag] = true;
             }
 
-            if (($page['generated'] ?? '') === 'tag-index' && ($page['tag'] ?? '') !== '') {
+            if (($page['generated'] ?? '') === 'tag-index' && ($page['tag'] ?? '') !== '' && ($page['paged'] ?? '') === '') {
                 $tags[$page['tag']] = true;
             }
         }
 
         ksort($tags);
+        $perPage = max(1, (int) $this->settings->get('posts_per_page'));
 
         foreach (array_keys($tags) as $tag) {
             $path = $this->tagPagePath($tag);
             $this->assertTagPathIsWritable($tag, $path);
             $existing = is_file($this->rootPath . '/' . $path) ? $this->repository->getPage($path) : null;
 
-            $html = $this->renderKind(
-                'blog',
-                $themeId,
-                [
-                    'path' => $path,
-                    'title' => $existing['meta']['title'] ?? $this->defaultTagTitle($tag),
-                    'excerpt' => $existing['meta']['excerpt'] ?? $this->defaultTagExcerpt($tag),
-                    'tag' => $tag,
-                    'tag_label' => $this->tagLabel($tag),
-                    'main_menu' => $this->normalizeMenuHtml($this->extractBlockContent($existing, 'main-menu') ?? $this->currentMenuHtml()),
-                    'blog_index_content' => $this->normalizePageBlockContent($this->extractBlockContent($existing, 'blog-index-content')) ?: $this->defaultTagIntroContent($tag),
-                    'blog_items' => $this->renderBlogItems($tag),
-                ],
-                $cssHref
-            );
+            $posts = $tag === 'blog'
+                ? array_values(array_filter($allPosts, static fn(array $post): bool => in_array('blog', $post['tags'], true)))
+                : array_values(array_filter($allPosts, static fn(array $post): bool => in_array($tag, $post['tags'], true)));
+            $pageCount = max(1, (int) ceil(count($posts) / $perPage));
 
-            Filesystem::ensureDirectory(dirname($this->rootPath . '/' . $path));
-            Filesystem::atomicWrite($this->rootPath . '/' . $path, $html);
+            for ($number = 1; $number <= $pageCount; $number++) {
+                $pagePath = $number === 1 ? $path : $this->tagDir($tag) . '/page/' . $number . '/index.html';
+                $this->repository->sitePath()->resolvePage($pagePath, false);
+                $pagination = $this->paginationHtml($tag, $number, $pageCount);
+
+                $html = $this->renderKind(
+                    'blog',
+                    $themeId,
+                    [
+                        'path' => $pagePath,
+                        'title' => ($existing['meta']['title'] ?? $this->defaultTagTitle($tag)) . ($number > 1 ? ' — page ' . $number : ''),
+                        'excerpt' => $existing['meta']['excerpt'] ?? $this->defaultTagExcerpt($tag),
+                        'tag' => $tag,
+                        'tag_label' => $this->tagLabel($tag),
+                        'main_menu' => $this->normalizeMenuHtml($this->extractBlockContent($existing, 'main-menu') ?? $this->currentMenuHtml()),
+                        'blog_index_content' => $this->normalizePageBlockContent($this->extractBlockContent($existing, 'blog-index-content')) ?: $this->defaultTagIntroContent($tag),
+                        'blog_items' => $this->renderBlogItems($tag, array_slice($posts, ($number - 1) * $perPage, $perPage), $pagination),
+                        'pagination' => $pagination,
+                        'meta_extra' => $number > 1 ? ['paged' => (string) $number] : [],
+                    ],
+                    $cssHref
+                );
+
+                Filesystem::ensureDirectory(dirname($this->rootPath . '/' . $pagePath));
+                Filesystem::writeSitePage($this->rootPath . '/' . $pagePath, $html);
+            }
+
+            $this->removeStalePagination($tag, $pageCount);
+            $this->writeFeed($tag, $posts, (string) ($existing['meta']['title'] ?? $this->defaultTagTitle($tag)));
+        }
+
+        $this->writeSitemap();
+    }
+
+    private function tagDir(string $tag): string
+    {
+        return $tag === 'blog' ? 'blog' : $tag;
+    }
+
+    private function paginationHtml(string $tag, int $number, int $pageCount): string
+    {
+        if ($pageCount <= 1) {
+            return '';
+        }
+
+        $url = fn(int $n): string => $n === 1 ? $this->tagPageUrl($tag) : '/' . $this->tagDir($tag) . '/page/' . $n . '/';
+        $parts = [];
+        if ($number > 1) {
+            $parts[] = '<a class="pagination__prev" rel="prev" href="' . h($url($number - 1)) . '">Newer posts</a>';
+        }
+        $parts[] = '<span class="pagination__status">Page ' . $number . ' of ' . $pageCount . '</span>';
+        if ($number < $pageCount) {
+            $parts[] = '<a class="pagination__next" rel="next" href="' . h($url($number + 1)) . '">Older posts</a>';
+        }
+
+        return '<nav class="pagination" aria-label="Post pages">' . implode(' ', $parts) . '</nav>';
+    }
+
+    /** Delete generated page/N/ files beyond the current page count. */
+    private function removeStalePagination(string $tag, int $pageCount): void
+    {
+        foreach (glob($this->rootPath . '/' . $this->tagDir($tag) . '/page/*/index.html') ?: [] as $file) {
+            $number = (int) basename(dirname($file));
+            if ($number <= $pageCount) {
+                continue;
+            }
+            if (str_contains((string) file_get_contents($file), 'generated="tag-index"')) {
+                Filesystem::deleteSitePage($file);
+                @rmdir(dirname($file));
+            }
+        }
+        @rmdir($this->rootPath . '/' . $this->tagDir($tag) . '/page');
+    }
+
+    /**
+     * RSS 2.0 feed for a tag (blog/feed.xml for #blog), latest 20 posts, with
+     * absolute links and full post content (BLOG-1).
+     */
+    private function writeFeed(string $tag, array $posts, string $title): void
+    {
+        $channelUrl = $this->absoluteUrl(ltrim($this->tagPageUrl($tag), '/'));
+        $feedPath = $this->tagDir($tag) . '/feed.xml';
+        $feedUrl = $this->absoluteUrl($feedPath);
+        $siteName = (string) $this->settings->get('site_name');
+        $x = static fn(string $value): string => htmlspecialchars($value, ENT_XML1 | ENT_QUOTES, 'UTF-8');
+
+        $items = [];
+        $newest = 0;
+        foreach (array_slice($posts, 0, 20) as $post) {
+            $link = $this->absoluteUrl(ltrim((string) $post['url'], '/')) ?: (string) $post['url'];
+            $time = $post['date'] !== '' ? (strtotime($post['date'] . ' 12:00:00 UTC') ?: time()) : time();
+            $newest = max($newest, $time);
+            $content = '';
+            try {
+                $content = $this->absolutizeHtml((string) $this->repository->getBlock($post['path'], 'blog-post-content')['content']);
+            } catch (RuntimeException) {
+                $content = '';
+            }
+
+            $items[] = "    <item>\n"
+                . '      <title>' . $x((string) $post['title']) . "</title>\n"
+                . '      <link>' . $x($link) . "</link>\n"
+                . '      <guid isPermaLink="true">' . $x($link) . "</guid>\n"
+                . '      <pubDate>' . gmdate(DATE_RSS, $time) . "</pubDate>\n"
+                . '      <description>' . $x((string) $post['excerpt']) . "</description>\n"
+                . array_reduce($post['tags'], static fn(string $carry, string $t): string => $carry . '      <category>' . $x($t) . "</category>\n", '')
+                . ($content !== '' ? '      <content:encoded><![CDATA[' . str_replace(']]>', ']]]]><![CDATA[>', $content) . "]]></content:encoded>\n" : '')
+                . "    </item>";
+        }
+
+        $xml = '<?xml version="1.0" encoding="UTF-8"?>' . "\n"
+            . '<rss version="2.0" xmlns:atom="http://www.w3.org/2005/Atom" xmlns:content="http://purl.org/rss/1.0/modules/content/">' . "\n"
+            . "  <channel>\n"
+            . '    <title>' . $x($tag === 'blog' ? $siteName : $siteName . ' — #' . $tag) . "</title>\n"
+            . '    <link>' . $x($channelUrl !== '' ? $channelUrl : $this->tagPageUrl($tag)) . "</link>\n"
+            . '    <description>' . $x((string) ($this->settings->get('tagline') ?: $title)) . "</description>\n"
+            . '    <language>' . $x((string) $this->settings->get('language')) . "</language>\n"
+            . '    <lastBuildDate>' . gmdate(DATE_RSS, $newest ?: time()) . "</lastBuildDate>\n"
+            . ($feedUrl !== '' ? '    <atom:link href="' . $x($feedUrl) . '" rel="self" type="application/rss+xml"/>' . "\n" : '')
+            . "    <generator>WYSiteIWYG</generator>\n"
+            . implode("\n", $items) . ($items !== [] ? "\n" : '')
+            . "  </channel>\n</rss>\n";
+
+        Filesystem::ensureDirectory(dirname($this->rootPath . '/' . $feedPath));
+        Filesystem::atomicWrite($this->rootPath . '/' . $feedPath, $xml);
+
+        // WP-3: a migrated WordPress site's subscribers still poll /feed/ and the
+        // category/tag feeds; keep those URLs answering with the live feed.
+        if ($this->isMigratedSite()) {
+            $legacy = $tag === 'blog' ? ['feed'] : ['category/' . $tag . '/feed', 'tag/' . $tag . '/feed'];
+            foreach ($legacy as $dir) {
+                if ($tag !== 'blog' && !is_dir($this->rootPath . '/' . dirname($dir))) {
+                    continue;
+                }
+                Filesystem::ensureDirectory($this->rootPath . '/' . $dir);
+                Filesystem::atomicWrite($this->rootPath . '/' . $dir . '/index.xml', $xml);
+            }
+        }
+    }
+
+    /** True once a WordPress/external site has been imported into this root. */
+    private function isMigratedSite(): bool
+    {
+        return is_file($this->rootPath . '/edit/storage/import-sources.local.json')
+            || is_file($this->rootPath . '/feed/index.xml');
+    }
+
+    /**
+     * WP-6: after a migration, point WordPress category/tag archive URLs at the
+     * matching tag pages (unmanaged crawled archives become redirect stubs), and
+     * write a redirect map for query-string permalinks (?p=123). Returns counts.
+     *
+     * @param array<int, array{path:string, query:string, target:string}> $queryRedirects
+     * @return array{archives:int, queries:int}
+     */
+    public function writeMigrationRedirects(array $queryRedirects): array
+    {
+        $archives = 0;
+        $tags = [];
+        foreach ($this->repository->listPages() as $page) {
+            foreach ($page['tags'] as $tag) {
+                $tags[$tag] = true;
+            }
+        }
+
+        foreach (array_keys($tags) as $tag) {
+            foreach (['category/' . $tag . '/index.html', 'tag/' . $tag . '/index.html'] as $archive) {
+                $abs = $this->rootPath . '/' . $archive;
+                if (!is_file($abs)) {
+                    continue;
+                }
+                $html = (string) file_get_contents($abs);
+                if (str_contains($html, 'WYSITE:BEGIN') || str_contains($html, 'WYSITE:REDIRECT')) {
+                    continue; // managed pages are the user's, stubs are done
+                }
+                Filesystem::writeSitePage($abs, $this->redirectStubHtml($this->tagPagePath($tag)));
+                $archives++;
+            }
+        }
+
+        $lines = [];
+        $rules = [];
+        foreach ($queryRedirects as $redirect) {
+            $target = (string) ($redirect['target'] ?? '');
+            $query = (string) ($redirect['query'] ?? '');
+            if ($target === '' || $query === '' || !is_file($this->rootPath . '/' . $target)) {
+                continue;
+            }
+            $url = ltrim($this->repository->publicUrlForPath($target), '/');
+            $from = '/' . ltrim((string) ($redirect['path'] ?? '/'), '/') . '?' . $query;
+            $lines[] = $from . ' ' . $this->siteBaseUrl . $url;
+            $pathPattern = '^' . preg_quote(ltrim((string) ($redirect['path'] ?? '/'), '/'), '#') . '$';
+            $rules[] = 'RewriteCond %{QUERY_STRING} ^' . preg_quote($query, '#') . '$' . "\n"
+                // The site base is known at build time (and the map is rewritten on
+                // every import); %{ENV:WYBASE} can't be derived for the site root.
+                . 'RewriteRule ' . ($pathPattern === '^$' ? '^$' : $pathPattern) . ' ' . $this->siteBaseUrl . $url . '? [R=301,L]';
+        }
+
+        if ($lines !== []) {
+            Filesystem::atomicWrite($this->rootPath . '/edit/storage/redirects.txt', "# Old URL -> new URL (301). Generated by WYSiteIWYG.\n" . implode("\n", $lines) . "\n", 0644);
+            $this->writeHtaccessBlock('redirects', "<IfModule mod_rewrite.c>\nRewriteEngine On\n" . implode("\n", $rules) . "\n</IfModule>");
+        }
+
+        return ['archives' => $archives, 'queries' => count($lines)];
+    }
+
+    /** Insert or replace a marked block at the end of the site's root .htaccess. */
+    private function writeHtaccessBlock(string $name, string $body): void
+    {
+        $file = $this->rootPath . '/.htaccess';
+        $current = is_file($file) ? (string) file_get_contents($file) : '';
+        $begin = '# BEGIN WYSiteIWYG ' . $name;
+        $end = '# END WYSiteIWYG ' . $name;
+        $block = $begin . "\n" . $body . "\n" . $end . "\n";
+        $pattern = '/' . preg_quote($begin, '/') . '.*?' . preg_quote($end, '/') . '\n?/s';
+        $next = preg_match($pattern, $current) === 1
+            ? (preg_replace($pattern, $block, $current, 1) ?? $current)
+            : rtrim($current) . ($current !== '' ? "\n\n" : '') . $block;
+
+        if ($next !== $current) {
+            Filesystem::atomicWrite($file, $next);
+        }
+    }
+
+    /** Turn base-relative href/src/srcset values into absolute URLs (for feeds). */
+    private function absolutizeHtml(string $html): string
+    {
+        if ($this->absoluteUrl('') === '') {
+            return $html;
+        }
+
+        $absolute = function (string $url): string {
+            $url = trim($url);
+            if ($url === '' || $url[0] === '#' || preg_match('#^([a-z][a-z0-9+.-]*:|//)#i', $url) === 1) {
+                return $url;
+            }
+            return $this->absoluteUrl(ltrim(UrlLocalizer::toBaseRelative($url, $this->siteBaseUrl), './'));
+        };
+
+        $html = preg_replace_callback(
+            '#\b(href|src|poster)\s*=\s*(["\'])([^"\']*)\2#i',
+            static fn(array $m): string => $m[1] . '=' . $m[2] . htmlspecialchars($absolute(html_entity_decode($m[3], ENT_QUOTES, 'UTF-8')), ENT_QUOTES, 'UTF-8') . $m[2],
+            $html
+        ) ?? $html;
+
+        return preg_replace_callback(
+            '#\bsrcset\s*=\s*(["\'])([^"\']*)\1#i',
+            static function (array $m) use ($absolute): string {
+                $parts = array_map(static function (string $candidate) use ($absolute): string {
+                    $bits = preg_split('/\s+/', trim($candidate), 2) ?: [''];
+                    $bits[0] = $absolute($bits[0]);
+                    return implode(' ', $bits);
+                }, explode(',', html_entity_decode($m[2], ENT_QUOTES, 'UTF-8')));
+                return 'srcset=' . $m[1] . htmlspecialchars(implode(', ', $parts), ENT_QUOTES, 'UTF-8') . $m[1];
+            },
+            $html
+        ) ?? $html;
+    }
+
+    /**
+     * sitemap.xml of published pages, and a default robots.txt pointing at it
+     * when the site doesn't have its own (BLOG-6).
+     */
+    private function writeSitemap(): void
+    {
+        if ($this->absoluteUrl('') === '') {
+            return;
+        }
+
+        $x = static fn(string $value): string => htmlspecialchars($value, ENT_XML1 | ENT_QUOTES, 'UTF-8');
+        $urls = [];
+        foreach ($this->repository->listPages() as $page) {
+            if (($page['paged'] ?? '') !== '' || ($page['status'] ?? '') === 'draft') {
+                continue;
+            }
+            $mtime = @filemtime($this->rootPath . '/' . $page['path']) ?: time();
+            $urls[] = '  <url><loc>' . $x($this->absoluteUrl(ltrim((string) $page['url'], '/'))) . '</loc><lastmod>' . gmdate('Y-m-d', $mtime) . '</lastmod></url>';
+        }
+
+        Filesystem::atomicWrite(
+            $this->rootPath . '/sitemap.xml',
+            '<?xml version="1.0" encoding="UTF-8"?>' . "\n" . '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">' . "\n" . implode("\n", $urls) . "\n</urlset>\n"
+        );
+
+        $robots = $this->rootPath . '/robots.txt';
+        if (!is_file($robots) || str_contains((string) file_get_contents($robots), '# WYSiteIWYG')) {
+            Filesystem::atomicWrite($robots, "# WYSiteIWYG default (delete this line to manage the file yourself)\nUser-agent: *\nDisallow: /edit/\n\nSitemap: " . $this->absoluteUrl('sitemap.xml') . "\n");
         }
     }
 
@@ -191,7 +732,7 @@ final class SiteGenerator
         foreach ($this->repository->listPages() as $page) {
             foreach ($page['blocks'] as $block) {
                 if ($block['name'] === 'main-menu') {
-                    $this->repository->updateBlock($page['path'], 'main-menu', $menuHtml);
+                    $this->repository->updateBlock($page['path'], 'main-menu', $this->markCurrentMenuItem($menuHtml, $page['path']));
                     break;
                 }
             }
@@ -217,7 +758,7 @@ final class SiteGenerator
             $relativePath,
             $themeId,
             $cssHref,
-            $this->themes->loadTemplate($themeId, $this->themeTemplateKind($page['kind']))
+            $this->themes->loadTemplate($themeId, $page['kind'])
         );
     }
 
@@ -232,54 +773,403 @@ final class SiteGenerator
 
     /**
      * Deploy the documentation/demo content (see edit/docs/content.php) as real,
-     * editable, location-agnostic WYSite pages at the site root. Pages are flagged
-     * demo="1" so they can later be removed with deleteDemoContent(). Existing
-     * non-demo pages are not rebuilt, so dropping the editor into an existing site
-     * and then deploying the demo does not rewrite the user's own pages.
+     * editable, location-agnostic WYSite pages at the site root. Only files this
+     * call creates, or that are already flagged demo="1", are written and flagged;
+     * any other existing file at a demo path is left byte-identical and reported
+     * as skipped, so "Delete demo content" can never remove the user's own pages.
      *
      * @param array{menu?:string,pages?:array,posts?:array} $content
-     * @return int number of pages/posts newly created
+     * @return array{created:int, refreshed:int, skipped:string[], warnings:string[]}
      */
-    public function deployDemoSite(array $content): int
+    public function deployDemoSite(array $content): array
     {
         $menu = (string) ($content['menu'] ?? '');
-        $created = 0;
+        $result = ['created' => 0, 'refreshed' => 0, 'skipped' => [], 'warnings' => []];
+        $flag = [];
 
         $this->ensurePublishedStylesheet();
 
         foreach (($content['pages'] ?? []) as $spec) {
-            $created += $this->deployDemoPage($spec, $menu);
+            $path = $this->existingPathForSlug((string) $spec['slug']) ?? $this->pagePathForSlug((string) $spec['slug']);
+            $state = $this->demoTargetState($path);
+            if ($state === 'foreign') {
+                $result['skipped'][] = $path;
+                continue;
+            }
+            $this->deployDemoPage($spec, $menu, $state === 'missing', $path);
+            $result[$state === 'missing' ? 'created' : 'refreshed']++;
+            $flag[] = $path;
         }
 
         foreach (($content['posts'] ?? []) as $spec) {
-            $created += $this->deployDemoPost($spec, $menu);
+            $path = $this->existingPathForSlug((string) $spec['slug']) ?? $this->pagePathForSlug((string) $spec['slug']);
+            $state = $this->demoTargetState($path);
+            if ($state === 'foreign') {
+                $result['skipped'][] = $path;
+                continue;
+            }
+            $conflict = $this->firstTagConflict(array_merge(['blog'], $this->normalizeTagList((string) ($spec['hashtags'] ?? '#blog'))));
+            if ($conflict !== null) {
+                $result['skipped'][] = $path;
+                $result['warnings'][] = $conflict;
+                continue;
+            }
+            $this->deployDemoPost($spec, $menu, $state === 'missing', $path);
+            $result[$state === 'missing' ? 'created' : 'refreshed']++;
+            $flag[] = $path;
         }
 
-        // Build the generated blog/tag landing pages from the demo posts. By now
-        // the demo pages carry the demo menu, so currentMenuHtml() feeds it in.
-        $this->rebuildTagPages();
+        // Build the generated blog/tag landing pages from the demo posts. A tag that
+        // collides with one of the user's own pages is reported, not fatal.
+        try {
+            $this->rebuildTagPages();
+        } catch (RuntimeException $error) {
+            $result['warnings'][] = $error->getMessage();
+        }
 
         // Flag demo content last: rebuilds/renders regenerate the META comment from
         // the template and would otherwise drop the flag.
-        foreach (($content['pages'] ?? []) as $spec) {
-            $this->repository->updateMetadata($this->pagePathForSlug((string) $spec['slug']), ['demo' => '1']);
-        }
-        foreach (($content['posts'] ?? []) as $spec) {
-            $this->repository->updateMetadata($spec['slug'] . '.html', ['demo' => '1']);
+        foreach ($flag as $path) {
+            $this->repository->updateMetadata($path, ['demo' => '1']);
         }
 
-        return $created;
+        return $result;
     }
 
-    private function deployDemoPage(array $spec, string $menu): int
+    /**
+     * Throw before anything is written if any of these tags' landing pages would
+     * collide with an existing page (DATA-8 / BLOG-7).
+     */
+    public function assertTagsWritable(string $hashtags): void
+    {
+        $tags = $this->normalizeTagList($hashtags);
+        if ($tags === []) {
+            return;
+        }
+
+        $conflict = $this->firstTagConflict(array_merge(['blog'], $tags));
+        if ($conflict !== null) {
+            throw new RuntimeException($conflict);
+        }
+    }
+
+    /**
+     * Re-render every managed page (except excluded and generated ones) through
+     * the active templates, then the tag landing pages. Used after Site settings
+     * change, since name/footer/metadata live in every page.
+     */
+    public function rebuildAllPages(): int
+    {
+        $count = 0;
+        foreach ($this->repository->listPages() as $pageInfo) {
+            if (!empty($pageInfo['exclude_template']) || ($pageInfo['generated'] ?? '') === 'tag-index') {
+                continue;
+            }
+
+            Filesystem::writeSitePage($this->rootPath . '/' . $pageInfo['path'], $this->renderPageForActiveTemplate($pageInfo['path']));
+            $count++;
+        }
+
+        $this->rebuildTagPages();
+        return $count;
+    }
+
+    /**
+     * DROP-1: move flat pages (about.html) to folder style (about/index.html) so
+     * the site works on any static server without rewrite rules. The public URL
+     * (/about/) is unchanged; a redirect stub stays at the old file for anyone
+     * linking to about.html directly.
+     *
+     * @return array{moved:string[], skipped:string[]}
+     */
+    public function convertToFolderUrls(): array
+    {
+        $result = ['moved' => [], 'skipped' => []];
+
+        foreach ($this->repository->listPages() as $pageInfo) {
+            $path = (string) $pageInfo['path'];
+            if ($path === 'index.html' || preg_match('#(^|/)index\.html?$#i', $path) === 1 || preg_match('/\.html?$/i', $path) !== 1) {
+                continue;
+            }
+
+            $target = (preg_replace('/\.html?$/i', '', $path) ?? $path) . '/index.html';
+            if (is_file($this->rootPath . '/' . $target)) {
+                $result['skipped'][] = $path;
+                continue;
+            }
+
+            $this->movePageFile($path, $target);
+            $result['moved'][] = $path;
+        }
+
+        return $result;
+    }
+
+    /**
+     * Move a page file, re-basing its relative <base href> for the new depth, and
+     * leave a redirect stub at the old path.
+     */
+    public function movePageFile(string $from, string $to): void
+    {
+        $fromAbs = $this->repository->sitePath()->resolvePage($from, true);
+        $toAbs = $this->repository->sitePath()->resolvePage($to, false);
+        if (is_file($toAbs)) {
+            throw new RuntimeException('A page already exists at ' . $to . '.');
+        }
+
+        $html = (string) file_get_contents($fromAbs);
+        Filesystem::ensureDirectory(dirname($toAbs));
+        Filesystem::writeSitePage($toAbs, UrlLocalizer::localizeHtml($html, $to, $this->siteBaseUrl));
+        Filesystem::writeSitePage($fromAbs, $this->redirectStubHtml($to));
+    }
+
+    /**
+     * A tiny page that forwards to $toPath. Marked WYSITE:REDIRECT so it is never
+     * listed as an unmanaged page to import.
+     */
+    public function redirectStubHtml(string $toPath): string
+    {
+        $url = $this->repository->publicUrlForPath($toPath);
+        $absolutePath = $this->siteBaseUrl . ltrim($url, '/');
+        $canonical = $this->absoluteUrl(ltrim($url, '/'));
+
+        return "<!doctype html>\n<html><head><meta charset=\"utf-8\">\n"
+            . '<!-- WYSITE:REDIRECT to="' . h($toPath) . "\" -->\n"
+            . '<meta http-equiv="refresh" content="0; url=' . h($absolutePath) . "\">\n"
+            . ($canonical !== '' ? '<link rel="canonical" href="' . h($canonical) . "\">\n" : '')
+            . '<meta name="robots" content="noindex">' . "\n"
+            . "<title>Moved</title></head>\n"
+            . '<body><p>This page has moved to <a href="' . h($absolutePath) . '">' . h($absolutePath) . "</a>.</p></body></html>\n";
+    }
+
+    /** Publish a draft: move it into the site root and refresh tags/feeds. */
+    public function publishDraft(string $draftPath): string
+    {
+        $draftPath = $this->repository->sitePath()->normalize($draftPath);
+        if (!SitePath::isDraft($draftPath)) {
+            throw new RuntimeException('That page is not a draft.');
+        }
+        $public = SitePath::publicPath($draftPath);
+        $publicAbs = $this->repository->resolvePath($public);
+        if (is_file($publicAbs)) {
+            throw new RuntimeException('A published page already exists at ' . $public . '.');
+        }
+
+        $page = $this->repository->getPage($draftPath);
+        $this->assertTagsWritable((string) ($page['meta']['hashtags'] ?? ''));
+        $this->repository->updateMetadata($draftPath, ['status' => '', 'publish_at' => '']);
+        if (($page['kind'] ?? '') === 'blog-post' && ($page['meta']['date'] ?? '') === '') {
+            $this->repository->updateMetadata($draftPath, ['date' => gmdate('Y-m-d')]);
+        }
+
+        $draftAbs = $this->repository->resolvePath($draftPath);
+        Filesystem::ensureDirectory(dirname($publicAbs));
+        Filesystem::writeSitePage($publicAbs, (string) file_get_contents($draftAbs));
+        @unlink($draftAbs);
+        $this->pruneEmptyDirs(dirname($draftAbs), $this->repository->sitePath()->draftsPath());
+        $this->rebuildTagPages();
+
+        return $public;
+    }
+
+    /** Take a published page offline again: it becomes a draft. */
+    public function unpublishPage(string $publicPath): string
+    {
+        $publicPath = $this->repository->sitePath()->normalize($publicPath);
+        if (SitePath::isDraft($publicPath)) {
+            return $publicPath;
+        }
+        $draftPath = SitePath::DRAFT_PREFIX . $publicPath;
+        $draftAbs = $this->repository->resolvePath($draftPath);
+        if (is_file($draftAbs)) {
+            throw new RuntimeException('A draft already exists for ' . $publicPath . '.');
+        }
+
+        $publicAbs = $this->repository->resolvePath($publicPath);
+        $this->repository->getPage($publicPath);
+        Filesystem::ensureDirectory(dirname($draftAbs));
+        Filesystem::atomicWrite($draftAbs, (string) file_get_contents($publicAbs));
+        $this->repository->updateMetadata($draftPath, ['status' => 'draft']);
+        Filesystem::deleteSitePage($publicAbs);
+        $this->pruneEmptyDirs(dirname($publicAbs), $this->rootPath);
+        $this->rebuildTagPages();
+
+        return $draftPath;
+    }
+
+    /**
+     * Publish drafts whose publish_at date has arrived. Runs lazily on dashboard
+     * and save requests (a static site has no scheduler). Returns published paths.
+     */
+    public function publishDueDrafts(?string $today = null): array
+    {
+        $today ??= gmdate('Y-m-d');
+        $published = [];
+        foreach ($this->repository->listDrafts() as $draft) {
+            if ($draft['publish_at'] !== '' && $draft['publish_at'] <= $today) {
+                try {
+                    $published[] = $this->publishDraft($draft['path']);
+                } catch (RuntimeException) {
+                    continue;
+                }
+            }
+        }
+
+        return $published;
+    }
+
+    private function pruneEmptyDirs(string $dir, string $stopAt): void
+    {
+        $stopAt = rtrim($stopAt, '/');
+        while ($dir !== $stopAt && str_starts_with($dir, $stopAt . '/') && is_dir($dir) && $this->isEmptyDirectory($dir)) {
+            @rmdir($dir);
+            $dir = dirname($dir);
+        }
+    }
+
+    /**
+     * Delete a page (its last version stays in revision history) and refresh the
+     * tag pages and feeds. Returns a warning when the menu still links to it.
+     */
+    public function deletePage(string $relativePath): ?string
+    {
+        $page = $this->repository->getPage($relativePath);
+        if (($page['meta']['generated'] ?? '') === 'tag-index') {
+            throw new RuntimeException('Hashtag landing pages are generated; remove the hashtag from its posts instead.');
+        }
+
+        $abs = $this->repository->resolvePath($page['path']);
+        if (SitePath::isDraft($page['path'])) {
+            @unlink($abs);
+            $this->pruneEmptyDirs(dirname($abs), $this->repository->sitePath()->draftsPath());
+            return null;
+        }
+
+        Filesystem::deleteSitePage($abs);
+        $this->pruneEmptyDirs(dirname($abs), $this->rootPath);
+        $this->rebuildTagPages();
+
+        return $this->menuLinksTo($page['path'])
+            ? 'The main menu still links to this page; edit the menu to remove the link.'
+            : null;
+    }
+
+    /**
+     * Move a page to a new slug: the file moves, a redirect stub stays at the old
+     * URL (published pages only), and menu links are updated. Returns the new path.
+     */
+    public function movePage(string $relativePath, string $newSlug): string
+    {
+        $page = $this->repository->getPage($relativePath);
+        if (($page['meta']['generated'] ?? '') === 'tag-index' || $page['path'] === 'index.html') {
+            throw new RuntimeException('The homepage and generated landing pages cannot be moved.');
+        }
+
+        $slug = $this->normalizeSlug($newSlug);
+        $this->assertSlugAvailable($slug);
+        $isDraft = SitePath::isDraft($page['path']);
+        $target = ($isDraft ? SitePath::DRAFT_PREFIX : '') . $this->pagePathForSlug($slug);
+
+        if ($isDraft) {
+            $fromAbs = $this->repository->resolvePath($page['path']);
+            $toAbs = $this->repository->resolvePath($target);
+            Filesystem::ensureDirectory(dirname($toAbs));
+            Filesystem::atomicWrite($toAbs, UrlLocalizer::localizeHtml((string) file_get_contents($fromAbs), SitePath::publicPath($target), $this->siteBaseUrl));
+            @unlink($fromAbs);
+            $this->pruneEmptyDirs(dirname($fromAbs), $this->repository->sitePath()->draftsPath());
+            return $target;
+        }
+
+        $oldUrl = $this->repository->publicUrlForPath($page['path']);
+        $this->movePageFile($page['path'], $target);
+        $this->replaceMenuLink($oldUrl, $this->repository->publicUrlForPath($target));
+        $this->rebuildTagPages();
+
+        return $target;
+    }
+
+    private function menuLinksTo(string $relativePath): bool
+    {
+        $url = trim($this->repository->publicUrlForPath($relativePath), '/');
+        foreach ($this->menuHrefs() as $href) {
+            if (trim($href, '/') === $url) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /** Menu hrefs normalized to site-relative form ("about/", "" for home). */
+    private function menuHrefs(): array
+    {
+        preg_match_all('/\bhref="([^"]*)"/i', $this->currentMenuHtml(), $matches);
+        return array_map(
+            fn(string $href): string => ltrim(UrlLocalizer::toBaseRelative(html_entity_decode($href, ENT_QUOTES, 'UTF-8'), $this->siteBaseUrl), './'),
+            $matches[1] ?? []
+        );
+    }
+
+    private function replaceMenuLink(string $oldUrl, string $newUrl): void
+    {
+        $old = trim($oldUrl, '/');
+        $new = trim($newUrl, '/') . '/';
+        $menu = $this->currentMenuHtml();
+        $updated = preg_replace_callback(
+            '/\bhref="([^"]*)"/i',
+            function (array $m) use ($old, $new): string {
+                $href = ltrim(UrlLocalizer::toBaseRelative(html_entity_decode($m[1], ENT_QUOTES, 'UTF-8'), $this->siteBaseUrl), './');
+                return trim($href, '/') === $old && $old !== '' ? 'href="' . h($new) . '"' : $m[0];
+            },
+            $menu
+        ) ?? $menu;
+
+        if ($updated !== $menu) {
+            $this->syncMenu($updated);
+        }
+    }
+
+    /** Re-render one page through the active templates (after a type change). */
+    public function rebuildPage(string $relativePath): void
+    {
+        $page = $this->repository->getPage($relativePath);
+        if (($page['meta']['exclude_template'] ?? '') === '1') {
+            return;
+        }
+
+        Filesystem::writeSitePage($this->repository->resolvePath($page['path']), $this->renderPageForActiveTemplate($page['path']));
+    }
+
+    /** The first tag whose landing page would overwrite a user page, as a message. */
+    private function firstTagConflict(array $tags): ?string
+    {
+        foreach (array_unique($tags) as $tag) {
+            try {
+                $this->assertTagPathIsWritable($tag, $this->tagPagePath($tag));
+            } catch (RuntimeException $error) {
+                return $error->getMessage();
+            }
+        }
+
+        return null;
+    }
+
+    /** 'missing' (safe to create), 'demo' (ours to refresh), or 'foreign' (leave alone). */
+    private function demoTargetState(string $path): string
+    {
+        if (!is_file($this->repository->resolvePath($path))) {
+            return 'missing';
+        }
+
+        return ($this->repository->getPage($path)['meta']['demo'] ?? '') === '1' ? 'demo' : 'foreign';
+    }
+
+    private function deployDemoPage(array $spec, string $menu, bool $create, string $path): void
     {
         $slug = (string) $spec['slug'];
-        $path = $this->pagePathForSlug($slug);
-        $created = 0;
 
-        if (!is_file($this->rootPath . '/' . $path)) {
-            $this->createPage((string) $spec['title'], $slug);
-            $created = 1;
+        if ($create) {
+            $path = $this->createPage((string) $spec['title'], $slug);
         }
 
         $this->repository->updateMetadata($path, [
@@ -290,35 +1180,32 @@ final class SiteGenerator
         $names = ['page-content', 'page-content-2', 'page-content-3'];
         foreach (array_values($spec['blocks'] ?? []) as $index => $html) {
             if (isset($names[$index])) {
-                $this->repository->updateBlock($path, $names[$index], (string) $html);
+                $this->repository->updateBlock($path, $names[$index], Sanitizer::html((string) $html));
             }
         }
 
         if ($menu !== '') {
-            $this->repository->updateBlock($path, 'main-menu', $this->normalizeMenuHtml($menu));
+            $this->repository->updateBlock($path, 'main-menu', $this->normalizeMenuHtml(Sanitizer::html($menu)));
         }
 
         // Re-render through the active template so the content and menu we just
         // wrote raw are localized for the current deployment location.
-        Filesystem::atomicWrite($this->rootPath . '/' . $path, $this->renderPageForActiveTemplate($path));
-
-        return $created;
+        Filesystem::writeSitePage($this->rootPath . '/' . $path, $this->renderPageForActiveTemplate($path));
     }
 
-    private function deployDemoPost(array $spec, string $menu): int
+    private function deployDemoPost(array $spec, string $menu, bool $create, string $path): void
     {
         $slug = (string) $spec['slug'];
-        $path = $slug . '.html';
-        $created = 0;
 
-        if (!is_file($this->rootPath . '/' . $path)) {
-            $this->createBlogPost(
+        if ($create) {
+            // Demo posts keep their documented URLs regardless of the permalink setting.
+            $path = $this->createBlogPost(
                 (string) $spec['title'],
                 $slug,
                 (string) ($spec['excerpt'] ?? ''),
-                (string) ($spec['hashtags'] ?? '#blog')
+                (string) ($spec['hashtags'] ?? '#blog'),
+                '{slug}'
             );
-            $created = 1;
         }
 
         $this->repository->updateMetadata($path, [
@@ -326,20 +1213,65 @@ final class SiteGenerator
             'excerpt' => (string) ($spec['excerpt'] ?? ''),
             'hashtags' => (string) ($spec['hashtags'] ?? '#blog'),
         ]);
-        $this->repository->updateBlock($path, 'blog-post-content', (string) $spec['content']);
+        $this->repository->updateBlock($path, 'blog-post-content', Sanitizer::html((string) $spec['content']));
 
         if ($menu !== '') {
-            $this->repository->updateBlock($path, 'main-menu', $this->normalizeMenuHtml($menu));
+            $this->repository->updateBlock($path, 'main-menu', $this->normalizeMenuHtml(Sanitizer::html($menu)));
         }
 
-        Filesystem::atomicWrite($this->rootPath . '/' . $path, $this->renderPageForActiveTemplate($path));
-
-        return $created;
+        Filesystem::writeSitePage($this->rootPath . '/' . $path, $this->renderPageForActiveTemplate($path));
     }
 
-    private function pagePathForSlug(string $slug): string
+    /**
+     * Where a new page for $slug is written. Folder style (slug/index.html) is the
+     * default because it works on every static server with no rewrite rules; flat
+     * style (slug.html) relies on the root .htaccess mapping slug/ to slug.html.
+     */
+    public function pagePathForSlug(string $slug): string
     {
-        return $slug === 'index' ? 'index.html' : $slug . '.html';
+        if ($slug === 'index' || $slug === '') {
+            return 'index.html';
+        }
+
+        return $this->settings->get('url_style') === 'flat' ? $slug . '.html' : $slug . '/index.html';
+    }
+
+    /** The existing file for $slug in either style, or null. */
+    public function existingPathForSlug(string $slug): ?string
+    {
+        if ($slug === 'index' || $slug === '') {
+            return is_file($this->rootPath . '/index.html') ? 'index.html' : null;
+        }
+
+        foreach ([$slug . '.html', $slug . '/index.html'] as $candidate) {
+            if (is_file($this->rootPath . '/' . $candidate)) {
+                return $candidate;
+            }
+        }
+
+        return null;
+    }
+
+    private function assertSlugAvailable(string $slug): void
+    {
+        $drafts = $this->repository->sitePath()->draftsPath();
+        if ($slug !== 'index' && (is_file($drafts . '/' . $slug . '.html') || is_file($drafts . '/' . $slug . '/index.html'))) {
+            throw new RuntimeException('A draft already exists for /' . $slug . '/.');
+        }
+        if ($this->existingPathForSlug($slug) !== null) {
+            throw new RuntimeException('A page already exists at /' . ($slug === 'index' ? '' : $slug . '/') . '.');
+        }
+    }
+
+    /** Apply the post permalink pattern (BLOG-8) to a post slug. */
+    private function postSlugPath(string $slug, string $date, ?string $pattern = null): string
+    {
+        $time = strtotime($date) ?: time();
+        return strtr($pattern ?? (string) $this->settings->get('post_permalink'), [
+            '{slug}' => $slug,
+            '{yyyy}' => gmdate('Y', $time),
+            '{mm}' => gmdate('m', $time),
+        ]);
     }
 
     private function ensurePublishedStylesheet(): void
@@ -349,9 +1281,7 @@ final class SiteGenerator
             return;
         }
 
-        $css = $this->themes->loadStylesheet($this->themes->currentThemeId());
-        Filesystem::ensureDirectory(dirname($target));
-        Filesystem::atomicWrite($target, $this->localizeStylesheet($css));
+        $this->publishStylesheet($this->themes->currentThemeId());
     }
 
     public function hasDemoContent(): bool
@@ -383,7 +1313,7 @@ final class SiteGenerator
             }
 
             $full = $this->rootPath . '/' . ltrim((string) $page['path'], '/');
-            if (is_file($full) && @unlink($full)) {
+            if (Filesystem::deleteSitePage($full)) {
                 $dirs[dirname($full)] = true;
                 if ($isDemo) {
                     $removed++;
@@ -407,38 +1337,51 @@ final class SiteGenerator
     }
 
     /**
-     * Remove every HTML page from the site (managed and unmanaged), then prune any
-     * directories left empty. Assets (images, imported media, stylesheets) and the
-     * /edit/ app are left in place. Returns the number of pages removed. This is the
-     * "start from a clean site" reset.
+     * The files "Delete all pages" would remove: managed pages, WYSiteIWYG's own
+     * redirect stubs, and HTML the site importer created ($importedFiles). Other
+     * HTML under the root (a neighbouring app, hand-made files) is never touched.
+     *
+     * @param string[] $importedFiles
+     * @return string[] root-relative paths
      */
-    public function purgeAllPages(): int
+    public function purgeCandidates(array $importedFiles = []): array
+    {
+        $paths = array_column($this->repository->listPages(), 'path');
+        foreach ($this->repository->listImportCandidates(true) as $candidate) {
+            if (!empty($candidate['redirect'])) {
+                $paths[] = $candidate['path'];
+            }
+        }
+        foreach ($importedFiles as $path) {
+            if (preg_match('/\.html?$/i', $path) === 1) {
+                try {
+                    $this->repository->sitePath()->resolvePage($path, true);
+                    $paths[] = $path;
+                } catch (RuntimeException) {
+                    continue;
+                }
+            }
+        }
+
+        $paths = array_values(array_unique($paths));
+        sort($paths);
+        return $paths;
+    }
+
+    /**
+     * Remove the pages listed by purgeCandidates() and prune directories left
+     * empty. Assets and the /edit/ app stay. Returns the number removed.
+     *
+     * @param string[] $importedFiles
+     */
+    public function purgeAllPages(array $importedFiles = []): int
     {
         $removed = 0;
         $dirs = [];
 
-        $iterator = new \RecursiveIteratorIterator(
-            new \RecursiveDirectoryIterator($this->rootPath, \FilesystemIterator::SKIP_DOTS),
-            \RecursiveIteratorIterator::LEAVES_ONLY
-        );
-
-        foreach ($iterator as $file) {
-            if (!$file->isFile()) {
-                continue;
-            }
-
-            $full = str_replace('\\', '/', $file->getPathname());
-            $rel = ltrim(substr($full, strlen($this->rootPath)), '/');
-            if ($rel === '' || str_starts_with($rel, 'edit/')) {
-                continue;
-            }
-
-            $ext = strtolower((string) pathinfo($rel, PATHINFO_EXTENSION));
-            if (!in_array($ext, ['html', 'htm'], true)) {
-                continue;
-            }
-
-            if (@unlink($full)) {
+        foreach ($this->purgeCandidates($importedFiles) as $rel) {
+            $full = $this->rootPath . '/' . $rel;
+            if (Filesystem::deleteSitePage($full)) {
                 $dirs[dirname($full)] = true;
                 $removed++;
             }
@@ -448,8 +1391,9 @@ final class SiteGenerator
         $dirList = array_keys($dirs);
         usort($dirList, static fn(string $a, string $b): int => strlen($b) <=> strlen($a));
         foreach ($dirList as $dir) {
-            if ($dir !== $this->rootPath && is_dir($dir) && $this->isEmptyDirectory($dir)) {
+            while ($dir !== $this->rootPath && str_starts_with($dir, $this->rootPath . '/') && is_dir($dir) && $this->isEmptyDirectory($dir)) {
                 @rmdir($dir);
+                $dir = dirname($dir);
             }
         }
 
@@ -466,12 +1410,14 @@ final class SiteGenerator
         return array_values(array_diff($entries, ['.', '..'])) === [];
     }
 
+    /** Rebuild every page that renders with the active template for $kind. */
     public function rebuildPagesUsingTemplate(string $kind): int
     {
         $updated = 0;
+        $templateKind = $this->repository->effectiveTemplateKind($kind);
 
         foreach ($this->repository->listPages() as $pageInfo) {
-            if (($pageInfo['kind'] ?? '') !== $kind) {
+            if ($this->repository->effectiveTemplateKind((string) ($pageInfo['kind'] ?? '')) !== $templateKind) {
                 continue;
             }
 
@@ -480,7 +1426,7 @@ final class SiteGenerator
             }
 
             $html = $this->renderPageForActiveTemplate($pageInfo['path']);
-            Filesystem::atomicWrite($this->rootPath . '/' . $pageInfo['path'], $html);
+            Filesystem::writeSitePage($this->rootPath . '/' . $pageInfo['path'], $html);
             $updated++;
         }
 
@@ -498,7 +1444,13 @@ final class SiteGenerator
             $page['kind'],
             $themeId,
             [
-                'path' => $relativePath,
+                'path' => SitePath::publicPath($relativePath),
+                'meta_extra' => $meta,
+                'summary' => ($meta['excerpt'] ?? '') !== '' ? (string) $meta['excerpt'] : $this->textSnippet(
+                    (string) ($this->extractBlockContent($page, 'blog-post-content') ?? $this->joinedPageContent($page))
+                ),
+                'author' => $meta['author'] ?? '',
+                'image' => $meta['image'] ?? '',
                 'title' => $meta['title'] ?? basename($relativePath),
                 'excerpt' => $meta['excerpt'] ?? '',
                 'date' => $meta['date'] ?? gmdate('Y-m-d'),
@@ -507,7 +1459,7 @@ final class SiteGenerator
                 'tag_label' => $tag !== '' ? $this->tagLabel($tag) : 'Journal',
                 'main_menu' => $this->normalizeMenuHtml($this->extractBlockContent($page, 'main-menu') ?? $this->currentMenuHtml()),
                 'page_content_blocks' => $this->pageContentBlocksForPage($page, $meta['title'] ?? basename($relativePath), $meta['excerpt'] ?? ''),
-                'blog_post_content' => $this->normalizePostBlockContent($this->extractBlockContent($page, 'blog-post-content')) ?: $this->normalizePostBlockContent($this->extractBlockContent($page, 'page-content')) ?: $this->defaultBlogPostContent(),
+                'blog_post_content' => $this->normalizePostBlockContent($this->extractBlockContent($page, 'blog-post-content')) ?: $this->joinedPageContent($page) ?: $this->defaultBlogPostContent(),
                 'blog_index_content' => $this->normalizePageBlockContent($this->extractBlockContent($page, 'blog-index-content')) ?: $this->defaultTagIntroContent($tag !== '' ? $tag : 'blog'),
                 'blog_items' => $this->renderBlogItems($tag !== '' ? $tag : 'blog'),
                 'tag_links' => $this->renderTagLinks($tags),
@@ -528,16 +1480,74 @@ final class SiteGenerator
             }
 
             $html = $this->renderPageForTheme($pageInfo['path'], $themeId, '/assets/site.css');
-            Filesystem::atomicWrite($this->rootPath . '/' . $pageInfo['path'], $html);
+            Filesystem::writeSitePage($this->rootPath . '/' . $pageInfo['path'], $html);
         }
 
         $this->rebuildTagPages($themeId, '/assets/site.css');
         $this->themes->setCurrentTheme($themeId);
     }
 
+    /** NAV-1: append a link to the shared menu (on every page and template). */
+    public function addMenuLink(string $relativePath, string $title): void
+    {
+        $url = ltrim($this->repository->publicUrlForPath(SitePath::publicPath($relativePath)), '/');
+        $menu = $this->currentMenuHtml();
+        $item = '<li><a href="' . h($url === '' ? './' : $url) . '">' . h($title) . '</a></li>';
+        $updated = preg_replace('#</(ul|ol)>\s*$#i', $item . '</$1>', trim($menu), 1) ?? $menu;
+        $this->syncMenu($updated);
+    }
+
+    /**
+     * Mark the menu link that points at $relativePath with aria-current="page" and
+     * the is-current class (per page, at render time; stripped before storing).
+     */
+    public function markCurrentMenuItem(string $menuHtml, string $relativePath): string
+    {
+        $menuHtml = $this->stripCurrentMenuMarkers($menuHtml);
+        $own = trim($this->repository->publicUrlForPath(SitePath::publicPath($relativePath)), '/');
+
+        return preg_replace_callback(
+            '/<a\b([^>]*)>/i',
+            function (array $m) use ($own): string {
+                if (preg_match('/\bhref\s*=\s*"([^"]*)"/i', $m[1], $href) !== 1) {
+                    return $m[0];
+                }
+                $target = html_entity_decode($href[1], ENT_QUOTES, 'UTF-8');
+                if (preg_match('#^([a-z][a-z0-9+.-]*:|//|\#)#i', $target) === 1) {
+                    return $m[0];
+                }
+                $target = trim(preg_replace('#[?\#].*$#', '', UrlLocalizer::toBaseRelative($target, $this->siteBaseUrl)) ?? '', '/');
+                $target = preg_replace('#^\./?#', '', $target) ?? $target;
+                // "about/index.html", "about.html" and "about/" are the same page.
+                $target = preg_replace('#(^|/)index\.html?$#i', '$1', $target) ?? $target;
+                $target = preg_replace('#\.html?$#i', '', $target) ?? $target;
+                if (trim($target, '/') !== $own) {
+                    return $m[0];
+                }
+
+                $attrs = $m[1];
+                if (preg_match('/\bclass\s*=\s*"([^"]*)"/i', $attrs) === 1) {
+                    $attrs = preg_replace('/\bclass\s*=\s*"([^"]*)"/i', 'class="$1 is-current"', $attrs, 1) ?? $attrs;
+                } else {
+                    $attrs .= ' class="is-current"';
+                }
+
+                return '<a' . $attrs . ' aria-current="page">';
+            },
+            $menuHtml
+        ) ?? $menuHtml;
+    }
+
+    private function stripCurrentMenuMarkers(string $menuHtml): string
+    {
+        $menuHtml = preg_replace('/\s+aria-current="page"/i', '', $menuHtml) ?? $menuHtml;
+        $menuHtml = preg_replace('/\bclass="is-current"\s?/i', '', $menuHtml) ?? $menuHtml;
+        return preg_replace('/(\bclass="[^"]*?)\s+is-current(")/i', '$1$2', $menuHtml) ?? $menuHtml;
+    }
+
     public function normalizeMenuHtml(string $menuHtml): string
     {
-        $menuHtml = trim($menuHtml);
+        $menuHtml = $this->stripCurrentMenuMarkers(trim($menuHtml));
         if ($menuHtml === '') {
             return '<ul class="main-menu"><li><a href="/">Home</a></li><li><a href="/blog/">Blog</a></li></ul>';
         }
@@ -609,6 +1619,15 @@ final class SiteGenerator
             'blog' => $this->repository->activeTemplateRelativePath('blog'),
         ];
 
+        // The home template is optional: publish it when the theme has one, and
+        // remove a stale one from a previous theme when it doesn't.
+        $homeTarget = $this->rootPath . '/' . $this->repository->activeTemplateRelativePath('home');
+        if ($this->themes->hasTemplate($themeId, 'home')) {
+            $templateTargets['home'] = $this->repository->activeTemplateRelativePath('home');
+        } else {
+            Filesystem::deleteSitePage($homeTarget);
+        }
+
         foreach ($templateTargets as $kind => $target) {
             $raw = $this->themes->loadTemplate($themeId, $kind);
             $rendered = str_replace(
@@ -616,13 +1635,59 @@ final class SiteGenerator
                 ['/assets/site.css', trim($menuHtml)],
                 $raw
             );
-            Filesystem::atomicWrite($this->rootPath . '/' . $target, $rendered);
+            Filesystem::writeSitePage($this->rootPath . '/' . $target, $rendered);
         }
+
+        $this->publishStylesheet($themeId);
+    }
+
+    /**
+     * Publish /assets/site.css for $themeId: the theme stylesheet with its asset
+     * folder published to /assets/theme/<id>/ (THEME-5) and the site's variable
+     * customizations appended (THEME-1).
+     */
+    public function publishStylesheet(string $themeId): void
+    {
+        $css = $this->themes->loadStylesheet($themeId);
+        $css = $this->publishThemeAssets($themeId, $css);
+        $values = (array) (($this->settings->get('theme_variables') ?? [])[$themeId] ?? []);
 
         Filesystem::atomicWrite(
             $this->rootPath . '/assets/site.css',
-            $this->localizeStylesheet($this->themes->loadStylesheet($themeId))
+            $this->localizeStylesheet($css) . $this->themes->variableCss($themeId, $values)
         );
+        AssetPolicy::ensureAssetsHtaccess($this->rootPath);
+    }
+
+    /**
+     * Copy themes/<id>/assets/** to /assets/theme/<id>/ and point the stylesheet's
+     * references (theme-relative "assets/x.png" or "/edit/themes/<id>/assets/x.png")
+     * at the published copies, so the public site never loads files from /edit/.
+     */
+    private function publishThemeAssets(string $themeId, string $css): string
+    {
+        $source = $this->rootPath . '/edit/themes/' . $themeId . '/assets';
+        if (!is_dir($source)) {
+            return $css;
+        }
+
+        $target = 'assets/theme/' . $themeId;
+        $iterator = new \RecursiveIteratorIterator(new \RecursiveDirectoryIterator($source, \FilesystemIterator::SKIP_DOTS));
+        foreach ($iterator as $file) {
+            if (!$file->isFile() || str_starts_with($file->getFilename(), '.')) {
+                continue;
+            }
+            $relative = substr(str_replace('\\', '/', $file->getPathname()), strlen($source) + 1);
+            $destination = $this->rootPath . '/' . $target . '/' . AssetPolicy::safeRelativePath($relative);
+            Filesystem::ensureDirectory(dirname($destination));
+            Filesystem::atomicWrite($destination, (string) file_get_contents($file->getPathname()));
+        }
+
+        return preg_replace_callback(
+            '#url\(\s*(["\']?)(?:/edit/themes/' . preg_quote($themeId, '#') . '/assets/|\./assets/|assets/)([^"\')]+)\1\s*\)#i',
+            static fn(array $m): string => 'url(' . $m[1] . '/' . $target . '/' . $m[2] . $m[1] . ')',
+            $css
+        ) ?? $css;
     }
 
     /**
@@ -666,8 +1731,15 @@ final class SiteGenerator
                 )
             );
 
-        if ($kind === 'page') {
+        $isPageLike = in_array($kind, ['page', 'home'], true);
+        if ($isPageLike) {
             $template = $this->injectPageContentSlots($template, $pageContentBlocks);
+        }
+
+        // A homepage rendered through the page template must still record itself
+        // as kind="home", or the next read would demote it.
+        if ($kind === 'home') {
+            $template = preg_replace('/(<!--\s*WYSITE:META\b[^>]*?\bkind=")page(")/i', '${1}home$2', $template, 1) ?? $template;
         }
 
         // Scalar tokens carry plain text (page titles, excerpts, dates, tags) that
@@ -682,73 +1754,209 @@ final class SiteGenerator
             '{{EXCERPT}}' => h((string) ($data['excerpt'] ?? '')),
             '{{DATE}}' => h((string) ($data['date'] ?? gmdate('Y-m-d'))),
             '{{BODY_CLASS}}' => h($this->bodyClass($data['path'] ?? 'index.html', $kind)),
-            '{{MAIN_MENU}}' => trim((string) ($data['main_menu'] ?? $this->currentMenuHtml())),
-            '{{PAGE_CONTENT_BLOCKS}}' => $kind === 'page' ? '' : $this->renderPageContentBlocks($pageContentBlocks),
+            '{{MAIN_MENU}}' => $this->markCurrentMenuItem(trim((string) ($data['main_menu'] ?? $this->currentMenuHtml())), (string) ($data['path'] ?? 'index.html')),
+            '{{PAGE_CONTENT_BLOCKS}}' => $isPageLike ? '' : $this->renderPageContentBlocks($pageContentBlocks),
             '{{PAGE_CONTENT_BLOCK}}' => '',
             '{{PAGE_CONTENT}}' => trim((string) ($pageContentBlocks[0] ?? $data['page_content'] ?? '')),
             '{{PAGE_CONTENT_2}}' => trim((string) ($pageContentBlocks[1] ?? $data['page_content_2'] ?? '')),
             '{{PAGE_CONTENT_3}}' => trim((string) ($pageContentBlocks[2] ?? $data['page_content_3'] ?? '')),
             '{{BLOG_POST_CONTENT}}' => trim((string) ($data['blog_post_content'] ?? '')),
             '{{BLOG_INDEX_CONTENT}}' => trim((string) ($data['blog_index_content'] ?? '')),
-            '{{BLOG_ITEMS}}' => trim((string) ($data['blog_items'] ?? '')),
+            // Pagination is appended to the items for themes without a
+            // {{PAGINATION}} token; themes that place it themselves get it once.
+            '{{BLOG_ITEMS}}' => str_contains($template, '{{PAGINATION}}')
+                ? trim((string) (preg_replace('/<!-- WYSITE:PAGINATION -->.*$/s', '', (string) ($data['blog_items'] ?? '')) ?? ''))
+                : trim(str_replace('<!-- WYSITE:PAGINATION -->', '', (string) ($data['blog_items'] ?? ''))),
             '{{HASHTAGS}}' => h(trim((string) ($data['hashtags'] ?? ''))),
             '{{TAG_LINKS}}' => trim((string) ($data['tag_links'] ?? '')),
             '{{TAG}}' => h(trim((string) ($data['tag'] ?? ''))),
             '{{TAG_LABEL}}' => h(trim((string) ($data['tag_label'] ?? 'Journal'))),
+            '{{DATE_HUMAN}}' => h($this->humanDate((string) ($data['date'] ?? ''))),
+            '{{AUTHOR}}' => h(trim((string) ($data['author'] ?? ''))),
+            '{{PAGINATION}}' => trim((string) ($data['pagination'] ?? '')),
+            // Site identity (Site settings); survives theme changes.
+            '{{SITE_NAME}}' => h((string) $this->settings->get('site_name')),
+            '{{SITE_TAGLINE}}' => h((string) $this->settings->get('tagline')),
+            '{{SITE_LANG}}' => h((string) $this->settings->get('language')),
+            '{{SITE_LOGO}}' => $this->siteLogoHtml(),
+            '{{FOOTER}}' => (string) $this->settings->get('footer_html'),
+            '{{HEAD_META}}' => $this->headMetaHtml($kind, $data),
             '{{WYSITE_PUBLIC_BRIDGE}}' => $this->publicBridgeHtml(),
         ];
 
+        // Themes written before {{HEAD_META}} existed still get SEO/feed metadata.
+        if (!str_contains($template, '{{HEAD_META}}')) {
+            $template = preg_replace('#</head>#i', "  {{HEAD_META}}\n</head>", $template, 1) ?? $template;
+        }
+
         $html = str_replace(array_keys($replacements), array_values($replacements), $template);
+        $html = $this->injectMetaExtras($html, (array) ($data['meta_extra'] ?? []));
 
         return $this->localizeUrls($html, (string) ($data['path'] ?? 'index.html'));
     }
 
-    private function loadActiveTemplateOrTheme(string $kind, string $themeId): string
+    /**
+     * Add META fields the template doesn't write itself (demo flag, author, image,
+     * status, ...) so a rebuild or theme apply never drops them.
+     */
+    private function injectMetaExtras(string $html, array $extras): string
     {
-        foreach ($this->activeTemplateKindChain($kind) as $candidate) {
-            try {
-                return $this->repository->loadActiveTemplate($candidate);
-            } catch (RuntimeException) {
-                continue;
-            }
+        $extras = array_filter(
+            array_diff_key($extras, array_flip(self::TEMPLATE_META_KEYS)),
+            static fn($value): bool => is_scalar($value) && (string) $value !== ''
+        );
+        if ($extras === []) {
+            return $html;
         }
 
-        return $this->themes->loadTemplate($themeId, $this->themeTemplateKind($kind));
+        return preg_replace_callback(
+            '/<!--\s*WYSITE:META(?P<attrs>.*?)-->/s',
+            static function (array $match) use ($extras): string {
+                $attrs = rtrim($match['attrs']);
+                foreach ($extras as $key => $value) {
+                    if (preg_match('/^[a-z_][a-z0-9_-]*$/i', (string) $key) === 1 && preg_match('/\b' . preg_quote((string) $key, '/') . '="/', $attrs) !== 1) {
+                        $attrs .= ' ' . $key . '="' . htmlspecialchars((string) $value, ENT_QUOTES, 'UTF-8') . '"';
+                    }
+                }
+                return '<!-- WYSITE:META' . $attrs . ' -->';
+            },
+            $html,
+            1
+        ) ?? $html;
     }
 
-    /** A 'home' page uses an active home template if present, else falls back to 'page'. */
-    private function activeTemplateKindChain(string $kind): array
+    /** First ~160 characters of an HTML fragment's text (for descriptions). */
+    private function textSnippet(string $html): string
     {
-        return $kind === 'home' ? ['home', 'page'] : [$kind];
+        $text = trim(preg_replace('/\s+/u', ' ', html_entity_decode(strip_tags($html), ENT_QUOTES | ENT_HTML5, 'UTF-8')) ?? '');
+        if (strlen($text) <= 160) {
+            return $text;
+        }
+        $cut = function_exists('mb_substr') ? mb_substr($text, 0, 157) : substr($text, 0, 157);
+        return rtrim((string) preg_replace('/\s+\S*$/u', '', $cut)) . '…';
     }
 
-    /** Themes do not ship a 'home' template; home pages render with the page template. */
-    private function themeTemplateKind(string $kind): string
+    private function humanDate(string $date): string
     {
-        return $kind === 'home' ? 'page' : $kind;
+        $time = $date !== '' ? strtotime($date) : false;
+        return $time !== false ? date('F j, Y', $time) : '';
     }
 
-    private function renderBlogItems(string $tag): string
+    private function siteLogoHtml(): string
     {
+        $logo = (string) $this->settings->get('logo');
+        if ($logo === '') {
+            return '';
+        }
+
+        return '<img class="site-logo" src="/' . h($logo) . '" alt="' . h((string) $this->settings->get('site_name')) . '">';
+    }
+
+    /** Absolute URL for a site path (or '' when no origin is known). */
+    public function absoluteUrl(string $siteRelativeUrl): string
+    {
+        $base = (string) $this->settings->get('canonical_base_url');
+        if ($base === '') {
+            if ($this->siteOrigin === '') {
+                return '';
+            }
+            $base = $this->siteOrigin . $this->siteBaseUrl;
+        }
+
+        return rtrim($base, '/') . '/' . ltrim($siteRelativeUrl, '/');
+    }
+
+    /**
+     * <head> metadata for a generated page (BLOG-6): description, canonical,
+     * Open Graph / Twitter cards, feed discovery, and favicon.
+     */
+    private function headMetaHtml(string $kind, array $data): string
+    {
+        $title = trim((string) ($data['title'] ?? ''));
+        $excerpt = trim((string) ($data['excerpt'] ?? '')) ?: trim((string) ($data['summary'] ?? ''));
+        $path = (string) ($data['path'] ?? 'index.html');
+        $siteName = (string) $this->settings->get('site_name');
+        $url = $this->absoluteUrl(ltrim($this->repository->publicUrlForPath($path), '/'));
+        $image = trim((string) ($data['image'] ?? '')) ?: (string) $this->settings->get('logo');
+        $imageUrl = $image === '' ? '' : (preg_match('#^https?://#i', $image) === 1 ? $image : $this->absoluteUrl(ltrim($image, '/')));
+
+        $tags = [];
+        if ($excerpt !== '') {
+            $tags[] = '<meta name="description" content="' . h($excerpt) . '">';
+        }
+        if ($url !== '') {
+            $tags[] = '<link rel="canonical" href="' . h($url) . '">';
+            $tags[] = '<meta property="og:url" content="' . h($url) . '">';
+        }
+        $tags[] = '<meta property="og:site_name" content="' . h($siteName) . '">';
+        $tags[] = '<meta property="og:title" content="' . h($title !== '' ? $title : $siteName) . '">';
+        if ($excerpt !== '') {
+            $tags[] = '<meta property="og:description" content="' . h($excerpt) . '">';
+        }
+        $tags[] = '<meta property="og:type" content="' . ($kind === 'blog-post' ? 'article' : 'website') . '">';
+        if ($kind === 'blog-post' && trim((string) ($data['date'] ?? '')) !== '') {
+            $tags[] = '<meta property="article:published_time" content="' . h((string) $data['date']) . '">';
+        }
+        if ($imageUrl !== '') {
+            $tags[] = '<meta property="og:image" content="' . h($imageUrl) . '">';
+        }
+        $tags[] = '<meta name="twitter:card" content="' . ($imageUrl !== '' ? 'summary_large_image' : 'summary') . '">';
+
+        // Feed discovery: the main feed everywhere, plus the tag's own feed on tag pages.
+        $tags[] = '<link rel="alternate" type="application/rss+xml" title="' . h($siteName) . '" href="/blog/feed.xml">';
+        $tag = (string) ($data['tag'] ?? '');
+        if ($kind === 'blog' && $tag !== '' && $tag !== 'blog') {
+            $tags[] = '<link rel="alternate" type="application/rss+xml" title="' . h($siteName . ' — #' . $tag) . '" href="/' . h($tag) . '/feed.xml">';
+        }
+
+        $favicon = (string) $this->settings->get('favicon');
+        if ($favicon !== '') {
+            $tags[] = '<link rel="icon" href="/' . h($favicon) . '">';
+        }
+
+        return implode("\n  ", $tags);
+    }
+
+    private function loadActiveTemplateOrTheme(string $kind, string $themeId): string
+    {
+        try {
+            return $this->repository->loadActiveTemplate($this->repository->effectiveTemplateKind($kind));
+        } catch (RuntimeException) {
+            // No active template yet (fresh install): render from the theme itself,
+            // which applies the same home -> page fallback.
+            return $this->themes->loadTemplate($themeId, $kind);
+        }
+    }
+
+    /**
+     * Blog cards for $tag. $posts is the (already sliced) list for this page; when
+     * omitted, every post with the tag is listed. Themes without a {{PAGINATION}}
+     * token get the pagination appended after the cards.
+     */
+    private function renderBlogItems(string $tag, ?array $posts = null, string $pagination = ''): string
+    {
+        $posts ??= $this->repository->listBlogPosts($tag);
         $cards = array_map(
             function (array $post) use ($tag): string {
-                $date = $post['date'] !== '' ? date('F j, Y', strtotime($post['date'])) : '';
+                $date = $this->humanDate((string) $post['date']);
+                $image = trim((string) ($post['image'] ?? ''));
                 return '<article class="blog-card">' .
-                    '<p class="blog-card__meta">' . h($date) . '</p>' .
+                    ($image !== '' ? '<a class="blog-card__image" href="' . h($post['url']) . '"><img src="' . h((preg_match('#^https?://#i', $image) === 1 || str_starts_with($image, '/')) ? $image : '/' . $image) . '" alt="" loading="lazy"></a>' : '') .
+                    '<p class="blog-card__meta">' . h($date) . (trim((string) ($post['author'] ?? '')) !== '' ? ' · ' . h((string) $post['author']) : '') . '</p>' .
                     '<h2><a href="' . h($post['url']) . '">' . h($post['title']) . '</a></h2>' .
                     '<p>' . h($post['excerpt']) . '</p>' .
                     $this->renderTagLinks($post['tags'], $tag) .
                     '<p><a class="text-link" href="' . h($post['url']) . '">Read the post</a></p>' .
                     '</article>';
             },
-            $this->repository->listBlogPosts($tag)
+            $posts
         );
 
         if ($cards === []) {
             return '<article class="blog-card"><h2>No posts yet</h2><p>Add the <code>#' . h($tag) . '</code> hashtag to a post and it will appear here automatically.</p></article>';
         }
 
-        return implode("\n", $cards);
+        return implode("\n", $cards) . ($pagination !== '' ? "\n" . '<!-- WYSITE:PAGINATION -->' . $pagination : '');
     }
 
     private function renderTagLinks(array $tags, ?string $activeTag = null): string
@@ -863,6 +2071,25 @@ final class SiteGenerator
         ];
     }
 
+    /**
+     * All page-content* blocks of a page, in order, as one post body. Used when a
+     * page becomes a post so blocks 2+ aren't dropped on the next rebuild.
+     */
+    private function joinedPageContent(?array $page): string
+    {
+        $parts = [];
+        foreach ($page['blocks'] ?? [] as $block) {
+            if ($block['name'] === 'page-content' || preg_match('/^page-content-\d+$/', $block['name']) === 1) {
+                $normalized = $this->normalizePostBlockContent($block['content']);
+                if ($normalized !== '') {
+                    $parts[] = $normalized;
+                }
+            }
+        }
+
+        return implode("\n\n", $parts);
+    }
+
     private function renderPageContentBlocks(array $blocks): string
     {
         $normalizedBlocks = array_values(
@@ -958,9 +2185,16 @@ final class SiteGenerator
 
     private function publicBridgeHtml(): string
     {
-        // Base-relative paths so the public live-edit banner resolves against the
-        // page's own <base href>, working from any deployment subdirectory.
-        return '<script>window.WYSITE_PUBLIC_CONTEXT={appUrl:"edit"};</script><script type="module" src="edit/assets/live-edit-banner.js"></script>';
+        if (!$this->settings->get('live_banner')) {
+            return '';
+        }
+
+        // Ordinary visitors must not touch /edit/ at all: the banner module is only
+        // loaded when the non-secret editor hint cookie (set at sign-in) is present.
+        // Paths are base-relative so they resolve against the page's own <base href>
+        // from any deployment subdirectory.
+        return '<script>if(/(?:^|;\s*)' . AuthManager::HINT_COOKIE . '=1/.test(document.cookie)){window.WYSITE_PUBLIC_CONTEXT={appUrl:"edit"};'
+            . 'let s=document.createElement("script");s.type="module";s.src="edit/assets/live-edit-banner.js";document.head.appendChild(s);}</script>';
     }
 
     /**
@@ -1075,7 +2309,7 @@ final class SiteGenerator
         }
 
         if (!class_exists(\DOMDocument::class)) {
-            return [$this->stripScripts($html)];
+            return [Sanitizer::html($html, 'import')];
         }
 
         $dom = new \DOMDocument('1.0', 'UTF-8');
@@ -1094,7 +2328,7 @@ final class SiteGenerator
             $this->removeSiteChrome($dom, $container);
         }
 
-        $containerHtml = $this->stripScripts($this->innerHtml($container));
+        $containerHtml = Sanitizer::html($this->innerHtml($container), 'import');
         if ($containerHtml === '') {
             return [];
         }
@@ -1138,13 +2372,13 @@ final class SiteGenerator
 
             $isStandaloneBlock = $child instanceof \DOMElement && isset($selected[spl_object_id($child)]);
             if ($isStandaloneBlock) {
-                $bufferHtml = $this->stripScripts(trim(implode("\n", $buffer)));
+                $bufferHtml = Sanitizer::html(trim(implode("\n", $buffer)), 'import');
                 if ($bufferHtml !== '') {
                     $blocks[] = $bufferHtml;
                     $buffer = [];
                 }
 
-                $standaloneHtml = $this->stripScripts($childHtml);
+                $standaloneHtml = Sanitizer::html($childHtml, 'import');
                 if ($standaloneHtml !== '') {
                     $blocks[] = $standaloneHtml;
                 }
@@ -1154,7 +2388,7 @@ final class SiteGenerator
             $buffer[] = $childHtml;
         }
 
-        $bufferHtml = $this->stripScripts(trim(implode("\n", $buffer)));
+        $bufferHtml = Sanitizer::html(trim(implode("\n", $buffer)), 'import');
         if ($bufferHtml !== '') {
             $blocks[] = $bufferHtml;
         }
@@ -1277,38 +2511,6 @@ final class SiteGenerator
         return $result;
     }
 
-    private function stripScripts(string $html): string
-    {
-        $html = trim($html);
-        if ($html === '') {
-            return '';
-        }
-
-        if (!class_exists(\DOMDocument::class)) {
-            return trim(preg_replace('/<script\b[^>]*>.*?<\/script>/is', '', $html) ?? $html);
-        }
-
-        $dom = new \DOMDocument('1.0', 'UTF-8');
-        libxml_use_internal_errors(true);
-        $dom->loadHTML(
-            '<!doctype html><html><body>' . $html . '</body></html>',
-            LIBXML_HTML_NOIMPLIED | LIBXML_HTML_NODEFDTD
-        );
-        libxml_clear_errors();
-
-        while (($scripts = $dom->getElementsByTagName('script'))->length > 0) {
-            $script = $scripts->item(0);
-            $script?->parentNode?->removeChild($script);
-        }
-
-        $body = $dom->getElementsByTagName('body')->item(0);
-        if (!($body instanceof \DOMElement)) {
-            return $html;
-        }
-
-        return trim($this->innerHtml($body));
-    }
-
     private function defaultTagIntroContent(string $tag): string
     {
         if ($tag === 'blog') {
@@ -1424,8 +2626,9 @@ final class SiteGenerator
             throw new RuntimeException('Please provide a title or slug.');
         }
 
-        if (str_contains($value, '../') || str_starts_with($value, 'edit')) {
-            throw new RuntimeException('That slug is not allowed.');
+        // Only the app's own top-level folders are reserved ("editorial" is fine).
+        if (str_contains($value, '..') || preg_match('#^(edit|assets)(/|$)#', $value) === 1) {
+            throw new RuntimeException('Slugs cannot start with "edit/" or "assets/" — those folders belong to the editor and uploads.');
         }
 
         return $value;

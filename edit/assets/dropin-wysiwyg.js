@@ -1,5 +1,6 @@
 // dropin-wysiwyg.js
 import * as pm from "./pm-bundle.js";
+import { buildSchema, createDocument, serializeDocument, schemaLoss } from "./html-fidelity.js";
 
 function buildUI({ onSave, onCancel }) {
   const root = document.createElement("div");
@@ -92,6 +93,16 @@ function buildUI({ onSave, onCancel }) {
     .pm-dropin .pm-btn[aria-pressed="true"] { background: #dbeafe !important; border-color: #3b82f6 !important; color: #1e3a8a !important; -webkit-text-fill-color: #1e3a8a !important; }
     .pm-dropin .pm-btn[aria-pressed="true"] svg { stroke: #1e3a8a !important; }
     .pm-image-upload-placeholder { font-size: 12px; opacity: .85; }
+    .pm-dropin .pm-link-dialog { display: grid; gap: 8px; padding: 10px; border-bottom: 1px solid rgba(0,0,0,.12); background: #f8fafc; color: #1f2937; font: 14px/1.4 system-ui, sans-serif; }
+    .pm-dropin .pm-link-dialog input[type="text"] { box-sizing: border-box; width: 100%; padding: 8px 10px; border: 1px solid rgba(0,0,0,.2); border-radius: 8px; font: inherit; color: #111827; background: #fff; }
+    .pm-dropin .pm-link-dialog__row { display: flex; gap: 8px; align-items: center; justify-content: flex-end; }
+    .pm-dropin .pm-link-dialog__row label { margin-right: auto; color: #1f2937; }
+    .pm-dropin .pm-raw { position: relative; outline: 1px dashed rgba(59,130,246,.55); outline-offset: 2px; }
+    .pm-dropin .pm-raw--inline { display: inline-block; }
+    .pm-dropin .pm-raw.is-selected { outline: 2px solid #3b82f6; }
+    .pm-dropin .pm-raw__content { pointer-events: none; }
+    .pm-dropin .pm-raw__label { position: absolute; top: -10px; left: 6px; padding: 1px 6px; border-radius: 6px; background: #1e3a8a; color: #fff; -webkit-text-fill-color: #fff; font: 600 10px/1.5 system-ui, sans-serif; letter-spacing: 0; text-transform: none; opacity: 0; transition: opacity .15s; pointer-events: none; white-space: nowrap; }
+    .pm-dropin .pm-raw:hover .pm-raw__label, .pm-dropin .pm-raw.is-selected .pm-raw__label { opacity: 1; }
     /* ProseMirror requires the editable surface to use pre-wrap for correct
        caret/whitespace handling; scoped to the live editor only, so published
        output (which has no .ProseMirror element) keeps the surrounding CSS. */
@@ -141,7 +152,6 @@ export const DropInWysiwyg = {
     if (!el) throw new Error("DropInWysiwyg.mount: target not found");
     if (el.__pmDropInMounted) return el.__pmDropInMounted;
 
-    const { Schema, DOMParser: PMDOMParser, DOMSerializer } = pm.model;
     const { EditorState, Plugin, PluginKey } = pm.state;
     const { EditorView, Decoration, DecorationSet } = pm.view;
 
@@ -162,7 +172,6 @@ export const DropInWysiwyg = {
       joinUp,
       joinDown,
       lift,
-      selectParentNode,
       joinBackward,
     } = pm.commands;
 
@@ -191,215 +200,33 @@ export const DropInWysiwyg = {
     const { gapCursor } = pm.gapcursor;
 
     // ---------- Schema ----------
-    function styleAttrs(extraAttrs = {}) {
-      return {
-        ...(extraAttrs || {}),
-        class: { default: null },
-        style: { default: null },
-        id: { default: null },
-      };
-    }
-
-    function readStyleAttrs(dom) {
-      return {
-        class: dom.getAttribute("class") || null,
-        style: dom.getAttribute("style") || null,
-        id: dom.getAttribute("id") || null,
-      };
-    }
-
-    function mergeAttrs(base, dom) {
-      if (base === false) {
-        return false;
-      }
-
-      const merged = typeof base === "object" && base ? { ...base } : {};
-      return { ...merged, ...readStyleAttrs(dom) };
-    }
-
-    function decorateDomSpec(spec, fallbackTag) {
-      const originalToDOM = spec.toDOM;
-      const parseDOM = (spec.parseDOM || [{ tag: fallbackTag }]).map((rule) => ({
-        ...rule,
-        getAttrs(dom) {
-          const base = typeof rule.getAttrs === "function"
-            ? rule.getAttrs(dom)
-            : (rule.attrs ?? null);
-          return mergeAttrs(base, dom);
-        },
-      }));
-
-      return {
-        ...spec,
-        attrs: styleAttrs(spec.attrs),
-        parseDOM,
-        toDOM(node) {
-          const domSpec = typeof originalToDOM === "function"
-            ? originalToDOM(node)
-            : [fallbackTag, 0];
-          const desc = Array.isArray(domSpec) ? [...domSpec] : [fallbackTag, 0];
-          const attrsIndex = desc.length > 1 && desc[1] && typeof desc[1] === "object" && !Array.isArray(desc[1]) ? 1 : -1;
-          const domAttrs = attrsIndex >= 0 ? { ...desc[attrsIndex] } : {};
-
-          ["class", "style", "id"].forEach((key) => {
-            if (node.attrs[key]) {
-              domAttrs[key] = node.attrs[key];
-            }
-          });
-
-          if (attrsIndex >= 0) {
-            desc[attrsIndex] = domAttrs;
-          } else {
-            desc.splice(1, 0, domAttrs);
-          }
-
-          return desc;
-        },
-      };
-    }
-
-    function buildSchema() {
-      const addStyledContainer = (sourceNodes, name, tag) => sourceNodes.addBefore("image", name, {
-        group: "block",
-        content: "block+",
-        attrs: styleAttrs(),
-        parseDOM: [{ tag, getAttrs: (dom) => readStyleAttrs(dom) }],
-        toDOM(node) {
-          return [tag, readStyleAttrsLike(node.attrs), 0];
-        },
-      });
-
-      let nodes = basicSchema.spec.nodes;
-      nodes = nodes.update("paragraph", decorateDomSpec(nodes.get("paragraph"), "p"));
-      nodes = nodes.update("heading", decorateDomSpec(nodes.get("heading"), "h1"));
-      nodes = nodes.update("blockquote", decorateDomSpec(nodes.get("blockquote"), "blockquote"));
-      nodes = nodes.update("code_block", decorateDomSpec(nodes.get("code_block"), "pre"));
-      nodes = nodes.update("horizontal_rule", decorateDomSpec(nodes.get("horizontal_rule"), "hr"));
-      nodes = nodes.update("image", decorateDomSpec(nodes.get("image"), "img"));
-      nodes = addStyledContainer(nodes, "styled_div", "div");
-      nodes = addStyledContainer(nodes, "styled_section", "section");
-      nodes = addStyledContainer(nodes, "styled_article", "article");
-      nodes = addStyledContainer(nodes, "styled_aside", "aside");
-      nodes = addListNodes(nodes, "paragraph block*", "block");
-      nodes = nodes.update("bullet_list", decorateDomSpec(nodes.get("bullet_list"), "ul"));
-      nodes = nodes.update("ordered_list", decorateDomSpec(nodes.get("ordered_list"), "ol"));
-      nodes = nodes.update("list_item", decorateDomSpec(nodes.get("list_item"), "li"));
-      nodes = nodes.append(
-        tableNodes({
-          tableGroup: "block",
-          cellContent: "block+",
-        })
-      );
-      nodes = nodes.update("table", decorateDomSpec(nodes.get("table"), "table"));
-      nodes = nodes.update("table_row", decorateDomSpec(nodes.get("table_row"), "tr"));
-      nodes = nodes.update("table_cell", decorateDomSpec(nodes.get("table_cell"), "td"));
-      nodes = nodes.update("table_header", decorateDomSpec(nodes.get("table_header"), "th"));
-
-      let marks = basicSchema.spec.marks;
-      marks = marks.update("link", decorateMarkSpec(marks.get("link"), "a"));
-      marks = marks.addToEnd("styled_span", {
-        attrs: styleAttrs(),
-        inclusive: true,
-        parseDOM: [{ tag: "span", getAttrs: (dom) => readStyleAttrs(dom) }],
-        toDOM(mark) {
-          return ["span", readStyleAttrsLike(mark.attrs), 0];
-        },
-      });
-
-      return new Schema({ nodes, marks });
-    }
-
-    function readStyleAttrsLike(attrs) {
-      const result = {};
-      ["class", "style", "id"].forEach((key) => {
-        if (attrs[key]) {
-          result[key] = attrs[key];
-        }
-      });
-      return result;
-    }
-
-    function decorateMarkSpec(spec, fallbackTag) {
-      const originalToDOM = spec.toDOM;
-      const parseDOM = (spec.parseDOM || [{ tag: fallbackTag }]).map((rule) => ({
-        ...rule,
-        getAttrs(dom) {
-          const base = typeof rule.getAttrs === "function"
-            ? rule.getAttrs(dom)
-            : (rule.attrs ?? null);
-          return mergeAttrs(base, dom);
-        },
-      }));
-
-      return {
-        ...spec,
-        attrs: styleAttrs(spec.attrs),
-        parseDOM,
-        toDOM(node) {
-          const domSpec = typeof originalToDOM === "function"
-            ? originalToDOM(node)
-            : [fallbackTag, 0];
-          const desc = Array.isArray(domSpec) ? [...domSpec] : [fallbackTag, 0];
-          const attrsIndex = desc.length > 1 && desc[1] && typeof desc[1] === "object" && !Array.isArray(desc[1]) ? 1 : -1;
-          const domAttrs = attrsIndex >= 0 ? { ...desc[attrsIndex] } : {};
-
-          ["class", "style", "id"].forEach((key) => {
-            if (node.attrs[key]) {
-              domAttrs[key] = node.attrs[key];
-            }
-          });
-
-          if (attrsIndex >= 0) {
-            desc[attrsIndex] = domAttrs;
-          } else {
-            desc.splice(1, 0, domAttrs);
-          }
-
-          return desc;
-        },
-      };
-    }
-
+    // See html-fidelity.js: every attribute is preserved, unknown elements become
+    // verbatim atoms, and untouched top-level blocks keep their original markup.
     const schema = buildSchema();
     const originalHTML = opts.restoreHTML ?? el.innerHTML;
 
-    function parseHTML(element) {
-      const wrap = document.createElement("div");
-      wrap.innerHTML = opts.initialHTML ?? element.innerHTML;
-      return PMDOMParser.fromSchema(schema).parse(wrap);
-    }
-
-    function serializeToHTML(doc) {
-      const serializer = DOMSerializer.fromSchema(schema);
-      const wrap = document.createElement("div");
-      wrap.appendChild(serializer.serializeFragment(doc.content));
-      // The schema models list items and table cells as containing block content
-      // (so nested lists / multi-paragraph cells work), which means a plain
-      // <li>text</li> round-trips as <li><p>text</p></li>. To respect the kind of
-      // hand-authored HTML this editor targets, collapse a lone, attribute-free
-      // wrapping <p> back to inline content. Items with several paragraphs, or a
-      // styled paragraph, keep their structure.
-      unwrapSoleParagraph(wrap, "li, td, th");
-      return wrap.innerHTML;
-    }
-
-    function unwrapSoleParagraph(container, selector) {
-      container.querySelectorAll(selector).forEach((host) => {
-        const paragraphs = Array.from(host.children).filter((child) => child.tagName === "P");
-        if (paragraphs.length !== 1) {
-          return;
-        }
-
-        const p = paragraphs[0];
-        if (p.attributes.length > 0) {
-          return;
-        }
-
-        while (p.firstChild) {
-          host.insertBefore(p.firstChild, p);
-        }
-        host.removeChild(p);
-      });
+    // Read-only view for verbatim atoms (iframes, video, forms, ...): the real
+    // markup is shown so the block looks as it will be published.
+    function rawNodeView(node) {
+      const inline = node.type.name === "raw_inline";
+      const dom = document.createElement(inline ? "span" : "div");
+      dom.className = "pm-raw" + (inline ? " pm-raw--inline" : "");
+      dom.contentEditable = "false";
+      dom.title = "Embedded content — edit it in HTML mode (the </> button). It is saved exactly as-is.";
+      const content = document.createElement(inline ? "span" : "div");
+      content.className = "pm-raw__content";
+      content.innerHTML = node.attrs.html;
+      const label = document.createElement("span");
+      label.className = "pm-raw__label";
+      label.textContent = "Embedded content — edit in HTML mode";
+      dom.append(content, label);
+      return {
+        dom,
+        ignoreMutation: () => true,
+        stopEvent: () => false,
+        selectNode: () => dom.classList.add("is-selected"),
+        deselectNode: () => dom.classList.remove("is-selected"),
+      };
     }
 
     // ---------- Image placeholder plugin ----------
@@ -539,6 +366,9 @@ export const DropInWysiwyg = {
       return to <= $from.end() && $from.parent.hasMarkup(nodeType, attrs);
     }
 
+    // Link dialog with a searchable list of the site's pages (NAV-1). Falls back
+    // to typing any URL. opts.linkSuggestions() resolves to [{ title, url }].
+    let linkSuggestionsPromise = null;
     function promptLink(view) {
       const link = schema.marks.link;
       if (markActive(view.state, link)) {
@@ -546,10 +376,87 @@ export const DropInWysiwyg = {
         view.focus();
         return;
       }
-      const href = window.prompt("Link URL:");
-      if (!href) return;
-      toggleMark(link, { href })(view.state, view.dispatch);
-      view.focus();
+
+      const { from, to } = view.state.selection;
+      const dialog = document.createElement("div");
+      dialog.className = "pm-link-dialog";
+      const listId = `pm-link-pages-${Math.random().toString(36).slice(2, 8)}`;
+      const input = document.createElement("input");
+      input.type = "text";
+      input.placeholder = "Start typing a page title, or paste a URL";
+      input.setAttribute("list", listId);
+      input.setAttribute("aria-label", "Link address");
+      const datalist = document.createElement("datalist");
+      datalist.id = listId;
+      const newTab = document.createElement("label");
+      const newTabBox = document.createElement("input");
+      newTabBox.type = "checkbox";
+      newTab.append(newTabBox, document.createTextNode(" Open in a new tab"));
+      const ok = document.createElement("button");
+      ok.type = "button";
+      ok.className = "pm-btn pm-btn--save";
+      ok.textContent = "Add link";
+      const cancel = document.createElement("button");
+      cancel.type = "button";
+      cancel.className = "pm-btn";
+      cancel.textContent = "Cancel";
+      const row = document.createElement("div");
+      row.className = "pm-link-dialog__row";
+      row.append(newTab, ok, cancel);
+      dialog.append(input, datalist, row);
+      ui.toolbar.insertAdjacentElement("afterend", dialog);
+      input.focus();
+
+      const titleToUrl = new Map();
+      if (opts.linkSuggestions) {
+        linkSuggestionsPromise ??= Promise.resolve(opts.linkSuggestions()).catch(() => []);
+        linkSuggestionsPromise.then((pages) => {
+          (pages || []).forEach(({ title, url }) => {
+            const option = document.createElement("option");
+            option.value = title;
+            option.label = url;
+            titleToUrl.set(title, url);
+            datalist.appendChild(option);
+          });
+        });
+      }
+
+      const close = () => {
+        dialog.remove();
+        view.focus();
+      };
+      const apply = () => {
+        const typed = input.value.trim();
+        const href = titleToUrl.get(typed) ?? typed;
+        if (href) {
+          const attrs = { href };
+          if (newTabBox.checked) {
+            attrs.htmlAttrs = { target: "_blank", rel: "noopener" };
+          }
+          const tr = view.state.tr;
+          if (from === to) {
+            // No selection: insert the page title (or URL) as the link text.
+            const text = titleToUrl.has(typed) ? typed : href;
+            tr.insertText(text, from).addMark(from, from + text.length, link.create(attrs));
+          } else {
+            tr.addMark(from, to, link.create(attrs));
+          }
+          view.dispatch(tr);
+        }
+        close();
+      };
+      ok.addEventListener("click", apply);
+      cancel.addEventListener("click", close);
+      input.addEventListener("keydown", (event) => {
+        if (event.key === "Enter") {
+          event.preventDefault();
+          apply();
+        } else if (event.key === "Escape") {
+          event.preventDefault();
+          event.stopPropagation();
+          close();
+        }
+      });
     }
 
     function insertTableCmd({ rows = 3, cols = 3 } = {}) {
@@ -727,7 +634,7 @@ export const DropInWysiwyg = {
     let instance;
     const ui = buildUI({
       onSave: async () => instance.save(),
-      onCancel: async () => instance.cancel(),
+      onCancel: async () => instance.cancel({ confirmIfDirty: true }),
     });
 
     if (opts.rootClassName) {
@@ -760,7 +667,6 @@ export const DropInWysiwyg = {
         "Alt-ArrowUp": joinUp,
         "Alt-ArrowDown": joinDown,
         "Mod-BracketLeft": lift,
-        Escape: selectParentNode,
         "Mod-Enter": exitCode,
       }),
 
@@ -776,40 +682,56 @@ export const DropInWysiwyg = {
       imagePasteDropPlugin(),
     ];
 
+    // The exact markup we started from, and the parsed document it produced.
+    // If the user never changes the document, we save this back verbatim; if they
+    // do, every top-level block they didn't touch is still written from its
+    // original markup (serializeDocument), so only edited blocks are regenerated.
+    const initialSourceHTML = opts.initialHTML ?? originalHTML;
+    let parsed = createDocument(schema, initialSourceHTML);
+    let initialDoc = parsed.doc;
+
     const state = EditorState.create({
       schema,
-      doc: parseHTML(el),
+      doc: parsed.doc,
       plugins,
     });
 
-    // The exact markup we started from, and the parsed document it produced.
-    // If the user never changes the document, we save this back verbatim instead
-    // of a ProseMirror re-serialization, so untouched content (e.g. lists without
-    // <p> wrappers) is preserved exactly rather than normalized to the schema.
-    const initialSourceHTML = opts.initialHTML ?? originalHTML;
-    const initialDoc = state.doc;
-
     let view;
     let sourceMode = false;
+    let sourceDirty = false;
 
-    function parseHTMLString(html) {
-      const wrap = document.createElement("div");
-      wrap.innerHTML = html;
-      return PMDOMParser.fromSchema(schema).parse(wrap);
+    function currentHTML() {
+      if (sourceMode) {
+        return ui.sourceEditor.value;
+      }
+      if (view.state.doc.eq(initialDoc)) {
+        return parsed.html ?? initialSourceHTML;
+      }
+      return serializeDocument(schema, view.state.doc, parsed.segments).html;
+    }
+
+    function isDirty() {
+      return sourceDirty || !view.state.doc.eq(initialDoc) || (parsed.html !== undefined && parsed.html !== initialSourceHTML);
     }
 
     function setSourceMode(nextMode) {
+      if (nextMode) {
+        ui.sourceEditor.value = currentHTML();
+      } else {
+        // Re-parse the edited source; it becomes the new "original" so blocks the
+        // user didn't touch in rich mode stay exactly as typed in HTML mode.
+        const html = ui.sourceEditor.value;
+        const wasDirty = isDirty();
+        parsed = createDocument(schema, html);
+        parsed.html = html;
+        initialDoc = parsed.doc;
+        sourceDirty = wasDirty || html !== initialSourceHTML;
+        view.updateState(EditorState.create({ schema, doc: parsed.doc, plugins }));
+      }
       sourceMode = nextMode;
       ui.sourceHost.classList.toggle("is-active", sourceMode);
       ui.editorHost.style.display = sourceMode ? "none" : "";
-      if (sourceMode) {
-        ui.sourceEditor.value = serializeToHTML(view.state.doc);
-        ui.sourceEditor.focus();
-      } else {
-        const nextDoc = parseHTMLString(ui.sourceEditor.value);
-        view.updateState(EditorState.create({ schema, doc: nextDoc, plugins }));
-        view.focus();
-      }
+      (sourceMode ? ui.sourceEditor : view).focus();
       instance?.updateToolbar?.();
     }
 
@@ -1025,6 +947,10 @@ export const DropInWysiwyg = {
 
     view = new EditorView(ui.editorHost, {
       state,
+      nodeViews: {
+        raw_block: (node) => rawNodeView(node),
+        raw_inline: (node) => rawNodeView(node),
+      },
       dispatchTransaction(tr) {
         const newState = view.state.apply(tr);
         view.updateState(newState);
@@ -1038,31 +964,54 @@ export const DropInWysiwyg = {
       view,
       updateToolbar: null,
 
+      isDirty,
+
       async save() {
         let html;
         if (sourceMode) {
           html = ui.sourceEditor.value;
         } else if (view.state.doc.eq(initialDoc)) {
           // Unedited: preserve the original markup exactly.
-          html = initialSourceHTML;
+          html = parsed.html ?? initialSourceHTML;
         } else {
-          html = serializeToHTML(view.state.doc);
+          const result = serializeDocument(schema, view.state.doc, parsed.segments);
+          // Pre-save guard: if regenerating the edited blocks would drop elements
+          // the rich editor can't represent, say so before anything is written.
+          const lost = schemaLoss(schema, result.rewritten);
+          if (lost.length) {
+            const list = lost.map(({ tag, count }) => `<${tag}> ×${count}`).join(", ");
+            const proceed = window.confirm(
+              `Saving would remove markup the visual editor can't represent in the blocks you changed: ${list}.\n\n` +
+              "Cancel, then use HTML mode (the </> button) to make this edit without losing it — or OK to save anyway."
+            );
+            if (!proceed) {
+              return false;
+            }
+          }
+          html = result.html;
         }
         el.innerHTML = html;
         await opts.onSave?.({ html, target: el });
         instance.destroy();
         el.style.display = "";
+        return true;
       },
 
-      async cancel() {
+      async cancel({ confirmIfDirty = false } = {}) {
+        if (confirmIfDirty && isDirty() && !window.confirm("Discard your unsaved changes to this section?")) {
+          return false;
+        }
         el.innerHTML = originalHTML;
         sourceMode = false;
         await opts.onCancel?.({ target: el });
         instance.destroy();
         el.style.display = "";
+        return true;
       },
 
       destroy() {
+        window.removeEventListener("beforeunload", beforeUnload);
+        ui.root.removeEventListener("keydown", shortcutKeys, true);
         try {
           view.destroy();
         } catch {}
@@ -1070,6 +1019,30 @@ export const DropInWysiwyg = {
         delete el.__pmDropInMounted;
       },
     };
+
+    // Unsaved-changes guard and shortcuts: Mod-S saves, Esc cancels (asking
+    // first when there are unsaved changes). Captured on the editor root so they
+    // work in both rich and HTML mode.
+    function beforeUnload(event) {
+      if (isDirty()) {
+        event.preventDefault();
+        event.returnValue = "";
+      }
+    }
+    function shortcutKeys(event) {
+      if (event.target instanceof Element && event.target.closest(".pm-link-dialog")) {
+        return; // the link dialog handles its own Enter/Escape
+      }
+      if ((event.metaKey || event.ctrlKey) && !event.altKey && event.key.toLowerCase() === "s") {
+        event.preventDefault();
+        instance.save();
+      } else if (event.key === "Escape" && !event.defaultPrevented) {
+        event.preventDefault();
+        instance.cancel({ confirmIfDirty: true });
+      }
+    }
+    window.addEventListener("beforeunload", beforeUnload);
+    ui.root.addEventListener("keydown", shortcutKeys, true);
 
     instance.updateToolbar = buildToolbar();
     instance.updateToolbar();

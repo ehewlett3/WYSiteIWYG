@@ -7,33 +7,108 @@ use RuntimeException;
 
 final class Filesystem
 {
+    /** Absolute site root; user-facing errors show paths relative to it. */
+    private static string $displayRoot = '';
+
+    private static ?Revisions $revisions = null;
+
+    /** Bumped on every write/delete so per-request caches (listPages) can invalidate. */
+    private static int $generation = 0;
+
+    public static function generation(): int
+    {
+        return self::$generation;
+    }
+
+    /** Enable revision snapshots for writeSitePage() (set in bootstrap). */
+    public static function setRevisions(?Revisions $revisions): void
+    {
+        self::$revisions = $revisions;
+    }
+
+    /**
+     * Write a site page or active template, first copying the previous version
+     * into revision history. Use this (not atomicWrite) for any content a user
+     * could want back.
+     */
+    public static function writeSitePage(string $path, string $contents): void
+    {
+        self::$revisions?->snapshot($path, $contents);
+        self::atomicWrite($path, $contents);
+    }
+
+    /** Delete a site page or template, keeping its last version in history. */
+    public static function deleteSitePage(string $path): bool
+    {
+        if (!is_file($path)) {
+            return false;
+        }
+
+        self::$revisions?->snapshot($path);
+        self::$generation++;
+        return @unlink($path);
+    }
+
+    public static function setDisplayRoot(string $rootPath): void
+    {
+        self::$displayRoot = rtrim(str_replace('\\', '/', $rootPath), '/');
+    }
+
+    /** A path as users should see it: root-relative, never the absolute server path. */
+    public static function displayPath(string $path): string
+    {
+        $path = str_replace('\\', '/', $path);
+        if (self::$displayRoot !== '' && str_starts_with($path, self::$displayRoot . '/')) {
+            return substr($path, strlen(self::$displayRoot) + 1);
+        }
+
+        return basename($path);
+    }
+
+    /** Throw a user-safe error and log the full path for the operator. */
+    private static function fail(string $message, string $path): never
+    {
+        error_log('WYSiteIWYG: ' . $message . ' ' . $path);
+        throw new RuntimeException($message . ' ' . self::displayPath($path));
+    }
+
     public static function ensureDirectory(string $path): void
     {
         if (is_dir($path)) {
             return;
         }
 
-        if (!mkdir($path, 0775, true) && !is_dir($path)) {
-            throw new RuntimeException('Unable to create directory: ' . $path);
+        if (!@mkdir($path, 0775, true) && !is_dir($path)) {
+            self::fail('Unable to create directory:', $path);
         }
     }
 
-    public static function atomicWrite(string $path, string $contents): void
+    /**
+     * Write a file atomically (temp file + rename). $mode defaults to 0600 for
+     * per-install *.local.php state (credentials, keys, tokens) and 0644 for
+     * everything else; it is applied to the temp file before the rename so the
+     * final file is never briefly world-readable.
+     */
+    public static function atomicWrite(string $path, string $contents, ?int $mode = null): void
     {
+        $mode ??= str_ends_with($path, '.local.php') ? 0600 : 0644;
+
         self::ensureDirectory(dirname($path));
         $tmp = $path . '.' . bin2hex(random_bytes(6)) . '.tmp';
-        $bytes = file_put_contents($tmp, $contents, LOCK_EX);
+        $bytes = @file_put_contents($tmp, $contents, LOCK_EX);
 
         if ($bytes === false) {
-            throw new RuntimeException('Unable to write file: ' . $path);
-        }
-
-        if (!rename($tmp, $path)) {
             @unlink($tmp);
-            throw new RuntimeException('Unable to move temporary file into place: ' . $path);
+            self::fail('Unable to write file:', $path);
         }
 
-        @chmod($path, 0644);
+        @chmod($tmp, $mode);
+        self::$generation++;
+
+        if (!@rename($tmp, $path)) {
+            @unlink($tmp);
+            self::fail('Unable to move temporary file into place:', $path);
+        }
 
         // State (users, config, AI settings, throttle) is persisted as require()d PHP
         // files. Without this, OPcache can keep serving the previously compiled
@@ -42,6 +117,224 @@ final class Filesystem
         if (str_ends_with($path, '.php') && function_exists('opcache_invalidate')) {
             @opcache_invalidate($path, true);
         }
+    }
+
+    /**
+     * Run a read-modify-write of $path under an exclusive flock() on a sibling
+     * .lock file, so two concurrent requests can't lose each other's update.
+     *
+     * @template T
+     * @param callable(): T $fn
+     * @return T
+     */
+    public static function withLock(string $path, callable $fn): mixed
+    {
+        self::ensureDirectory(dirname($path));
+        $handle = @fopen($path . '.lock', 'c');
+        if ($handle === false) {
+            // Locking is best-effort: an unwritable lock file must not block saves.
+            return $fn();
+        }
+
+        try {
+            flock($handle, LOCK_EX);
+            return $fn();
+        } finally {
+            flock($handle, LOCK_UN);
+            fclose($handle);
+        }
+    }
+}
+
+/**
+ * Which file types may be written into the public web root by the importer and
+ * uploads. Anything outside the allowlist is neutralized with a trailing .txt so
+ * a hostile or compromised source site can never plant server-executable files.
+ */
+final class AssetPolicy
+{
+    private const ALLOWED_EXTENSIONS = [
+        // images
+        'jpg', 'jpeg', 'png', 'gif', 'webp', 'avif', 'svg', 'ico', 'bmp', 'tif', 'tiff', 'heic',
+        // fonts
+        'woff', 'woff2', 'ttf', 'otf', 'eot',
+        // styles and scripts
+        'css', 'js', 'mjs', 'map',
+        // audio and video
+        'mp3', 'm4a', 'aac', 'ogg', 'oga', 'opus', 'wav', 'flac', 'mp4', 'm4v', 'mov', 'webm', 'ogv', 'vtt', 'srt',
+        // documents
+        'pdf', 'doc', 'docx', 'xls', 'xlsx', 'ppt', 'pptx', 'odt', 'ods', 'odp', 'rtf', 'csv', 'epub', 'md',
+        // archives
+        'zip', 'gz', 'tgz', 'tar', '7z', 'rar',
+        // feeds and data
+        'xml', 'json', 'txt', 'rss', 'atom',
+    ];
+
+    private const DENIED_EXTENSIONS = [
+        'php', 'php3', 'php4', 'php5', 'php6', 'php7', 'php8', 'phtml', 'pht', 'phar', 'phps', 'inc',
+        'shtml', 'cgi', 'pl', 'py', 'rb', 'sh', 'asp', 'aspx', 'jsp', 'htaccess', 'htpasswd', 'ini',
+    ];
+
+    public const ASSETS_HTACCESS = <<<'APACHE'
+# Written by WYSiteIWYG. Mirrored and uploaded files are data, never code.
+<FilesMatch "\.(?i:php\d?|phtml|pht|phar|phps|inc|shtml|cgi|pl|py|rb|sh|asp|aspx|jsp)$">
+  Require all denied
+</FilesMatch>
+<IfModule mod_php.c>
+  php_flag engine off
+</IfModule>
+<IfModule mod_php7.c>
+  php_flag engine off
+</IfModule>
+<IfModule mod_php8.c>
+  php_flag engine off
+</IfModule>
+Options -ExecCGI
+<IfModule mod_headers.c>
+  <FilesMatch "\.(?i:svg|html?|xml)$">
+    Header set Content-Security-Policy "script-src 'none'; object-src 'none'"
+  </FilesMatch>
+</IfModule>
+
+APACHE;
+
+    public static function isAllowedExtension(string $extension): bool
+    {
+        return in_array(strtolower($extension), self::ALLOWED_EXTENSIONS, true);
+    }
+
+    /**
+     * Make a single filename safe to publish: no leading dots, no executable
+     * extension anywhere in the name (shell.php.png becomes shell-php.png), and a
+     * final extension from the allowlist (otherwise ".txt" is appended).
+     */
+    public static function safeFilename(string $filename): string
+    {
+        $filename = ltrim($filename, '.');
+        if ($filename === '') {
+            return 'file.txt';
+        }
+
+        $parts = explode('.', $filename);
+        $extension = count($parts) > 1 ? strtolower((string) array_pop($parts)) : '';
+        $stem = '';
+        foreach ($parts as $index => $part) {
+            if ($index === 0) {
+                $stem = $part;
+                continue;
+            }
+            $stem .= (in_array(strtolower($part), self::DENIED_EXTENSIONS, true) ? '-' : '.') . $part;
+        }
+
+        if ($extension === '') {
+            return $stem . '.txt';
+        }
+
+        // A disallowed extension is folded into the stem rather than kept before
+        // .txt: Apache's AddHandler matches any extension in a name, so
+        // shell.php.txt could still run as PHP; shell-php.txt cannot.
+        return self::isAllowedExtension($extension)
+            ? $stem . '.' . $extension
+            : $stem . '-' . $extension . '.txt';
+    }
+
+    /** Apply safeFilename() to the last segment of a root-relative path. */
+    public static function safeRelativePath(string $relativePath): string
+    {
+        $segments = explode('/', $relativePath);
+        $last = array_pop($segments);
+        $segments[] = self::safeFilename((string) $last);
+        return implode('/', $segments);
+    }
+
+    /** Create <root>/assets/.htaccess (PHP off, scripts blocked in SVG/HTML) if missing. */
+    public static function ensureAssetsHtaccess(string $rootPath): void
+    {
+        $path = rtrim($rootPath, '/') . '/assets/.htaccess';
+        if (is_file($path)) {
+            return;
+        }
+
+        Filesystem::atomicWrite($path, self::ASSETS_HTACCESS);
+    }
+}
+
+/**
+ * First-run setup token. Until an administrator exists, anyone who can reach
+ * /edit/ could otherwise claim the site; the install form instead requires a
+ * random token written to edit/storage/install-token.local.php (or supplied via
+ * the WYSITE_INSTALL_TOKEN environment variable). Reading it proves filesystem
+ * access to the server.
+ */
+final class InstallToken
+{
+    public const RELATIVE_PATH = 'edit/storage/install-token.local.php';
+
+    private string $path;
+
+    public function __construct(string $path)
+    {
+        $this->path = $path;
+    }
+
+    /** Create the token file if it doesn't exist yet (no-op when the env var is set). */
+    public function ensure(): void
+    {
+        if ($this->environmentToken() !== '' || $this->storedToken() !== '') {
+            return;
+        }
+
+        $token = bin2hex(random_bytes(16));
+        $payload = "<?php\n// WYSiteIWYG first-run setup token. Enter it on the install page;\n" .
+            "// this file is deleted once the first administrator is created.\nreturn " . var_export($token, true) . ";\n";
+        Filesystem::atomicWrite($this->path, $payload, 0600);
+    }
+
+    public function verify(string $given): bool
+    {
+        $given = trim($given);
+        if ($given === '') {
+            return false;
+        }
+
+        foreach ([$this->environmentToken(), $this->storedToken()] as $expected) {
+            if ($expected !== '' && hash_equals($expected, $given)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    public function usesEnvironment(): bool
+    {
+        return $this->environmentToken() !== '';
+    }
+
+    public function clear(): void
+    {
+        if (is_file($this->path)) {
+            @unlink($this->path);
+        }
+    }
+
+    private function environmentToken(): string
+    {
+        $value = getenv('WYSITE_INSTALL_TOKEN');
+        return is_string($value) ? trim($value) : '';
+    }
+
+    private function storedToken(): string
+    {
+        if (!is_file($this->path)) {
+            return '';
+        }
+
+        if (function_exists('opcache_invalidate')) {
+            @opcache_invalidate($this->path, true);
+        }
+        $value = require $this->path;
+        return is_string($value) ? trim($value) : '';
     }
 }
 
@@ -80,48 +373,81 @@ final class Flash
 
 final class LoginThrottle
 {
+    /** Hard cap on stored buckets so junk usernames can't grow the file forever. */
+    private const MAX_KEYS = 2000;
+
     private string $storePath;
     private int $windowSeconds;
     private int $maxAttempts;
+    private int $maxAttemptsPerIp;
 
-    public function __construct(string $storePath, int $windowSeconds = 900, int $maxAttempts = 8)
+    public function __construct(string $storePath, int $windowSeconds = 900, int $maxAttempts = 8, int $maxAttemptsPerIp = 30)
     {
         $this->storePath = $storePath;
         $this->windowSeconds = $windowSeconds;
         $this->maxAttempts = $maxAttempts;
+        $this->maxAttemptsPerIp = $maxAttemptsPerIp;
     }
 
     public function ensureAllowed(string $username, string $ipAddress): void
     {
         $data = $this->prune($this->load());
-        $record = $data[$this->key($username, $ipAddress)] ?? null;
-        $attempts = (array) ($record['attempts'] ?? []);
+        $userAttempts = (array) ($data[$this->key($username, $ipAddress)]['attempts'] ?? []);
+        $ipAttempts = (array) ($data[$this->ipKey($ipAddress)]['attempts'] ?? []);
 
-        if (count($attempts) >= $this->maxAttempts) {
+        // Two buckets: one per username+IP (a targeted guess) and one per IP
+        // (spraying many usernames from one address).
+        if (count($userAttempts) >= $this->maxAttempts || count($ipAttempts) >= $this->maxAttemptsPerIp) {
             throw new RuntimeException('Too many sign-in attempts. Please wait a few minutes and try again.');
         }
     }
 
     public function recordFailure(string $username, string $ipAddress): void
     {
-        $data = $this->prune($this->load());
-        $key = $this->key($username, $ipAddress);
-        $record = $data[$key] ?? ['attempts' => []];
-        $record['attempts'][] = time();
-        $data[$key] = $record;
-        $this->save($data);
+        Filesystem::withLock($this->storePath, function () use ($username, $ipAddress): void {
+            $data = $this->prune($this->load());
+            $now = time();
+            foreach ([$this->key($username, $ipAddress), $this->ipKey($ipAddress)] as $key) {
+                $record = $data[$key] ?? ['attempts' => []];
+                $record['attempts'][] = $now;
+                $data[$key] = $record;
+            }
+            $this->save($this->cap($data));
+        });
     }
 
     public function clear(string $username, string $ipAddress): void
     {
-        $data = $this->prune($this->load());
-        unset($data[$this->key($username, $ipAddress)]);
-        $this->save($data);
+        Filesystem::withLock($this->storePath, function () use ($username, $ipAddress): void {
+            $data = $this->prune($this->load());
+            unset($data[$this->key($username, $ipAddress)]);
+            $this->save($data);
+        });
     }
 
     private function key(string $username, string $ipAddress): string
     {
         return sha1(strtolower($username) . '|' . $ipAddress);
+    }
+
+    private function ipKey(string $ipAddress): string
+    {
+        return sha1('ip|' . $ipAddress);
+    }
+
+    /** Keep only the most recently active buckets once the cap is exceeded. */
+    private function cap(array $data): array
+    {
+        if (count($data) <= self::MAX_KEYS) {
+            return $data;
+        }
+
+        uasort(
+            $data,
+            static fn(array $left, array $right): int => max((array) ($right['attempts'] ?? [0])) <=> max((array) ($left['attempts'] ?? [0]))
+        );
+
+        return array_slice($data, 0, self::MAX_KEYS, true);
     }
 
     private function prune(array $data): array
@@ -165,9 +491,49 @@ final class LoginThrottle
 
 final class AuthManager
 {
+    /**
+     * Hashes of a throwaway password with the same cost parameters as real ones.
+     * Verifying against one when the username is unknown makes a miss take as long
+     * as a wrong password, so response time doesn't reveal which usernames exist.
+     */
+    private const DUMMY_ARGON2ID_HASH = '$argon2id$v=19$m=65536,t=4,p=1$MXY5cnJuaHdWVXU2TVR0bA$kCBYf4NtGTWxR5EtLUpftcoWhC/BsyEfF1dJJ7aDqig';
+    private const DUMMY_BCRYPT_HASH = '$2y$12$2Y4//kjE4hfXSZmEvMKk/OrE4/5Mw3yUWD5M2JZ/oMPl3lUWsJju6';
+
+    /** Non-secret "an editor may be signed in" hint read by public pages. */
+    public const HINT_COOKIE = 'wysite_editor';
+
     private string $storePath;
     private LoginThrottle $throttle;
     private int $idleTimeout = 28800;
+    private ?string $hintCookiePath = null;
+    private bool $hintCookieSecure = false;
+
+    /**
+     * Enable the editor hint cookie. It is deliberately readable by JavaScript and
+     * carries no credential: it only tells a public page whether it's worth asking
+     * /edit/ for the session status, so ordinary visitors never touch PHP or get a
+     * session cookie.
+     */
+    public function setHintCookie(string $path, bool $secure): void
+    {
+        $this->hintCookiePath = $path;
+        $this->hintCookieSecure = $secure;
+    }
+
+    private function sendHintCookie(bool $signedIn): void
+    {
+        if ($this->hintCookiePath === null || headers_sent()) {
+            return;
+        }
+
+        setcookie(self::HINT_COOKIE, $signedIn ? '1' : '', [
+            'expires' => $signedIn ? 0 : time() - 42000,
+            'path' => $this->hintCookiePath,
+            'secure' => $this->hintCookieSecure,
+            'httponly' => false,
+            'samesite' => 'Lax',
+        ]);
+    }
 
     public function __construct(string $storePath)
     {
@@ -190,17 +556,22 @@ final class AuthManager
         $this->assertUsername($username);
         $this->assertPassword($password);
 
-        $data = [
-            'users' => [
+        $hash = $this->hashPassword($password);
+        $this->mutate(static function (array $data) use ($username, $hash): array {
+            if (!empty($data['users'])) {
+                throw new RuntimeException('WYSiteIWYG is already installed.');
+            }
+
+            $data['users'] = [
                 $username => [
-                    'password_hash' => $this->hashPassword($password),
+                    'password_hash' => $hash,
                     'is_admin' => true,
                     'created_at' => gmdate('c'),
                 ],
-            ],
-        ];
+            ];
 
-        $this->save($data);
+            return $data;
+        });
     }
 
     public function attempt(string $username, string $password): bool
@@ -208,24 +579,44 @@ final class AuthManager
         $ipAddress = $this->clientIpAddress();
         $this->throttle->ensureAllowed($username, $ipAddress);
 
-        $data = $this->load();
-        $user = $data['users'][$username] ?? null;
-
-        if (!$user || !password_verify($password, (string) ($user['password_hash'] ?? ''))) {
+        if (!$this->verifyPassword($username, $password)) {
             $this->throttle->recordFailure($username, $ipAddress);
             return false;
         }
 
+        $user = $this->load()['users'][$username];
         if (password_needs_rehash((string) $user['password_hash'], $this->passwordAlgorithm(), $this->passwordOptions())) {
-            $data['users'][$username]['password_hash'] = $this->hashPassword($password);
-            $this->save($data);
+            $hash = $this->hashPassword($password);
+            $this->mutate(static function (array $data) use ($username, $hash): array {
+                if (isset($data['users'][$username])) {
+                    $data['users'][$username]['password_hash'] = $hash;
+                }
+                return $data;
+            });
         }
 
         $this->throttle->clear($username, $ipAddress);
         session_regenerate_id(true);
         $_SESSION['wysite_user'] = $username;
         $_SESSION['wysite_last_active'] = time();
+        $this->sendHintCookie(true);
         return true;
+    }
+
+    /**
+     * Check a password without signing in (re-authentication before sensitive
+     * account changes). Unknown users are verified against a dummy hash so the
+     * timing matches a wrong password.
+     */
+    public function verifyPassword(string $username, string $password): bool
+    {
+        $user = $this->load()['users'][$username] ?? null;
+        if (!is_array($user)) {
+            password_verify($password, defined('PASSWORD_ARGON2ID') ? self::DUMMY_ARGON2ID_HASH : self::DUMMY_BCRYPT_HASH);
+            return false;
+        }
+
+        return password_verify($password, (string) ($user['password_hash'] ?? ''));
     }
 
     public function currentUser(): ?array
@@ -281,31 +672,63 @@ final class AuthManager
         $this->assertUsername($username);
         $this->assertPassword($password);
 
-        $data = $this->load();
-        if (isset($data['users'][$username])) {
-            throw new RuntimeException('That username already exists.');
-        }
+        $hash = $this->hashPassword($password);
+        $this->mutate(static function (array $data) use ($username, $hash, $isAdmin): array {
+            if (isset($data['users'][$username])) {
+                throw new RuntimeException('That username already exists.');
+            }
 
-        $data['users'][$username] = [
-            'password_hash' => $this->hashPassword($password),
-            'is_admin' => $isAdmin,
-            'created_at' => gmdate('c'),
-        ];
+            $data['users'][$username] = [
+                'password_hash' => $hash,
+                'is_admin' => $isAdmin,
+                'created_at' => gmdate('c'),
+            ];
 
-        $this->save($data);
+            return $data;
+        });
     }
 
     public function updatePassword(string $username, string $password): void
     {
         $this->assertPassword($password);
-        $data = $this->load();
+        $hash = $this->hashPassword($password);
 
-        if (!isset($data['users'][$username])) {
-            throw new RuntimeException('Unknown user account.');
+        $this->mutate(static function (array $data) use ($username, $hash): array {
+            if (!isset($data['users'][$username])) {
+                throw new RuntimeException('Unknown user account.');
+            }
+
+            $data['users'][$username]['password_hash'] = $hash;
+            return $data;
+        });
+    }
+
+    /** Self-service password change: the current password must be supplied. */
+    public function changeOwnPassword(string $username, string $currentPassword, string $newPassword): void
+    {
+        if (!$this->verifyPassword($username, $currentPassword)) {
+            throw new RuntimeException('Your current password was not correct.');
         }
 
-        $data['users'][$username]['password_hash'] = $this->hashPassword($password);
-        $this->save($data);
+        $this->updatePassword($username, $newPassword);
+    }
+
+    /** Promote or demote an account, always keeping at least one administrator. */
+    public function setAdmin(string $username, bool $isAdmin): void
+    {
+        $this->mutate(static function (array $data) use ($username, $isAdmin): array {
+            if (!isset($data['users'][$username])) {
+                throw new RuntimeException('Unknown user account.');
+            }
+
+            $data['users'][$username]['is_admin'] = $isAdmin;
+            $admins = array_filter($data['users'], static fn(array $user): bool => !empty($user['is_admin']));
+            if ($admins === []) {
+                throw new RuntimeException('You must keep at least one administrator account.');
+            }
+
+            return $data;
+        });
     }
 
     public function passwordHashSummary(): array
@@ -318,29 +741,31 @@ final class AuthManager
 
     public function deleteUser(string $username): void
     {
-        $data = $this->load();
-        if (!isset($data['users'][$username])) {
-            throw new RuntimeException('Unknown user account.');
-        }
-
-        $adminCount = 0;
-        foreach ($data['users'] as $user) {
-            if (!empty($user['is_admin'])) {
-                $adminCount++;
+        $this->mutate(static function (array $data) use ($username): array {
+            if (!isset($data['users'][$username])) {
+                throw new RuntimeException('Unknown user account.');
             }
-        }
 
-        if (!empty($data['users'][$username]['is_admin']) && $adminCount < 2) {
-            throw new RuntimeException('You must keep at least one administrator account.');
-        }
+            $adminCount = 0;
+            foreach ($data['users'] as $user) {
+                if (!empty($user['is_admin'])) {
+                    $adminCount++;
+                }
+            }
 
-        unset($data['users'][$username]);
-        $this->save($data);
+            if (!empty($data['users'][$username]['is_admin']) && $adminCount < 2) {
+                throw new RuntimeException('You must keep at least one administrator account.');
+            }
+
+            unset($data['users'][$username]);
+            return $data;
+        });
     }
 
     public function logout(): void
     {
         $_SESSION = [];
+        $this->sendHintCookie(false);
 
         if (ini_get('session.use_cookies')) {
             $params = session_get_cookie_params();
@@ -366,6 +791,14 @@ final class AuthManager
     {
         $payload = "<?php\nreturn " . var_export($data, true) . ";\n";
         Filesystem::atomicWrite($this->storePath, $payload);
+    }
+
+    /** Locked read-modify-write of the user store. */
+    private function mutate(callable $change): void
+    {
+        Filesystem::withLock($this->storePath, function () use ($change): void {
+            $this->save($change($this->load()));
+        });
     }
 
     private function hashPassword(string $password): string
@@ -425,6 +858,16 @@ final class AuthManager
 function h(?string $value): string
 {
     return htmlspecialchars((string) $value, ENT_QUOTES, 'UTF-8');
+}
+
+/**
+ * libxml percent-encodes braces in URL attributes on save, turning
+ * href="{{THEME_CSS_HREF}}" into href="%7B%7BTHEME_CSS_HREF%7D%7D". Put template
+ * placeholder tokens back after any DOM round-trip.
+ */
+function restore_placeholder_tokens(string $html): string
+{
+    return preg_replace('/%7B%7B([A-Z0-9_]+)%7D%7D/i', '{{$1}}', $html) ?? $html;
 }
 
 function redirect(string $url): never
@@ -505,7 +948,7 @@ function send_csp(string $profile): void
             "font-src 'self' data: https: http:; " .
             "media-src 'self' data: https: http:; " .
             "frame-src 'self' https: http: data:; " .
-            "object-src 'none'; base-uri 'self'"
+            "object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'self'"
         );
         return;
     }
@@ -517,17 +960,18 @@ function send_csp(string $profile): void
         "img-src 'self' data:; " .
         "font-src 'self' data: https://fonts.gstatic.com; " .
         "connect-src 'self'; " .
-        "object-src 'none'; base-uri 'self'; form-action 'self'"
+        "object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'self'"
     );
 }
 
 /**
  * SSRF guard shared by the site importer and the AI client: refuse a URL whose
  * host resolves to a private, reserved, loopback, or link-local address (this
- * includes cloud metadata endpoints such as 169.254.169.254). A residual
- * DNS-rebinding window remains between this check and the socket connect.
+ * includes cloud metadata endpoints such as 169.254.169.254). Returns the first
+ * validated IP; connect to it via pin_url() so a DNS-rebinding answer between the
+ * check and the connection can't redirect the request.
  */
-function assert_public_url(string $url): void
+function assert_public_url(string $url): string
 {
     $host = strtolower((string) parse_url($url, PHP_URL_HOST));
     if ($host === '') {
@@ -539,7 +983,7 @@ function assert_public_url(string $url): void
         if (!is_public_ip($literal)) {
             throw new RuntimeException('Refusing to fetch a private or reserved address (' . $literal . ').');
         }
-        return;
+        return $literal;
     }
 
     $ips = resolve_host_ips($host);
@@ -552,6 +996,48 @@ function assert_public_url(string $url): void
             throw new RuntimeException('Refusing to fetch ' . $host . ' — it resolves to a private or reserved address (' . $ip . ').');
         }
     }
+
+    // Prefer IPv4 (more widely routable from shared hosts).
+    foreach ($ips as $ip) {
+        if (filter_var($ip, FILTER_VALIDATE_IP, FILTER_FLAG_IPV4)) {
+            return $ip;
+        }
+    }
+
+    return $ips[0];
+}
+
+/**
+ * Validate $url and describe how to connect to the exact IP that passed the check:
+ * - 'resolve': a CURLOPT_RESOLVE entry ("host:port:ip");
+ * - 'url' / 'host_header' / 'ssl': for PHP streams, the URL with the IP as host,
+ *   the Host header to send, and ssl context options that still verify the
+ *   certificate against the real hostname (SNI + peer_name).
+ *
+ * @return array{ip:string, host:string, port:int, resolve:string, url:string, host_header:string, ssl:array}
+ */
+function pin_url(string $url): array
+{
+    $ip = assert_public_url($url);
+    $parts = parse_url($url);
+    $scheme = strtolower((string) ($parts['scheme'] ?? 'http'));
+    $host = strtolower(trim((string) ($parts['host'] ?? ''), '[]'));
+    $port = (int) ($parts['port'] ?? ($scheme === 'https' ? 443 : 80));
+    $ipHost = str_contains($ip, ':') ? '[' . $ip . ']' : $ip;
+
+    $pinnedUrl = $scheme . '://' . $ipHost . (isset($parts['port']) ? ':' . $port : '')
+        . ($parts['path'] ?? '/') . (isset($parts['query']) ? '?' . $parts['query'] : '');
+    $hostHeader = (str_contains($host, ':') ? '[' . $host . ']' : $host) . (isset($parts['port']) ? ':' . $port : '');
+
+    return [
+        'ip' => $ip,
+        'host' => $host,
+        'port' => $port,
+        'resolve' => $host . ':' . $port . ':' . $ip,
+        'url' => $pinnedUrl,
+        'host_header' => 'Host: ' . $hostHeader,
+        'ssl' => ['peer_name' => $host, 'SNI_enabled' => true, 'verify_peer' => true, 'verify_peer_name' => true],
+    ];
 }
 
 function is_public_ip(string $ip): bool

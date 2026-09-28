@@ -842,3 +842,65 @@ body.wysite-live-banner-visible .pm-dropin--menu {
   background: rgba(0, 0, 0, .06);
   font: 13px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
 }
+
+/* Inline per-row actions (native <details>, no JS). */
+a.wysite-nav__logout {
+  box-sizing: border-box;
+  text-decoration: none;
+  white-space: nowrap;
+}
+
+.wysite-row-action {
+  display: inline-block;
+  vertical-align: top;
+}
+
+.wysite-row-action > summary {
+  list-style: none;
+  cursor: pointer;
+}
+
+.wysite-row-action > summary::-webkit-details-marker {
+  display: none;
+}
+
+.wysite-row-action[open] > summary {
+  outline: 2px solid var(--wysite-accent);
+}
+
+.wysite-row-action > form {
+  margin-top: 10px;
+  min-width: 240px;
+}
+
+.wysite-file-list {
+  max-height: 320px;
+  overflow: auto;
+  margin: 12px 0 18px;
+  padding: 10px 10px 10px 28px;
+  border: 1px solid var(--wysite-line);
+  border-radius: 12px;
+}
+
+.wysite-status {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 800;
+}
+.wysite-status--pass { background: #dcfce7; color: #166534; }
+.wysite-status--warn { background: #fef9c3; color: #854d0e; }
+.wysite-status--fail { background: #fee2e2; color: #991b1b; }
+.wysite-system-summary { margin: 0 0 16px; }
+.wysite-system-summary > summary { cursor: pointer; font-weight: 700; }
+
+.wysite-table-filters { display: flex; flex-wrap: wrap; gap: 8px; }
+.wysite-table-filters input[type="search"] { min-width: 220px; }
+.wysite-url-preview { margin: -4px 0 4px; font-size: 13px; }
+.wysite-url-preview.is-error { color: #b91c1c; }
+.wysite-checklist__items { margin: 0; padding-left: 20px; }
+.wysite-checklist__items li { margin: 4px 0; }
+.wysite-checklist__items li.is-done { text-decoration: line-through; opacity: .6; }
+
+.wysite-inline-form { display: inline-flex; gap: 6px; align-items: center; flex-wrap: wrap; }

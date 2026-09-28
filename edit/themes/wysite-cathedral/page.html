@@ -1,25 +1,27 @@
 <!doctype html>
-<html lang="en">
+<html lang="{{SITE_LANG}}">
 <head>
   <meta charset="utf-8">
   <!-- WYSITE:META title="{{TITLE}}" kind="page" excerpt="{{EXCERPT}}" -->
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>{{TITLE}}</title>
+  <title>{{TITLE}} | {{SITE_NAME}}</title>
   <link rel="stylesheet" href="{{THEME_CSS_HREF}}">
+  {{HEAD_META}}
 </head>
 <body class="{{BODY_CLASS}}">
   <div class="site-shell">
     <header class="site-header">
       <div class="site-header__inner">
         <a class="site-brand" href="/">
+          {{SITE_LOGO}}
           <svg class="site-brand__icon" viewBox="0 0 56 56" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
             <rect x="4" y="4" width="48" height="48" rx="12" fill="rgba(18,35,28,0.92)" stroke="rgba(213,177,96,0.7)"/>
             <path d="M14 16l7 24 7-16 7 16 7-24" stroke="rgba(230,206,149,0.95)" stroke-width="3.2" stroke-linecap="round" stroke-linejoin="round"/>
             <path d="M39 12l2.5 5 5 2.5-5 2.5-2.5 5-2.5-5-5-2.5 5-2.5 2.5-5z" fill="rgba(213,177,96,0.9)"/>
           </svg>
           <span class="site-brand__text">
-            <span class="site-brand__kicker">Static Site Editing</span>
-            <span class="site-brand__title">WYSiteIWYG</span>
+            <span class="site-brand__kicker">{{SITE_TAGLINE}}</span>
+            <span class="site-brand__title">{{SITE_NAME}}</span>
           </span>
         </a>
 
@@ -107,9 +109,9 @@
 
     <footer class="site-footer">
       <div class="site-footer__inner">
-        <p>Published as static HTML and edited in place through <code>/edit/</code>.</p>
+        {{FOOTER}}
         <span class="footer-cross">✦</span>
-        <p><a href="/">WYSiteIWYG · Static HTML editing without a detached CMS database</a></p>
+        <p><a href="/">{{SITE_NAME}}</a></p>
       </div>
     </footer>
   </div>

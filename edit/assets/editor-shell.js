@@ -59,6 +59,7 @@ if (context) {
         rootStyle: blockType === "menu" ? getMenuEditorStyle(slot) : null,
         mountAfterTarget: blockType === "menu" ? getMenuMountAnchor(slot) : null,
         uploadImage: uploadImageFile,
+        linkSuggestions: loadPageIndex,
         onError: (message) => {
           toast(message || "The editor action failed.", true);
         },
@@ -107,6 +108,12 @@ if (context) {
         return;
       }
 
+      const blockInfo = (context.blocks || []).find((block) => block.name === blockName);
+      if (blockInfo?.adminOnly && !context.isAdmin) {
+        toast("This block holds raw HTML and is admin-only.", true);
+        return;
+      }
+
       await openManagedBlockEditor(target, slot, blockName, blockType, target === slot);
       return;
     }
@@ -118,6 +125,10 @@ if (context) {
 
     const domPath = buildDomPath(target);
     const scope = defaultScopeForElement(target);
+    if (scope === "template" && !context.isAdmin) {
+      toast("Template sections are admin-only.", true);
+      return;
+    }
     if (scope === "template" && !confirmTemplateEdit(target)) {
       return;
     }
@@ -127,6 +138,7 @@ if (context) {
       currentInstance = await DropInWysiwyg.mount(target, {
         restoreHTML: target.innerHTML,
         uploadImage: uploadImageFile,
+        linkSuggestions: loadPageIndex,
         onError: (message) => {
           toast(message || "The editor action failed.", true);
         },
@@ -141,8 +153,10 @@ if (context) {
                 scope,
                 domPath,
                 html,
+                baseHash: scope === "page" ? context.fileHash || "" : "",
               }
             );
+            rememberFileHash(payload);
 
             toast(payload.message || "Saved.");
             currentInstance = null;
@@ -247,16 +261,33 @@ if (context) {
     }
   }
 
-  function saveBlock(blockName, html) {
-    return postJson(
+  async function saveBlock(blockName, html) {
+    const payload = await postJson(
       `${context.appUrl}/index.php?action=save-block`,
       {
         csrfToken: context.csrfToken,
         path: context.pagePath,
         name: blockName,
         html,
+        baseHash: context.fileHash || "",
       }
     );
+    rememberFileHash(payload);
+    return payload;
+  }
+
+  // Pages for the editor's link picker (NAV-1), fetched once per preview.
+  let pageIndexPromise = null;
+  function loadPageIndex() {
+    pageIndexPromise ??= fetchJson(`${context.appUrl}/index.php?action=pages-index`).then((data) => data.pages || []);
+    return pageIndexPromise;
+  }
+
+  // Track the saved file's hash so the next save can detect a concurrent edit.
+  function rememberFileHash(payload) {
+    if (payload && typeof payload.fileHash === "string") {
+      context.fileHash = payload.fileHash;
+    }
   }
 
   async function fetchJson(url, options = {}) {
@@ -449,13 +480,15 @@ if (context) {
     const scope = element.closest("[data-wysite-edit-slot]")
       ? "Managed block"
       : defaultScopeForElement(element) === "template"
-        ? `Active template (${escapeHtml(context.activeTemplatePath || "template")})`
+        ? context.isAdmin
+          ? `Active template (${escapeHtml(context.activeTemplatePath || "template")})`
+          : "Template section (admin-only)"
         : "This page section";
 
     return `
       <div><strong>${escapeHtml(tag)}</strong>${id ? ` <span>${id}</span>` : ""}${classes ? ` <span>${classes}</span>` : ""}</div>
       <div>${Math.round(rect.width)} x ${Math.round(rect.height)} · ${scope}</div>
-      <div>Click to edit this section</div>
+      <div>${defaultScopeForElement(element) === "template" && !context.isAdmin && !element.closest("[data-wysite-edit-slot]") ? "Template sections are admin-only" : "Click to edit this section"}</div>
     `;
   }
 

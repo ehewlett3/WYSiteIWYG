@@ -19,21 +19,35 @@ final class BlockRepository
 
     private string $rootPath;
     private string $editPath;
+    private SitePath $sitePath;
 
     public function __construct(string $rootPath, string $editPath)
     {
         $this->rootPath = rtrim($rootPath, '/');
         $this->editPath = rtrim($editPath, '/');
+        $this->sitePath = new SitePath($this->rootPath, $this->editPath);
     }
 
+    public function sitePath(): SitePath
+    {
+        return $this->sitePath;
+    }
+
+    /** @var array{generation:int, pages:array}|null */
+    private ?array $pagesCache = null;
+
+    /**
+     * Every managed page. Memoized until the next file write in this request
+     * (Filesystem::generation), since rebuilds call it many times (BLOG-9).
+     */
     public function listPages(): array
     {
-        $pages = [];
-        $iterator = new RecursiveIteratorIterator(
-            new RecursiveDirectoryIterator($this->rootPath, FilesystemIterator::SKIP_DOTS)
-        );
+        if ($this->pagesCache !== null && $this->pagesCache['generation'] === Filesystem::generation()) {
+            return $this->pagesCache['pages'];
+        }
 
-        foreach ($iterator as $file) {
+        $pages = [];
+        foreach ($this->siteFiles() as $file) {
             if (!$file->isFile()) {
                 continue;
             }
@@ -73,6 +87,10 @@ final class BlockRepository
                 'generated' => $metadata['generated'] ?? '',
                 'exclude_template' => ($metadata['exclude_template'] ?? '') === '1',
                 'demo' => ($metadata['demo'] ?? '') === '1',
+                'paged' => (string) ($metadata['paged'] ?? ''),
+                'status' => (string) ($metadata['status'] ?? ''),
+                'author' => (string) ($metadata['author'] ?? ''),
+                'image' => (string) ($metadata['image'] ?? ''),
                 'blocks' => array_map(
                     static fn(array $block): array => [
                         'name' => $block['name'],
@@ -89,17 +107,18 @@ final class BlockRepository
             static fn(array $left, array $right): int => strcmp($left['path'], $right['path'])
         );
 
+        $this->pagesCache = ['generation' => Filesystem::generation(), 'pages' => $pages];
         return $pages;
     }
 
-    public function listImportCandidates(): array
+    /**
+     * Unmanaged HTML files. With $includeRedirects, WYSiteIWYG's own redirect
+     * stubs are listed too (flagged 'redirect' => true).
+     */
+    public function listImportCandidates(bool $includeRedirects = false): array
     {
         $pages = [];
-        $iterator = new RecursiveIteratorIterator(
-            new RecursiveDirectoryIterator($this->rootPath, FilesystemIterator::SKIP_DOTS)
-        );
-
-        foreach ($iterator as $file) {
+        foreach ($this->siteFiles() as $file) {
             if (!$file->isFile()) {
                 continue;
             }
@@ -115,11 +134,17 @@ final class BlockRepository
             }
 
             $html = (string) file_get_contents($fullPath);
-            if ($this->parseBlocks($html) !== []) {
+            // Managed pages and WYSiteIWYG's own redirect stubs aren't candidates.
+            $isRedirect = str_contains($html, 'WYSITE:REDIRECT');
+            if ($this->parseBlocks($html) !== [] || ($isRedirect && !$includeRedirects)) {
                 continue;
             }
 
             $relativePath = $this->relativeFromRoot($fullPath);
+            if ($isRedirect) {
+                $pages[] = ['path' => $relativePath, 'url' => $this->relativeToUrl($relativePath), 'title' => 'Redirect', 'excerpt' => '', 'redirect' => true];
+                continue;
+            }
             $metadata = $this->extractMetadata($html);
 
             $pages[] = [
@@ -138,13 +163,44 @@ final class BlockRepository
         return $pages;
     }
 
+    /** Draft pages (not public), newest first. */
+    public function listDrafts(): array
+    {
+        $base = $this->sitePath->draftsPath();
+        if (!is_dir($base)) {
+            return [];
+        }
+
+        $drafts = [];
+        $iterator = new RecursiveIteratorIterator(new RecursiveDirectoryIterator($base, FilesystemIterator::SKIP_DOTS));
+        foreach ($iterator as $file) {
+            if (!$file->isFile() || preg_match('/\.html?$/i', $file->getFilename()) !== 1) {
+                continue;
+            }
+            $html = (string) file_get_contents($file->getPathname());
+            $meta = $this->extractMetadata($html);
+            $relative = $this->relativeFromRoot(str_replace('\\', '/', $file->getPathname()));
+            $drafts[] = [
+                'path' => $relative,
+                'public_path' => SitePath::publicPath($relative),
+                'title' => $meta['title'] ?? basename($relative),
+                'kind' => (string) ($meta['kind'] ?? 'page'),
+                'publish_at' => (string) ($meta['publish_at'] ?? ''),
+                'modified' => (int) $file->getMTime(),
+            ];
+        }
+
+        usort($drafts, static fn(array $a, array $b): int => $b['modified'] <=> $a['modified']);
+        return $drafts;
+    }
+
     public function listBlogPosts(?string $tag = null): array
     {
         $posts = [];
         $tag = $tag !== null ? $this->normalizeTag($tag) : null;
 
         foreach ($this->listPages() as $page) {
-            if (($page['tags'] ?? []) === []) {
+            if (($page['tags'] ?? []) === [] || $page['status'] === 'draft' || $page['kind'] !== 'blog-post' && $page['kind'] !== 'page') {
                 continue;
             }
 
@@ -160,6 +216,8 @@ final class BlockRepository
                 'date' => $page['date'] ?? '',
                 'hashtags' => $page['hashtags'] ?? '',
                 'tags' => $page['tags'] ?? [],
+                'author' => $page['author'],
+                'image' => $page['image'],
             ];
         }
 
@@ -191,7 +249,7 @@ final class BlockRepository
             'html' => $html,
             'blocks' => $blocks,
             'meta' => $meta,
-            'kind' => $this->inferKind($relativePath, $blockTypes, $meta),
+            'kind' => $this->inferKind($this->relativeFromRoot($fullPath), $blockTypes, $meta),
         ];
     }
 
@@ -218,9 +276,16 @@ final class BlockRepository
         ];
     }
 
+    /** Names of blocks an admin marked "raw HTML, admin-only" (META admin_blocks). */
+    public function adminOnlyBlocks(array $meta): array
+    {
+        return array_values(array_filter(array_map('trim', explode(',', (string) ($meta['admin_blocks'] ?? '')))));
+    }
+
     public function getBlock(string $relativePath, string $blockName): array
     {
         $page = $this->getPage($relativePath);
+        $adminOnly = $this->adminOnlyBlocks($page['meta']);
         foreach ($page['blocks'] as $block) {
             if ($block['name'] === $blockName) {
                 return [
@@ -228,6 +293,7 @@ final class BlockRepository
                     'type' => $block['type'],
                     'label' => $block['label'],
                     'content' => $block['content'],
+                    'admin_only' => in_array($block['name'], $adminOnly, true),
                 ];
             }
         }
@@ -248,7 +314,7 @@ final class BlockRepository
 
             $replacement = $block['start_comment'] . "\n" . trim($newContent) . "\n" . $block['end_comment'];
             $updated = substr_replace($html, $replacement, $block['offset'], $block['length']);
-            Filesystem::atomicWrite($fullPath, $updated);
+            Filesystem::writeSitePage($fullPath, $updated);
             return;
         }
 
@@ -271,7 +337,7 @@ final class BlockRepository
 
             $replacement = $block['start_comment'] . "\n" . trim($newContent) . "\n" . $block['end_comment'];
             $updated = substr_replace($html, $replacement, $block['offset'], $block['length']);
-            Filesystem::atomicWrite($fullPath, $updated);
+            Filesystem::writeSitePage($fullPath, $updated);
             return;
         }
 
@@ -284,7 +350,7 @@ final class BlockRepository
 
         if (str_starts_with($clean, 'edit/templates/')) {
             $templatePath = substr($clean, strlen('edit/templates/'));
-            if ($templatePath === '' || str_contains($templatePath, '../')) {
+            if (!in_array($templatePath, self::ACTIVE_TEMPLATE_FILES, true)) {
                 throw new RuntimeException('Unsafe template path requested.');
             }
 
@@ -297,6 +363,19 @@ final class BlockRepository
     public function activeTemplateRelativePath(string $kind): string
     {
         return 'edit/templates/' . $this->activeTemplateFilename($kind);
+    }
+
+    /**
+     * The active template kind a page kind actually renders with: 'home' uses
+     * edit/templates/home.html when the applied theme published one, else 'page'.
+     */
+    public function effectiveTemplateKind(string $kind): string
+    {
+        if ($kind === 'home' && !is_file($this->editPath . '/templates/home.html')) {
+            return 'page';
+        }
+
+        return $kind;
     }
 
     public function loadActiveTemplate(string $kind): string
@@ -323,7 +402,7 @@ final class BlockRepository
 
     public function updateSelectedElementInActiveTemplate(string $kind, array $domPath, string $newInnerHtml): string
     {
-        $filename = $this->activeTemplateFilename($kind);
+        $filename = $this->activeTemplateFilename($this->effectiveTemplateKind($kind));
         $relativePath = 'edit/templates/' . $filename;
         $fullPath = $this->editPath . '/templates/' . $filename;
 
@@ -360,7 +439,7 @@ final class BlockRepository
             $html = $comment . "\n" . $html;
         }
 
-        Filesystem::atomicWrite($fullPath, $html);
+        Filesystem::writeSitePage($fullPath, $html);
     }
 
     public function relativeFromRequestPath(string $requestPath): ?string
@@ -387,15 +466,19 @@ final class BlockRepository
         }
 
         foreach ($candidates as $candidate) {
-            if (is_file($this->resolvePath($candidate))) {
-                return $candidate;
+            try {
+                if (is_file($this->resolvePath($candidate))) {
+                    return $candidate;
+                }
+            } catch (RuntimeException) {
+                continue;
             }
         }
 
         return null;
     }
 
-    public function renderPreviewHtml(string $relativePath, string $appUrl, string $siteBaseUrl, string $csrfToken, string $username, string $nonce = ''): string
+    public function renderPreviewHtml(string $relativePath, string $appUrl, string $siteBaseUrl, string $csrfToken, string $username, string $nonce = '', array $extraContext = []): string
     {
         $page = $this->getPage($relativePath);
         return $this->renderPreviewHtmlFromSource(
@@ -405,11 +488,12 @@ final class BlockRepository
             $siteBaseUrl,
             $csrfToken,
             $username,
-            [
+            array_merge([
                 'pageKind' => $page['kind'],
-                'activeTemplatePath' => $this->activeTemplateRelativePath($page['kind']),
+                'activeTemplatePath' => $this->activeTemplateRelativePath($this->effectiveTemplateKind($page['kind'])),
                 'selectionSaveEnabled' => true,
-            ],
+                'fileHash' => sha1($page['html']),
+            ], $extraContext),
             $nonce
         );
     }
@@ -440,10 +524,11 @@ final class BlockRepository
             'csrfToken' => $csrfToken,
             'username' => $username,
             'blocks' => array_map(
-                static fn(array $block): array => [
+                fn(array $block): array => [
                     'name' => $block['name'],
                     'type' => $block['type'],
                     'label' => $block['label'],
+                    'adminOnly' => in_array($block['name'], $this->adminOnlyBlocks($this->extractMetadata($html)), true),
                 ],
                 $blocks
             ),
@@ -495,28 +580,15 @@ final class BlockRepository
         return $html;
     }
 
+    /** Absolute path for a public page that may not exist yet (see SitePath). */
     public function resolvePath(string $relativePath): string
     {
-        $clean = trim(str_replace('\\', '/', $relativePath), '/');
-        if ($clean === '') {
-            $clean = 'index.html';
-        }
-
-        if (str_contains($clean, '../') || str_starts_with($clean, 'edit/')) {
-            throw new RuntimeException('Unsafe path requested.');
-        }
-
-        return $this->rootPath . '/' . $clean;
+        return $this->sitePath->resolvePage($relativePath, false);
     }
 
     private function resolveExistingPath(string $relativePath): string
     {
-        $fullPath = $this->resolvePath($relativePath);
-        if (!is_file($fullPath)) {
-            throw new RuntimeException('Page not found: ' . $relativePath);
-        }
-
-        return $fullPath;
+        return $this->sitePath->resolvePage($relativePath, true);
     }
 
     private function shouldSkip(string $fullPath): bool
@@ -525,7 +597,64 @@ final class BlockRepository
             return true;
         }
 
+        $relative = $this->relativeFromRoot($fullPath);
+        foreach ($this->excludedPaths as $excluded) {
+            if ($relative === $excluded || str_starts_with($relative, $excluded . '/')) {
+                return true;
+            }
+        }
+
         return false;
+    }
+
+    /** @var string[] root-relative folders left out of page scans (Site settings). */
+    private array $excludedPaths = [];
+
+    public function setExcludedPaths(array $paths): void
+    {
+        $this->excludedPaths = array_values(array_filter(array_map(
+            static fn($path): string => trim(str_replace('\\', '/', (string) $path), '/'),
+            $paths
+        ), static fn(string $path): bool => $path !== ''));
+        $this->pagesCache = null;
+    }
+
+    /**
+     * .html/.htm files that can be site pages: skips dot-directories (.git, ...),
+     * the editor, assets/, and folders excluded in Site settings (DROP-5).
+     *
+     * @return iterable<\SplFileInfo>
+     */
+    private function siteFiles(): iterable
+    {
+        $root = $this->rootPath;
+        $excluded = $this->excludedPaths;
+        $filter = new \RecursiveCallbackFilterIterator(
+            new RecursiveDirectoryIterator($root, FilesystemIterator::SKIP_DOTS),
+            static function (\SplFileInfo $file) use ($root, $excluded): bool {
+                $name = $file->getFilename();
+                if (str_starts_with($name, '.')) {
+                    return false;
+                }
+
+                $relative = ltrim(substr(str_replace('\\', '/', $file->getPathname()), strlen($root)), '/');
+                if ($file->isDir()) {
+                    if (in_array($relative, ['edit', 'assets'], true)) {
+                        return false;
+                    }
+                    foreach ($excluded as $path) {
+                        if ($relative === $path || str_starts_with($relative, $path . '/')) {
+                            return false;
+                        }
+                    }
+                    return true;
+                }
+
+                return preg_match('/\.html?$/i', $name) === 1;
+            }
+        );
+
+        return new RecursiveIteratorIterator($filter);
     }
 
     private function activeTemplateFilename(string $kind): string
@@ -556,14 +685,60 @@ final class BlockRepository
         }
 
         $element = $this->elementFromDomPath($dom, $domPath);
+        // Never let a PHP open tag reach a saved file, whichever path writes it.
+        $newInnerHtml = str_replace('<?', '&lt;?', $newInnerHtml);
+
+        // Preferred: splice only the element's inner bytes so everything else in
+        // the file (doctype, template tokens, HTML5 markup, formatting) is untouched.
+        $range = $this->sourceRangeForElement($dom, $element, $html);
+        if ($range !== null) {
+            $updated = substr_replace($html, $newInnerHtml, $range[0], $range[1] - $range[0]);
+            Filesystem::writeSitePage($fullPath, $updated);
+            return;
+        }
+
+        // Fallback when the source can't be mapped unambiguously (e.g. libxml
+        // inferred an element the file doesn't spell out): re-serialize through the
+        // DOM, but keep the original doctype line and template tokens.
         $this->replaceInnerHtml($dom, $element, $newInnerHtml);
 
-        $updated = $this->stripDomEncodingHack($dom->saveHTML() ?: '');
+        $updated = restore_placeholder_tokens($this->stripDomEncodingHack($dom->saveHTML() ?: ''));
         if (trim($updated) === '') {
             throw new RuntimeException('Selector-based editing produced an empty document for ' . $label . '.');
         }
 
-        Filesystem::atomicWrite($fullPath, $updated);
+        $updated = preg_replace('/^\s*<!DOCTYPE[^>]*>\s*/i', '', $updated) ?? $updated;
+        if (preg_match('/^\s*(<!doctype[^>]*>)(\s*)/i', $html, $doctype) === 1) {
+            $updated = $doctype[1] . $doctype[2] . $updated;
+        }
+
+        Filesystem::writeSitePage($fullPath, $updated);
+    }
+
+    /**
+     * Byte range of $element's inner HTML in the original $html, located by its
+     * position among same-named elements. Null when the source and the parsed DOM
+     * disagree on how many such elements exist.
+     *
+     * @return array{0:int, 1:int}|null
+     */
+    private function sourceRangeForElement(\DOMDocument $dom, \DOMElement $element, string $html): ?array
+    {
+        $tag = strtolower($element->tagName);
+        $ordinal = null;
+        $count = 0;
+        foreach ($dom->getElementsByTagName($tag) as $index => $candidate) {
+            if ($candidate === $element) {
+                $ordinal = $index;
+            }
+            $count++;
+        }
+
+        if ($ordinal === null || HtmlSource::countStartTags($html, $tag) !== $count) {
+            return null;
+        }
+
+        return HtmlSource::innerRange($html, $tag, $ordinal);
     }
 
     private function elementFromDomPath(\DOMDocument $dom, array $domPath): \DOMElement
@@ -648,6 +823,12 @@ final class BlockRepository
             return;
         }
 
+        // libxml keeps PHP open/close tags as processing instructions on re-serialization,
+        // which would plant executable code in the saved file. Never import them.
+        foreach (iterator_to_array((new \DOMXPath($fragment))->query('//processing-instruction()') ?: []) as $pi) {
+            $pi->parentNode?->removeChild($pi);
+        }
+
         $children = [];
         foreach ($body->childNodes as $child) {
             $children[] = $child;
@@ -670,12 +851,22 @@ final class BlockRepository
 
     private function inferKind(string $relativePath, array $blockTypes, array $metadata = []): string
     {
-        if (($metadata['tags'] ?? []) !== []) {
-            return 'blog-post';
+        $explicit = (string) ($metadata['kind'] ?? '');
+
+        // The site's root index.html is the homepage. Home renders with a theme's
+        // home template when there is one and falls back to the page template, so
+        // this is output-identical for sites without one.
+        if ($relativePath === 'index.html' && ($explicit === '' || $explicit === 'page') && ($metadata['tags'] ?? []) === []) {
+            return 'home';
         }
 
-        if (!empty($metadata['kind'])) {
-            return (string) $metadata['kind'];
+        if ($explicit !== '') {
+            return $explicit;
+        }
+
+        // Legacy pages without an explicit kind: hashtags meant "post".
+        if (($metadata['tags'] ?? []) !== []) {
+            return 'blog-post';
         }
 
         if (in_array('blog-post', $blockTypes, true)) {
@@ -695,7 +886,13 @@ final class BlockRepository
 
     private function relativeFromRoot(string $fullPath): string
     {
-        return ltrim(substr(str_replace('\\', '/', $fullPath), strlen($this->rootPath)), '/');
+        return $this->sitePath->relativeFor($fullPath);
+    }
+
+    /** Site-relative clean URL for a page path ("about/team.html" -> "/about/team/"). */
+    public function publicUrlForPath(string $relativePath): string
+    {
+        return $this->relativeToUrl($relativePath);
     }
 
     private function relativeToUrl(string $relativePath): string

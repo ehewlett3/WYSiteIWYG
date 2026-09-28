@@ -706,3 +706,9 @@ blockquote {
   .hero h1 { font-size: 2.2rem; }
   .panel, .sidebar-panel { padding: 20px 18px; }
 }
+
+/* Site settings: optional logo (Site settings > Logo). */
+.site-logo { display: block; max-height: 48px; width: auto; }
+.post-meta { margin: .25rem 0 .75rem; font-size: .95rem; opacity: .8; letter-spacing: .02em; }
+.pagination { display: flex; flex-wrap: wrap; gap: 1rem; align-items: center; justify-content: center; margin: 2rem 0; }
+.blog-card__image img { display: block; width: 100%; height: auto; border-radius: inherit; margin-bottom: .75rem; }

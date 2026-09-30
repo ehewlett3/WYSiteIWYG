@@ -57,6 +57,7 @@
       // The server works in short batches (WP-7): keep posting the job id back
       // until it reports the import is complete.
       let finished = false;
+      let retries = 0;
       while (!finished) {
         const data = new FormData(form);
         data.append("progress_stream", "1");
@@ -65,43 +66,73 @@
         }
         batchState.next = "";
         batchState.finished = false;
+        batchState.job = jobId;
+        batchState.progressed = false;
 
-        const response = await fetch(form.action, {
-          method: "POST",
-          credentials: "same-origin",
-          body: data,
-          headers: { Accept: "application/x-ndjson" },
-        });
-        if (!response.ok || !response.body) {
-          throw new Error("Import request failed." + (jobId ? " You can resume it from the Manager." : ""));
-        }
-
-        const reader = response.body.getReader();
-        const decoder = new TextDecoder();
-        let buffer = "";
-        while (true) {
-          const chunk = await reader.read();
-          if (chunk.done) {
-            break;
+        let response;
+        try {
+          response = await fetch(form.action, {
+            method: "POST",
+            credentials: "same-origin",
+            body: data,
+            headers: { Accept: "application/x-ndjson" },
+          });
+          if (!response.ok || !response.body) {
+            throw new Error("Import request failed (HTTP " + response.status + ").");
           }
 
-          buffer += decoder.decode(chunk.value, { stream: true });
-          const lines = buffer.split("\n");
-          buffer = lines.pop() || "";
-          lines.forEach(readLine);
-        }
+          const reader = response.body.getReader();
+          const decoder = new TextDecoder();
+          let buffer = "";
+          while (true) {
+            const chunk = await reader.read();
+            if (chunk.done) {
+              break;
+            }
 
-        if (buffer.trim() !== "") {
-          readLine(buffer);
+            buffer += decoder.decode(chunk.value, { stream: true });
+            const lines = buffer.split("\n");
+            buffer = lines.pop() || "";
+            lines.forEach(readLine);
+          }
+
+          if (buffer.trim() !== "") {
+            readLine(buffer);
+          }
+        } catch (error) {
+          // A host or proxy time limit can cut a long batch off mid-stream. The
+          // server checkpoints the job between URLs, so resume it a few times.
+          jobId = batchState.job || jobId;
+          if (batchState.progressed) {
+            retries = 0;
+          }
+          if (!jobId || retries >= maxBatchRetries) {
+            throw new Error((error.message || "Import request failed.") + (jobId ? " You can resume it from the Manager." : ""));
+          }
+          retries++;
+          appendLog("Connection lost (" + (error.message || "network error") + "); resuming in " + retries * 3 + "s (attempt " + retries + " of " + maxBatchRetries + ")...");
+          await new Promise((resolve) => setTimeout(resolve, retries * 3000));
+          continue;
         }
 
         if (batchState.next) {
           jobId = batchState.next;
+          retries = 0;
+        } else if (batchState.finished) {
+          finished = true;
+        } else if (batchState.job && (batchState.progressed || retries < maxBatchRetries)) {
+          if (batchState.progressed) {
+            retries = 0;
+          }
+          // The response ended without "batch_done" or "done": the batch was cut off.
+          retries++;
+          jobId = batchState.job;
+          appendLog("The server stopped mid-batch; resuming in " + retries * 3 + "s (attempt " + retries + " of " + maxBatchRetries + ")...");
+          await new Promise((resolve) => setTimeout(resolve, retries * 3000));
         } else {
           finished = true;
-          if (!batchState.finished) {
-            appendLog("The import stopped early. Reload the Manager to resume it.");
-          }
+          appendLog("The import stopped early. Reload the Manager to resume it.");
+          setStatus("Import stopped before it could finish.");
         }
       }
     } catch (error) {
@@ -128,10 +159,17 @@
     }
   }
 
-  const batchState = { next: "", finished: false };
+  const batchState = { next: "", finished: false, job: "", progressed: false };
+  const maxBatchRetries = 3;
 
   function handleEvent(event) {
     updateCounts(event);
+    if (event.job) {
+      batchState.job = event.job;
+    }
+    if (event.type === "page_saved" || event.type === "resource_saved" || event.type === "page_failed") {
+      batchState.progressed = true;
+    }
     if (event.type === "batch_done" && event.job) {
       batchState.next = event.job;
     }

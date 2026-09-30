@@ -12,6 +12,7 @@ use RuntimeException;
 final class ExternalSiteImporter
 {
     private const IMPORT_EXECUTION_SECONDS = 900;
+    private const MAX_INTERRUPTED_ATTEMPTS = 2;
     private const HTML_FETCH_TIMEOUT_SECONDS = 10;
     private const ASSET_FETCH_TIMEOUT_SECONDS = 8;
     private const LARGE_ASSET_FETCH_TIMEOUT_SECONDS = 180;
@@ -500,6 +501,23 @@ final class ExternalSiteImporter
                 $progress('resume', ['url' => $startUrl]);
             }
 
+            // A previous batch was cut off (host/proxy time limit, dropped
+            // connection) while working on this URL: retry it once, then give up
+            // on it so one slow page can't stall the whole import.
+            $interrupted = (string) ($state['in_progress'] ?? '');
+            $state['in_progress'] = '';
+            if ($interrupted !== '') {
+                $attempts = (int) ($state['interrupted'][$interrupted] ?? 0) + 1;
+                $state['interrupted'][$interrupted] = $attempts;
+                if ($attempts >= self::MAX_INTERRUPTED_ATTEMPTS) {
+                    $failed[] = $interrupted . ' - The server stopped twice while importing this URL (likely a host time limit).';
+                    $progress('page_failed', ['url' => $interrupted, 'message' => 'Gave up after the server stopped twice while importing it.']);
+                } else {
+                    unset($seen[$interrupted]);
+                    array_unshift($queue, $interrupted);
+                }
+            }
+
             while ($queue !== [] && ($maxSeconds <= 0 || (microtime(true) - $started) < $maxSeconds)) {
                 $this->refreshExecutionBudget();
 
@@ -516,6 +534,12 @@ final class ExternalSiteImporter
                 }
 
                 $seen[$url] = true;
+                // Checkpoint before each URL so an interrupted batch resumes here
+                // instead of repeating everything since the last batch.
+                $state['in_progress'] = $url;
+                $state['bytes_used'] = $this->bytesUsed;
+                $state['updated_at'] = gmdate('c');
+                $this->saveJob($id, $state);
                 $progress('page_start', ['url' => $url]);
 
                 try {
@@ -628,6 +652,7 @@ final class ExternalSiteImporter
                 }
             }
 
+            $state['in_progress'] = '';
             if ($queue !== []) {
                 $state['bytes_used'] = $this->bytesUsed;
                 $state['updated_at'] = gmdate('c');

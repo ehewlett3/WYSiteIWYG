@@ -118,3 +118,32 @@ test('Import skips unfilled theme placeholder URLs', function (): void {
     assert_true(call_private($importer, 'isNonEssentialWordPressUrl', 'https://ex.com/page/%5Bthrive_page_number%5D/'));
     assert_false(call_private($importer, 'isNonEssentialWordPressUrl', 'https://ex.com/about/page/2/'));
 });
+
+test('An interrupted import retries the URL in progress once, then records it as failed', function (): void {
+    $root = scratch_dir();
+    mkdir($root . '/edit/storage', 0775, true);
+    $importer = new ExternalSiteImporter($root, $root . '/edit');
+    $slow = 'https://ex.invalid/slow/';
+
+    $id = $importer->startImportJob('https://ex.invalid/', 5);
+    $state = call_private($importer, 'loadJob', $id);
+    $state['in_progress'] = $slow;
+    $state['seen'][$slow] = true;
+    call_private($importer, 'saveJob', $id, $state);
+    $started = [];
+    $importer->runImportJob($id, 0, function (array $event) use (&$started): void {
+        if ($event['type'] === 'page_start') {
+            $started[] = $event['url'];
+        }
+    });
+    assert_same($slow, $started[0] ?? null, 'first interruption: the URL is retried first');
+
+    $id = $importer->startImportJob('https://ex.invalid/', 5);
+    $state = call_private($importer, 'loadJob', $id);
+    $state['in_progress'] = $slow;
+    $state['interrupted'] = [$slow => 1];
+    call_private($importer, 'saveJob', $id, $state);
+    $result = $importer->runImportJob($id, 0)['result'];
+    $slowFailures = array_filter($result['failed'], static fn(string $f): bool => str_starts_with($f, $slow . ' - The server stopped twice'));
+    assert_same(1, count($slowFailures), 'second interruption: recorded as failed, not retried');
+});

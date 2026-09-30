@@ -22,6 +22,7 @@ WYSiteIWYG is a PHP-powered static site editor that lives entirely inside the si
 - One shared menu, with the current page's link marked `aria-current="page"`.
 - Theme preview (any page) and apply. Per-theme colour/font **customization**, an optional **Home** template, and blog templates synthesized from a theme's page template when it has none. A theme's `assets/` folder is published to `/assets/theme/<id>/`.
 - Builds a theme from imported pages by tagging their menu/content regions (optionally AI-assisted with your own API key).
+- Optionally designs a whole new theme with AI from a brief, sample sites, and screenshots ("make it look like this"). It uses your own Anthropic or OpenAI-compatible API key, and you choose a model per task: a fast one for region detection, a capable one for theme design.
 
 **Migration from WordPress**
 - **Import a WordPress export** (Tools → Export → All content): posts, pages, dates, tags, authors, excerpts, drafts and permalinks, with media mirrored locally.
@@ -34,6 +35,8 @@ WYSiteIWYG is a PHP-powered static site editor that lives entirely inside the si
 - Hardened sessions, throttled sign-in, re-authentication for account changes, a strict CSP, SSRF protection with DNS pinning on every outbound fetch, `0600` storage files, and an `.htaccess` that stops `/assets/` from ever executing PHP.
 
 ## Getting started
+
+See **[DEPLOYMENT.md](DEPLOYMENT.md)** for a step-by-step guide to dropping `/edit/` into a new or existing site.
 
 1. Copy `/edit/` into your site's web root (PHP 8.1+ with `ext-dom`; `ext-curl`, `ext-fileinfo`, `ext-zip` recommended).
 2. Visit `/edit/`. The install page runs a **server check** and asks for a **setup token**. Open `edit/storage/install-token.local.php` on the server (SSH, SFTP or your host's file manager) and copy the token, or set the `WYSITE_INSTALL_TOKEN` environment variable instead.

@@ -22,6 +22,7 @@ Thumbs.db
 !/.gitattributes
 !/.htaccess
 !/README.md
+!/DEPLOYMENT.md
 !/LICENSE
 !/edit/
 !/.github/

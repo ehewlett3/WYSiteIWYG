@@ -529,12 +529,33 @@ body.wysite-template-import-mode {
   flex-wrap: wrap;
 }
 
-[data-wysite-ai-status] {
+[data-wysite-ai-status],
+[data-wysite-ai-theme-status] {
   margin: 0;
 }
 
-[data-wysite-ai-status].is-error {
+[data-wysite-ai-status].is-error,
+[data-wysite-ai-theme-status].is-error {
   color: #8a2b1f;
+}
+
+.wysite-ai-tasks {
+  display: grid;
+  gap: 14px;
+  margin: 0;
+  padding: 14px 16px;
+  border: 1px solid var(--wysite-line, rgba(0, 0, 0, 0.12));
+  border-radius: 14px;
+}
+
+.wysite-ai-tasks legend {
+  padding: 0 6px;
+  font-weight: 600;
+}
+
+.wysite-ai-tasks p,
+.wysite-ai-tasks small {
+  margin: 0;
 }
 
 .wysite-template-ai-note {

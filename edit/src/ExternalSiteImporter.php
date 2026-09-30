@@ -165,6 +165,52 @@ final class ExternalSiteImporter
      * the designer can pre-fill them for the human to review. Best-effort: a missing
      * or unreadable cache entry is silently ignored (the designer just opens empty).
      */
+    /**
+     * Fetch a page to use as a design reference for AI theme design: its HTML and
+     * the CSS it uses (inline <style> plus up to six linked stylesheets). Nothing
+     * is saved to the site. Every request goes through the SSRF-guarded fetch.
+     *
+     * @return array{url:string,html:string,css:string}
+     */
+    public function fetchDesignSample(string $url): array
+    {
+        $page = $this->fetchHtml($url);
+        $dom = $this->loadHtmlDocument($page['html'], $page['url']);
+        $baseUrl = $this->documentBaseUrl($dom, $page['url']);
+
+        $css = [];
+        $sheets = [];
+        foreach ($dom->getElementsByTagName('link') as $link) {
+            $rel = strtolower(' ' . $link->getAttribute('rel') . ' ');
+            $href = trim($link->getAttribute('href'));
+            if ($href !== '' && str_contains($rel, ' stylesheet ') && count($sheets) < 6) {
+                $absolute = $this->absolutizeUrl($href, $baseUrl);
+                if ($absolute !== null && !in_array($absolute, $sheets, true)) {
+                    $sheets[] = $absolute;
+                }
+            }
+        }
+        foreach ($dom->getElementsByTagName('style') as $style) {
+            $css[] = $style->textContent;
+        }
+
+        $budget = 800000;
+        foreach ($sheets as $sheetUrl) {
+            if ($budget <= 0) {
+                break;
+            }
+            try {
+                $body = $this->fetchUrlBody($sheetUrl, 20, min($budget, 400000), "Accept: text/css,*/*;q=0.1\r\n")['body'];
+            } catch (RuntimeException) {
+                continue; // A missing stylesheet only makes the reference less complete.
+            }
+            $budget -= strlen($body);
+            $css[] = '/* ' . str_replace('*/', '', $sheetUrl) . " */\n" . $body;
+        }
+
+        return ['url' => $page['url'], 'html' => $page['html'], 'css' => implode("\n", $css)];
+    }
+
     public function attachTemplateSuggestions(string $id, array $suggestions): void
     {
         $this->assertImportId($id);

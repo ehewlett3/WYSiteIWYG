@@ -169,6 +169,40 @@ use function WYSiteIWYG\h;
           </article>
         </div>
 
+        <article class="wysite-panel">
+          <h3>Design a theme with AI</h3>
+          <?php if (!$ai->isConfigured('theme')): ?>
+          <p class="wysite-muted">Describe the look you want, or point at sites to imitate, and a model designs a complete theme: stylesheet, page template, and optionally a home page. <a href="<?= h($appUrl) ?>/index.php?action=ai">Set up AI assistance</a> to use it.</p>
+          <?php else: ?>
+          <p class="wysite-muted">Uses <code><?= h($ai->modelFor('theme')) ?></code>. The new theme becomes the build target but isn't applied: preview it on the Theme page first. Sample sites are read for their layout and CSS only; the theme doesn't copy their text or images. Designing a theme can take a few minutes.</p>
+          <form method="post" action="<?= h($appUrl) ?>/index.php?action=ai-generate-theme" class="wysite-form" enctype="multipart/form-data" data-wysite-ai-theme-form>
+            <input type="hidden" name="csrf_token" value="<?= h(Csrf::token()) ?>">
+            <label>
+              <span>Theme name</span>
+              <input type="text" name="name" required maxlength="80" placeholder="e.g. Harbour Light">
+            </label>
+            <label>
+              <span>Describe the look <em>(optional if you give samples)</em></span>
+              <textarea name="brief" rows="4" maxlength="4000" placeholder="e.g. Calm and welcoming for a small parish: warm off-white background, deep navy and gold accents, a classic serif for headings, generous spacing, and a centred logo above the menu."></textarea>
+            </label>
+            <label>
+              <span>Make it look like these sites <em>(optional; up to 4 URLs, one per line)</em></span>
+              <textarea name="sample_urls" rows="2" placeholder="https://example.org/"></textarea>
+            </label>
+            <label>
+              <span>Screenshots to follow <em>(optional; up to 3 PNG, JPEG, GIF, or WebP images, 3.5 MB each)</em></span>
+              <input type="file" name="screenshots[]" accept="image/png,image/jpeg,image/gif,image/webp" multiple>
+            </label>
+            <label class="wysite-checkbox">
+              <input type="checkbox" name="with_home" value="1">
+              <span>Also design a distinct home page</span>
+            </label>
+            <p class="wysite-muted" data-wysite-ai-theme-status role="status" hidden></p>
+            <button class="wysite-button" type="submit">Design theme</button>
+          </form>
+          <?php endif; ?>
+        </article>
+
         <?php if ($builderThemeId === ''): ?>
           <p class="wysite-muted">No build target selected. Create a theme (recommended for an imported site) or pick one above, then add templates from the pages below.</p>
         <?php else: ?>

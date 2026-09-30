@@ -342,6 +342,46 @@ function guess_template_kind(string $path): string
 }
 
 /**
+ * Screenshots uploaded to guide AI theme design, as base64 images the model can
+ * read. At most three; each must be a real PNG, JPEG, GIF, or WebP image of up to
+ * 3.5 MB (the providers' per-image limits are about 5 MB after encoding).
+ *
+ * @return array<int,array{media_type:string,data:string}>
+ */
+function ai_theme_screenshots(mixed $files): array
+{
+    if (!is_array($files) || !is_array($files['tmp_name'] ?? null)) {
+        return [];
+    }
+
+    $images = [];
+    foreach ($files['tmp_name'] as $index => $tmp) {
+        $error = (int) ($files['error'][$index] ?? UPLOAD_ERR_NO_FILE);
+        if ($error === UPLOAD_ERR_NO_FILE) {
+            continue;
+        }
+        $label = (string) ($files['name'][$index] ?? 'screenshot');
+        if ($error !== UPLOAD_ERR_OK || !is_uploaded_file((string) $tmp)) {
+            throw new RuntimeException('The screenshot "' . $label . '" did not upload.');
+        }
+        if ((int) filesize((string) $tmp) > 3_500_000) {
+            throw new RuntimeException('The screenshot "' . $label . '" is larger than 3.5 MB. Use a smaller or more compressed image.');
+        }
+        $info = @getimagesize((string) $tmp);
+        $mime = is_array($info) ? (string) ($info['mime'] ?? '') : '';
+        if (!in_array($mime, ['image/png', 'image/jpeg', 'image/gif', 'image/webp'], true)) {
+            throw new RuntimeException('The screenshot "' . $label . '" is not a PNG, JPEG, GIF, or WebP image.');
+        }
+        if (count($images) >= 3) {
+            throw new RuntimeException('Upload at most three screenshots.');
+        }
+        $images[] = ['media_type' => $mime, 'data' => base64_encode((string) file_get_contents((string) $tmp))];
+    }
+
+    return $images;
+}
+
+/**
  * If AI assistance is configured, ask the model to pre-select template regions for a
  * cached source and attach them for the designer to show. Best-effort: any failure
  * (misconfig, network, bad key) is surfaced as a flash but never blocks the manual
@@ -349,7 +389,7 @@ function guess_template_kind(string $path): string
  */
 function maybe_attach_ai_suggestions($ai, $externalImporter, string $sourceId, string $kind): void
 {
-    if (!$ai->isConfigured()) {
+    if (!$ai->isConfigured('regions')) {
         return;
     }
 
@@ -1219,6 +1259,7 @@ try {
         $ai->save([
             'provider' => (string) ($_POST['provider'] ?? ''),
             'model' => (string) ($_POST['model'] ?? ''),
+            'task_models' => is_array($_POST['task_models'] ?? null) ? $_POST['task_models'] : [],
             'base_url' => (string) ($_POST['base_url'] ?? ''),
             'api_key' => (string) ($_POST['api_key'] ?? ''),
             'clear_key' => !empty($_POST['clear_key']),
@@ -1290,6 +1331,67 @@ try {
         $themes->setBuilderTheme($newThemeId);
         Flash::push('success', 'Created theme "' . $themes->getTheme($newThemeId)['name'] . '" and selected it as the build target. Add templates by choosing "Use as template" on imported pages.');
         redirect_to_view($appUrl, 'manager');
+    }
+
+    if ($action === 'ai-generate-theme') {
+        require_admin($user);
+        if (!is_post() || !Csrf::validate($_POST['csrf_token'] ?? null)) {
+            throw new RuntimeException('The theme design request was rejected.');
+        }
+        if (!$ai->isConfigured('theme')) {
+            Flash::push('error', 'Set up AI assistance (an API key and a theme design model) on the AI page first.');
+            redirect_to_view($appUrl, 'manager');
+        }
+
+        $name = trim((string) ($_POST['name'] ?? ''));
+        $themes->assertNewThemeName($name);
+        $brief = trim((string) ($_POST['brief'] ?? ''));
+        $sampleUrls = array_slice(array_values(array_filter(array_map('trim', preg_split('/\s+/', (string) ($_POST['sample_urls'] ?? '')) ?: []))), 0, 4);
+        $images = ai_theme_screenshots($_FILES['screenshots'] ?? null);
+        if ($brief === '' && $sampleUrls === [] && $images === []) {
+            throw new RuntimeException('Describe the look you want, or give a sample site or screenshot to follow.');
+        }
+
+        // Designing a theme with a capable model can take a few minutes.
+        @set_time_limit(900);
+        @ignore_user_abort(true);
+
+        $samples = [];
+        $skippedSamples = [];
+        foreach ($sampleUrls as $sampleUrl) {
+            try {
+                $samples[] = $externalImporter->fetchDesignSample($sampleUrl);
+            } catch (Throwable $error) {
+                $skippedSamples[] = $sampleUrl . ' (' . $error->getMessage() . ')';
+            }
+        }
+        if ($sampleUrls !== [] && $samples === [] && $brief === '' && $images === []) {
+            throw new RuntimeException('None of the sample sites could be fetched: ' . implode('; ', $skippedSamples));
+        }
+
+        $design = $ai->generateTheme(
+            [
+                'name' => $name,
+                'brief' => $brief,
+                'with_home' => !empty($_POST['with_home']),
+                'site_name' => (string) $settings->get('site_name'),
+                'site_tagline' => (string) $settings->get('tagline'),
+            ],
+            $samples,
+            $images,
+            static fn(string $kind, string $html): array => $themes->templateErrors($kind, \WYSiteIWYG\ThemeManager::sanitizeGeneratedTemplate($html))
+        );
+        $newThemeId = $themes->createGeneratedTheme($name, $design['meta'], $design['css'], $design['templates']);
+        $themes->setBuilderTheme($newThemeId);
+
+        Flash::push('success', 'Designed the theme "' . $themes->getTheme($newThemeId)['name'] . '". Preview it on the Theme page, and apply it when you are happy with it. It is also the build target, so you can replace its templates with ones from your own pages.');
+        if ($skippedSamples !== []) {
+            Flash::push('error', 'Some sample sites could not be fetched and were not used: ' . implode('; ', $skippedSamples));
+        }
+        if (str_contains((string) ($_SERVER['HTTP_ACCEPT'] ?? ''), 'application/json')) {
+            json_response(['ok' => true, 'redirect' => $appUrl . '/index.php?action=themes']);
+        }
+        redirect_to_view($appUrl, 'themes');
     }
 
     if ($action === 'set-builder-theme') {
@@ -1658,7 +1760,7 @@ try {
         // WP-1: when AI is configured, its classification breaks ties for pages the
         // post detector didn't recognise.
         $aiKinds = [];
-        if ($ai->isConfigured()) {
+        if ($ai->isConfigured('classify')) {
             try {
                 $aiKinds = $ai->cachedKinds(array_map(static fn(array $c): array => [
                     'path' => $c['path'],

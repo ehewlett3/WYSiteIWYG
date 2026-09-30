@@ -241,17 +241,27 @@
   if (!form || !window.fetch) return;
 
   const modelInput = form.querySelector("[data-wysite-ai-model]");
-  const modelSelect = form.querySelector("[data-wysite-ai-model-select]");
+  const modelList = document.getElementById("wysite-ai-models");
+  const taskInputs = [...form.querySelectorAll("[data-wysite-ai-task]")];
   const statusEl = form.querySelector("[data-wysite-ai-status]");
   const loadBtn = form.querySelector("[data-wysite-ai-load]");
   const testBtn = form.querySelector("[data-wysite-ai-test]");
+  const suggestBtn = form.querySelector("[data-wysite-ai-suggest]");
+  let loadedModels = [];
 
-  // Picking from the loaded-models select fills the text input (the saved value).
-  modelSelect?.addEventListener("change", () => {
-    if (modelInput && modelSelect.value) {
-      modelInput.value = modelSelect.value;
+  // Model-name patterns per tier, best first. Within a pattern the provider's
+  // order wins (Anthropic lists newest first).
+  const tierPatterns = {
+    fast: [/haiku/i, /(^|[-_.])(mini|nano|flash|lite|small)([-_.]|$)/i],
+    advanced: [/fable/i, /opus/i, /^gpt-5(?!.*(mini|nano))/i, /sonnet/i, /(^|[-_.])(pro|large)([-_.]|$)/i],
+  };
+  const suggestFor = (tier) => {
+    for (const pattern of tierPatterns[tier] || []) {
+      const match = loadedModels.find((model) => pattern.test(model.id));
+      if (match) return match.id;
     }
-  });
+    return "";
+  };
 
   const endpoint = (name) => form.action.split("?")[0] + "?action=" + name;
   const fieldValue = (selector) => {
@@ -291,25 +301,21 @@
     loadBtn.disabled = true;
     try {
       const data = await call("ai-list-models");
-      const models = Array.isArray(data.models) ? data.models : [];
-      if (modelSelect) {
-        const current = modelInput ? modelInput.value : "";
-        modelSelect.innerHTML = "";
-        const placeholder = document.createElement("option");
-        placeholder.value = "";
-        placeholder.textContent = models.length ? "Choose a model…" : "No models returned";
-        modelSelect.appendChild(placeholder);
-        models.forEach((id) => {
-          const option = document.createElement("option");
-          option.value = id;
-          option.textContent = id;
-          if (id === current) option.selected = true;
-          modelSelect.appendChild(option);
-        });
+      loadedModels = (Array.isArray(data.models) ? data.models : []).filter((model) => model && model.id);
+      if (modelList) {
+        modelList.replaceChildren(
+          ...loadedModels.map((model) => {
+            const option = document.createElement("option");
+            option.value = model.id;
+            if (model.label && model.label !== model.id) option.label = model.label;
+            return option;
+          })
+        );
       }
+      if (suggestBtn) suggestBtn.hidden = loadedModels.length === 0;
       setStatus(
-        models.length
-          ? `Loaded ${models.length} model(s) — pick one from the list below the Model field.`
+        loadedModels.length
+          ? `Loaded ${loadedModels.length} model(s). Pick from the list in each model field, or use “Suggest models”.`
           : "The provider returned no models."
       );
     } catch (error) {
@@ -317,6 +323,30 @@
     } finally {
       loadBtn.disabled = false;
     }
+  });
+
+  // Fill blank model fields with a suggestion for their tier; never overwrite a
+  // choice the admin already made. The default gets a fast model, so only tasks
+  // that need more (theme design) usually get their own.
+  suggestBtn?.addEventListener("click", () => {
+    const filled = [];
+    if (modelInput && !modelInput.value) {
+      modelInput.value = suggestFor("fast") || (loadedModels[0] ? loadedModels[0].id : "");
+      if (modelInput.value) filled.push("Default model");
+    }
+    taskInputs.forEach((input) => {
+      if (input.value) return;
+      const suggestion = suggestFor(input.dataset.wysiteAiTier);
+      if (suggestion && suggestion !== (modelInput ? modelInput.value : "")) {
+        input.value = suggestion;
+        filled.push(input.closest("label")?.querySelector("span")?.firstChild?.textContent.trim() || input.dataset.wysiteAiTask);
+      }
+    });
+    setStatus(
+      filled.length
+        ? `Suggested: ${filled.join(", ")}. Review, then save.`
+        : "Nothing to fill: blank tasks already use a suitable default model, or no loaded model matched their tier."
+    );
   });
 
   testBtn?.addEventListener("click", async () => {
@@ -329,6 +359,55 @@
       setStatus(error.message || "Connection failed.", true);
     } finally {
       testBtn.disabled = false;
+    }
+  });
+})();
+
+// --- AI theme design: submit in the background so a long model call shows
+// progress and a failure keeps what the admin typed (plain POST still works) ---
+(() => {
+  const form = document.querySelector("[data-wysite-ai-theme-form]");
+  if (!form || !window.fetch || !window.FormData) return;
+
+  const status = form.querySelector("[data-wysite-ai-theme-status]");
+  const button = form.querySelector('button[type="submit"]');
+  const setStatus = (message, isError) => {
+    if (!status) return;
+    status.hidden = false;
+    status.textContent = message;
+    status.classList.toggle("is-error", Boolean(isError));
+  };
+
+  form.addEventListener("submit", async (event) => {
+    if (event.defaultPrevented) return;
+    event.preventDefault();
+
+    const started = Date.now();
+    const tick = () => {
+      const seconds = Math.round((Date.now() - started) / 1000);
+      setStatus(`Designing the theme… ${seconds}s. This usually takes one to four minutes; keep this tab open.`);
+    };
+    tick();
+    const timer = window.setInterval(tick, 1000);
+    if (button) button.disabled = true;
+
+    try {
+      const response = await fetch(form.action, {
+        method: "POST",
+        credentials: "same-origin",
+        headers: { Accept: "application/json" },
+        body: new FormData(form),
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok || data.ok === false) {
+        throw new Error(data.message || `The theme could not be designed (HTTP ${response.status}).`);
+      }
+      window.location.href = data.redirect || window.location.href;
+    } catch (error) {
+      setStatus(error.message || "The theme could not be designed.", true);
+      if (button) button.disabled = false;
+    } finally {
+      window.clearInterval(timer);
     }
   });
 })();

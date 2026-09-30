@@ -401,11 +401,10 @@ final class ThemeManager
     }
 
     /**
-     * Create a new, empty theme to build from imported pages: a directory with
-     * theme.php and a minimal site.css. Templates are added later by promoting
-     * imported pages into it. Returns the new theme id (slug).
+     * Check that $name can become a new theme and return its id (slug), so a
+     * caller can fail fast before doing expensive work such as an AI request.
      */
-    public function createTheme(string $name): string
+    public function assertNewThemeName(string $name): string
     {
         $name = trim($name);
         if ($name === '') {
@@ -418,10 +417,23 @@ final class ThemeManager
             throw new RuntimeException('Provide a theme name with letters or numbers.');
         }
 
-        $dir = $this->themePath($slug);
-        if (is_dir($dir)) {
+        if (is_dir($this->themePath($slug))) {
             throw new RuntimeException('A theme with the id "' . $slug . '" already exists.');
         }
+
+        return $slug;
+    }
+
+    /**
+     * Create a new, empty theme to build from imported pages: a directory with
+     * theme.php and a minimal site.css. Templates are added later by promoting
+     * imported pages into it. Returns the new theme id (slug).
+     */
+    public function createTheme(string $name): string
+    {
+        $name = trim($name);
+        $slug = $this->assertNewThemeName($name);
+        $dir = $this->themePath($slug);
 
         Filesystem::ensureDirectory($dir);
         $meta = [
@@ -438,6 +450,143 @@ final class ThemeManager
         );
 
         return $slug;
+    }
+
+    /**
+     * Template validation errors for one kind, [] when the template is valid. Used
+     * to check AI-generated templates before they are written.
+     *
+     * @return string[]
+     */
+    public function templateErrors(string $kind, string $template): array
+    {
+        if (!isset(self::TEMPLATE_REQUIREMENTS[$kind])) {
+            throw new RuntimeException('Unknown theme template kind: ' . $kind);
+        }
+
+        return $this->validateTemplate(self::TEMPLATE_FILES[$kind], $template, self::TEMPLATE_REQUIREMENTS[$kind]);
+    }
+
+    /**
+     * Write an AI-generated theme as a new theme package. Everything the model
+     * produced is treated as untrusted (its reference material may have carried a
+     * prompt injection): templates are sanitized, external resources other than
+     * Google Fonts are removed, metadata is rebuilt field by field, and the
+     * result must pass the normal theme validation, or nothing is kept.
+     *
+     * @param array<string,string> $templates kind => HTML ('page' required)
+     * @return string the new theme id
+     */
+    public function createGeneratedTheme(string $name, array $meta, string $css, array $templates): string
+    {
+        $id = $this->createTheme($name);
+        $dir = $this->themePath($id);
+
+        try {
+            $variables = [];
+            foreach (is_array($meta['variables'] ?? null) ? $meta['variables'] : [] as $variable) {
+                if (!is_array($variable)) {
+                    continue;
+                }
+                $type = ($variable['type'] ?? '') === 'font' ? 'font' : 'color';
+                $varName = (string) ($variable['name'] ?? '');
+                $default = self::cleanVariableValue($type, (string) ($variable['default'] ?? ''));
+                if (preg_match('/^[a-z0-9-]{1,40}$/', $varName) !== 1 || $default === '' || !str_contains($css, 'var(--' . $varName)) {
+                    continue;
+                }
+                $variables[] = ['name' => $varName, 'label' => self::clipText((string) ($variable['label'] ?? $varName), 40), 'type' => $type, 'default' => $default];
+                if (count($variables) >= 8) {
+                    break;
+                }
+            }
+
+            $dashboard = [];
+            foreach (['bg', 'surface', 'ink', 'muted', 'line', 'accent', 'accent-2', 'shadow', 'app-bg', 'font-sans', 'font-serif'] as $key) {
+                $value = trim((string) ($meta['dashboard'][$key] ?? ''));
+                if ($value !== '' && strlen($value) <= 200 && preg_match('/[;{}<>\\\\]|\/\*|url\s*\(|expression|@import/i', $value) !== 1) {
+                    $dashboard[$key] = $value;
+                }
+            }
+
+            $manifest = [
+                'name' => $name,
+                'description' => self::clipText((string) ($meta['description'] ?? ''), 200) ?: 'Theme designed with AI assistance.',
+                'inspiration' => self::clipText((string) ($meta['inspiration'] ?? ''), 120),
+                'preview_blurb' => self::clipText((string) ($meta['preview_blurb'] ?? ''), 160),
+                'generated' => 'ai',
+            ];
+            if (count($dashboard) >= 4) {
+                $manifest['dashboard'] = $dashboard;
+            }
+            if ($variables !== []) {
+                $manifest['variables'] = $variables;
+            }
+
+            Filesystem::atomicWrite($dir . '/theme.json', json_encode($manifest, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE) . "\n");
+            Filesystem::atomicWrite($dir . '/site.css', "/* " . str_replace('*/', '', $name) . " — generated with AI assistance. */\n" . self::sanitizeGeneratedCss($css) . "\n");
+            foreach ($templates as $kind => $html) {
+                if (in_array($kind, ['page', 'home'], true)) {
+                    Filesystem::atomicWrite($dir . '/' . self::TEMPLATE_FILES[$kind], self::sanitizeGeneratedTemplate($html) . "\n");
+                }
+            }
+
+            $this->themeListCache = null;
+            $this->assertThemeIsValid($id);
+        } catch (\Throwable $error) {
+            $this->deleteDirectory($dir);
+            $this->themeListCache = null;
+            throw $error;
+        }
+
+        return $id;
+    }
+
+    /**
+     * Sanitize a generated template: the shared document sanitizer (scripts,
+     * handlers, unsafe URLs), then drop <link>s other than the theme stylesheet and
+     * Google Fonts, and embedded frames/forms a theme never needs.
+     */
+    public static function sanitizeGeneratedTemplate(string $html): string
+    {
+        // A bare-text token in <head> would be moved into <body> if the sanitizer
+        // has to re-serialize the document; the generator inserts {{HEAD_META}}
+        // before </head> by itself when a template lacks it.
+        $html = preg_replace('/^[ \t]*\{\{HEAD_META\}\}[ \t]*\R?/m', '', $html) ?? $html;
+        $html = str_replace('{{HEAD_META}}', '', $html);
+        $html = preg_replace('#<(iframe|object|embed|form)\b.*?</\1\s*>|<(iframe|object|embed|form)\b[^>]*/?>#si', '', $html) ?? '';
+        $html = preg_replace_callback('#<link\b[^>]*>#i', static function (array $match): string {
+            $href = preg_match('#\bhref\s*=\s*(["\'])(.*?)\1#i', $match[0], $m) === 1 ? $m[2] : '';
+            return $href === '{{THEME_CSS_HREF}}' || str_starts_with($href, 'https://fonts.googleapis.com/') || str_starts_with($href, 'https://fonts.gstatic.com') ? $match[0] : '';
+        }, $html) ?? '';
+
+        return Sanitizer::document($html);
+    }
+
+    /**
+     * Keep generated CSS to its own theme: only Google Fonts may be imported, and
+     * url() may reference only data: images and Google Fonts.
+     */
+    public static function sanitizeGeneratedCss(string $css): string
+    {
+        $css = str_ireplace(['</style', '<script', 'javascript:', 'expression(', '-moz-binding', 'behavior:'], '', $css);
+        $css = preg_replace_callback('/@import\s+(?:url\([^)]*\)|"[^"]*"|\'[^\']*\'|[^;"\'\s]+)[^;]*;?/i', static function (array $match): string {
+            return preg_match('#^@import\s+(url\(\s*)?["\']?https://fonts\.googleapis\.com/#i', $match[0]) === 1 ? $match[0] : '';
+        }, $css) ?? '';
+
+        return preg_replace_callback('/url\(\s*(["\']?)(.*?)\1\s*\)/i', static function (array $match): string {
+            $url = trim($match[2]);
+            return preg_match('#^(data:image/(png|jpe?g|gif|webp|svg\+xml)[;,]|https://fonts\.(gstatic|googleapis)\.com/)#i', $url) === 1 ? $match[0] : 'none';
+        }, $css) ?? '';
+    }
+
+    private static function clipText(string $value, int $max): string
+    {
+        $value = trim((string) preg_replace('/\s+/', ' ', strip_tags($value)));
+        if (strlen($value) <= $max) {
+            return $value;
+        }
+        // Cut on a character boundary without depending on mbstring.
+        return (preg_match('/^.{0,' . ($max - 1) . '}/us', $value, $m) === 1 ? $m[0] : substr($value, 0, $max - 1)) . '…';
     }
 
     /** The theme currently selected as the template build target, or '' if none. */

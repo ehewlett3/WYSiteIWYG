@@ -39,6 +39,17 @@ test('WP-4: migration report finds forms, embeds, old-site links and scripts', f
     assert_same(1, count($embeds), 'known embed hosts are not flagged');
 });
 
+test('WP-4: data-*-href attributes are not mistaken for links', function (): void {
+    $site = make_site();
+    file_put_contents($site['root'] . '/thrive.html', '<html><body><a class="tcb-logo" data-remove-href="1"><img src="/x.png" data-src="missing.png"></a>'
+        . '<form data-action="nowhere" action="https://forms.example.com/"></form></body></html>');
+    file_put_contents($site['root'] . '/x.png', 'png');
+    $report = new SiteReport($site['root'], $site['repository']);
+    assert_same([], $report->brokenLinks(['thrive.html']));
+    $findings = $report->migrationReport(['old.example.org'], [])['thrive.html'] ?? [];
+    assert_same(['Posts to https://forms.example.com/ — check it still has somewhere to go.'], array_column($findings, 'detail'));
+});
+
 test('WP-4: quick fixes edit only the affected forms', function (): void {
     $site = report_site();
     $before = (string) file_get_contents($site['root'] . '/hello/index.html');

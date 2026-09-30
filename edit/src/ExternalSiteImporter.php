@@ -71,6 +71,12 @@ final class ExternalSiteImporter
         $this->keepScripts = $keep;
     }
 
+    /** The site-wide default, used when an import doesn't choose for itself. */
+    public function keepsScripts(): bool
+    {
+        return $this->keepScripts;
+    }
+
     /** Total bytes a single import run may write to disk (0 keeps the default). */
     public function setByteBudget(int $bytes): void
     {
@@ -367,9 +373,9 @@ final class ExternalSiteImporter
     /**
      * Crawl a site in one call (runs the resumable job below to completion).
      */
-    public function importSite(string $startUrl, int $maxPages = 50, bool $overwrite = false, ?callable $progressCallback = null): array
+    public function importSite(string $startUrl, int $maxPages = 50, bool $overwrite = false, ?callable $progressCallback = null, ?bool $keepScripts = null): array
     {
-        $jobId = $this->startImportJob($startUrl, $maxPages, $overwrite);
+        $jobId = $this->startImportJob($startUrl, $maxPages, $overwrite, $keepScripts);
         do {
             $step = $this->runImportJob($jobId, 0, $progressCallback);
         } while (!$step['done']);
@@ -383,7 +389,7 @@ final class ExternalSiteImporter
      * short batches (no single request has to outlive proxy/FPM timeouts) and an
      * interrupted import can be resumed.
      */
-    public function startImportJob(string $startUrl, int $maxPages = 50, bool $overwrite = false): string
+    public function startImportJob(string $startUrl, int $maxPages = 50, bool $overwrite = false, ?bool $keepScripts = null): string
     {
         $startUrl = $this->normalizeHttpUrl($startUrl);
         $startHost = strtolower((string) parse_url($startUrl, PHP_URL_HOST));
@@ -396,6 +402,8 @@ final class ExternalSiteImporter
             'start_url' => $startUrl,
             'max_pages' => max(1, min(500, $maxPages)),
             'overwrite' => $overwrite,
+            // Fixed at start so every batch of a resumed job treats scripts alike.
+            'keep_scripts' => $keepScripts ?? $this->keepScripts,
             'source_hosts' => $sourceHosts,
             'created_at' => gmdate('c'),
             'updated_at' => gmdate('c'),
@@ -417,6 +425,7 @@ final class ExternalSiteImporter
             'assets_saved' => [],
             'assets_failed' => [],
             'query_redirects' => [],
+            'scripts_removed' => 0,
             'result' => null,
         ]);
 
@@ -445,6 +454,7 @@ final class ExternalSiteImporter
             $startUrl = (string) $state['start_url'];
             $maxPages = (int) $state['max_pages'];
             $overwrite = (bool) $state['overwrite'];
+            $keepScripts = (bool) ($state['keep_scripts'] ?? $this->keepScripts);
             $sourceHosts = (array) $state['source_hosts'];
             $queue = &$state['queue'];
             $seen = &$state['seen'];
@@ -549,7 +559,10 @@ final class ExternalSiteImporter
                             $assetsFailed,
                             $nonEssentialSkipped
                         );
-                        Filesystem::writeSitePage($target, $this->keepScripts ? $rewritten['html'] : Sanitizer::document($rewritten['html']));
+                        if (!$keepScripts) {
+                            $state['scripts_removed'] = (int) ($state['scripts_removed'] ?? 0) + (int) preg_match_all('/<script\b/i', $rewritten['html']);
+                        }
+                        Filesystem::writeSitePage($target, $keepScripts ? $rewritten['html'] : Sanitizer::document($rewritten['html']));
                         $saved[] = $relativePath;
                         $sourceQuery = (string) parse_url($url, PHP_URL_QUERY);
                         if ($sourceQuery !== '') {
@@ -652,6 +665,9 @@ final class ExternalSiteImporter
                 'wp_content_assets_saved' => $this->countWordPressContentAssetPaths($assetsSaved),
                 'asset_permissions_fixed' => $permissionReport,
                 'assets_failed' => array_values($assetsFailed),
+                // Menus, tabs, toggles and sliders built by the source theme's
+                // JavaScript stop working when these are stripped.
+                'scripts_removed' => (int) ($state['scripts_removed'] ?? 0),
             ];
             $state['done'] = true;
             $state['result'] = $result;
@@ -1206,6 +1222,7 @@ final class ExternalSiteImporter
             }
         }
 
+        $wordPressOnlyLinks = [];
         foreach ($dom->getElementsByTagName('link') as $element) {
             if (!$element instanceof DOMElement || !$element->hasAttribute('href')) {
                 continue;
@@ -1214,6 +1231,12 @@ final class ExternalSiteImporter
             $absoluteHref = $this->absolutizeUrl($element->getAttribute('href'), $baseUrl, false);
             $absoluteHost = is_string($absoluteHref) ? strtolower((string) parse_url($absoluteHref, PHP_URL_HOST)) : '';
             $rel = strtolower($element->getAttribute('rel'));
+            if ($this->isWordPressOnlyHeadLink($element, $rel, $absoluteHref, $absoluteHost, $sourceHosts)) {
+                // REST/RSD/oEmbed/shortlink discovery links only work against the
+                // WordPress server; on the static copy they just point back at it.
+                $wordPressOnlyLinks[] = $element;
+                continue;
+            }
             if (preg_match('/\b(canonical|alternate|archives|index)\b/', $rel) === 1) {
                 $mode = 'page';
             } elseif (preg_match('/\b(stylesheet|icon|apple-touch-icon|manifest|preload|modulepreload)\b/', $rel) === 1) {
@@ -1225,6 +1248,9 @@ final class ExternalSiteImporter
             }
 
             $this->rewriteUrlAttribute($element, 'href', $mode, $baseUrl, $sourceHosts, $assetMap, $assetsSaved, $assetsFailed, $pageLinks, $nonEssentialSkipped);
+        }
+        foreach ($wordPressOnlyLinks as $element) {
+            $element->parentNode?->removeChild($element);
         }
 
         foreach (['img', 'source'] as $tag) {
@@ -1456,6 +1482,11 @@ final class ExternalSiteImporter
             foreach ($attributes as [$name, $value]) {
                 $lowerName = strtolower($name);
                 if (in_array($lowerName, ['href', 'src', 'action', 'poster', 'data', 'style'], true)) {
+                    continue;
+                }
+                // Already localized above; a second pass would resolve the new
+                // local paths against the source host and fetch 404s.
+                if ($lowerName === 'srcset' && in_array(strtolower($element->tagName), ['img', 'source'], true)) {
                     continue;
                 }
 
@@ -2722,6 +2753,22 @@ final class ExternalSiteImporter
         return preg_match('/(?:^|&)(?:feed|format)=(?:rss|rss2|atom|rdf|podcast)(?:&|$)/', $query) === 1;
     }
 
+    /** A <link> that only means something to the source WordPress server. */
+    private function isWordPressOnlyHeadLink(DOMElement $element, string $rel, ?string $absoluteHref, string $absoluteHost, array $sourceHosts): bool
+    {
+        if (!is_string($absoluteHref) || !$this->hostMatches($sourceHosts, $absoluteHost)) {
+            return false;
+        }
+        if (preg_match('/(^|\s)(https:\/\/api\.w\.org\/|edituri|wlwmanifest|pingback|shortlink)(\s|$)/', $rel) === 1) {
+            return true;
+        }
+        if (str_contains(strtolower($element->getAttribute('type')), 'oembed')) {
+            return true;
+        }
+
+        return $this->isNonEssentialWordPressUrl($absoluteHref);
+    }
+
     private function isNonEssentialWordPressUrl(string $url): bool
     {
         $path = strtolower($this->normalizeUrlPath((string) (parse_url($url, PHP_URL_PATH) ?: '/')));
@@ -2729,6 +2776,11 @@ final class ExternalSiteImporter
 
         if ($this->isWordPressContentPath($path)) {
             return false;
+        }
+
+        // Unfilled theme template placeholders, e.g. Thrive's /page/[thrive_page_number].
+        if (preg_match('/\[[a-z_]+\]?/', rawurldecode($path)) === 1) {
+            return true;
         }
 
         if ($path === '/wp-json' || str_starts_with($path, '/wp-json/')) {

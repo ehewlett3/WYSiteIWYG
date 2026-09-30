@@ -81,7 +81,7 @@ final class SiteReport
                 }
             }
 
-            if (preg_match_all('/<iframe\b[^>]*\bsrc\s*=\s*["\']([^"\']+)["\']/i', $html, $frames)) {
+            if (preg_match_all('/<iframe\b[^>]*(?<=\s)src\s*=\s*["\']([^"\']+)["\']/i', $html, $frames)) {
                 foreach ($frames[1] as $src) {
                     $host = strtolower((string) parse_url(html_entity_decode($src), PHP_URL_HOST));
                     if ($host !== '' && !in_array($host, $knownEmbedHosts, true)) {
@@ -90,7 +90,7 @@ final class SiteReport
                 }
             }
 
-            if (preg_match_all('/<script\b[^>]*\bsrc\s*=\s*["\']([^"\']+)["\']/i', $html, $scripts)) {
+            if (preg_match_all('/<script\b[^>]*(?<=\s)src\s*=\s*["\']([^"\']+)["\']/i', $html, $scripts)) {
                 foreach ($scripts[1] as $src) {
                     $host = strtolower((string) parse_url(html_entity_decode($src), PHP_URL_HOST));
                     if ($host !== '' && in_array($host, $sourceHosts, true)) {
@@ -99,7 +99,7 @@ final class SiteReport
                 }
             }
 
-            if ($sourceHosts !== [] && preg_match_all('/\b(?:href|src)\s*=\s*["\'](https?:\/\/([^\/"\']+)[^"\']*)["\']/i', $html, $links, PREG_SET_ORDER)) {
+            if ($sourceHosts !== [] && preg_match_all('/(?<=\s)(?:href|src)\s*=\s*["\'](https?:\/\/([^\/"\']+)[^"\']*)["\']/i', $html, $links, PREG_SET_ORDER)) {
                 $count = 0;
                 foreach ($links as $link) {
                     if (in_array(strtolower($link[2]), $sourceHosts, true)) {
@@ -156,8 +156,8 @@ final class SiteReport
                     $updated = substr_replace($updated, $replacement, $form['start'], $form['end'] - $form['start']);
                 } elseif ($fix === 'retarget-forms' && $form['kind'] === 'form') {
                     $startTag = substr($updated, $form['start'], $form['tagEnd'] - $form['start']);
-                    $newTag = preg_match('/\baction\s*=\s*(["\'])[^"\']*\1/i', $startTag) === 1
-                        ? (preg_replace('/\baction\s*=\s*(["\'])[^"\']*\1/i', 'action="' . h($formEndpoint) . '"', $startTag, 1) ?? $startTag)
+                    $newTag = preg_match('/(?<=\s)action\s*=\s*(["\'])[^"\']*\1/i', $startTag) === 1
+                        ? (preg_replace('/(?<=\s)action\s*=\s*(["\'])[^"\']*\1/i', 'action="' . h($formEndpoint) . '"', $startTag, 1) ?? $startTag)
                         : preg_replace('/^<form\b/i', '<form action="' . h($formEndpoint) . '"', $startTag, 1);
                     $updated = substr_replace($updated, (string) $newTag, $form['start'], $form['tagEnd'] - $form['start']);
                 }
@@ -198,7 +198,7 @@ final class SiteReport
             if ($depth === 0 && $open !== null) {
                 $outer = substr($html, $open['start'], $token['end'] - $open['start']);
                 $startTag = substr($html, $open['start'], $open['end'] - $open['start']);
-                $action = preg_match('/\baction\s*=\s*["\']([^"\']*)["\']/i', $startTag, $m) === 1 ? html_entity_decode($m[1]) : '';
+                $action = preg_match('/(?<=\s)action\s*=\s*["\']([^"\']*)["\']/i', $startTag, $m) === 1 ? html_entity_decode($m[1]) : '';
                 $kind = 'form';
                 if (preg_match('/wp-comments-post|id\s*=\s*["\']commentform["\']|class\s*=\s*["\'][^"\']*comment-form/i', $outer) === 1) {
                     $kind = 'comment';
@@ -217,12 +217,12 @@ final class SiteReport
     private function internalRefs(string $html): array
     {
         $refs = [];
-        if (preg_match_all('/<(?:a|link|img|script|source|video|audio|iframe)\b[^>]*?\b(href|src)\s*=\s*["\']([^"\']*)["\']/i', $html, $matches, PREG_SET_ORDER)) {
+        if (preg_match_all('/<(?:a|link|img|script|source|video|audio|iframe)\b[^>]*?(?<=\s)(href|src)\s*=\s*["\']([^"\']*)["\']/i', $html, $matches, PREG_SET_ORDER)) {
             foreach ($matches as $match) {
                 $refs[] = html_entity_decode($match[2], ENT_QUOTES, 'UTF-8');
             }
         }
-        if (preg_match_all('/\bsrcset\s*=\s*["\']([^"\']*)["\']/i', $html, $sets)) {
+        if (preg_match_all('/(?<=\s)srcset\s*=\s*["\']([^"\']*)["\']/i', $html, $sets)) {
             foreach ($sets[1] as $set) {
                 foreach (explode(',', html_entity_decode($set, ENT_QUOTES, 'UTF-8')) as $candidate) {
                     $url = preg_split('/\s+/', trim($candidate))[0] ?? '';
@@ -245,7 +245,7 @@ final class SiteReport
     {
         $pageUrl = trim($this->repository->publicUrlForPath($path), '/');
         $pageDir = $pageUrl === '' ? '' : $pageUrl . '/';
-        if (preg_match('/<base\b[^>]*\bhref\s*=\s*["\']([^"\']*)["\']/i', $html, $base) === 1 && preg_match('#^([a-z]+:|//|/)#i', $base[1]) !== 1) {
+        if (preg_match('/<base\b[^>]*(?<=\s)href\s*=\s*["\']([^"\']*)["\']/i', $html, $base) === 1 && preg_match('#^([a-z]+:|//|/)#i', $base[1]) !== 1) {
             $pageDir = $this->normalize($pageDir . $base[1]);
         }
 

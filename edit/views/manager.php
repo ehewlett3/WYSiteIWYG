@@ -282,6 +282,10 @@ use function WYSiteIWYG\h;
                 <input type="checkbox" name="overwrite" value="1">
                 <span>Overwrite existing local HTML files</span>
               </label>
+              <label class="wysite-checkbox">
+                <input type="checkbox" name="keep_scripts" value="1"<?= $externalImporter->keepsScripts() ? ' checked' : '' ?>>
+                <span>Keep the site's scripts <em>(needed for menus, tabs, toggles and sliders built with JavaScript; only for sites you trust, since the scripts run alongside the editor)</em></span>
+              </label>
               <button class="wysite-button" type="submit">Import Site</button>
             </form>
             <?php foreach ($externalImporter->unfinishedImportJobs() as $unfinishedJob): ?>

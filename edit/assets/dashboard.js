@@ -177,6 +177,12 @@
         ", page-limit skipped: " + count(result.limit_skipped) +
         ", non-essential skipped: " + count(result.nonessential_skipped)
       );
+      if (Number(result.scripts_removed || 0) > 0) {
+        appendLog(
+          "Scripts removed: " + Number(result.scripts_removed) + ". Menus, tabs, toggles, sliders and animations that the original theme built with JavaScript will not work. " +
+          "If you trust the source site, turn on \"Keep the original site's scripts\" in Settings and re-import with overwrite."
+        );
+      }
     } else if (event.type === "fatal") {
       appendLog("Error: " + event.message);
       setStatus("Import failed.");

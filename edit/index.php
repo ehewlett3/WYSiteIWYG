@@ -152,6 +152,13 @@ function render_flash_message(string $message): string
     return $html;
 }
 
+/** Why an import that stripped scripts may look or behave differently from the original. */
+function scripts_removed_notice(int $count): string
+{
+    return '- Scripts removed: ' . $count . '. Menus, tabs, toggles, sliders and animations that the original theme built with JavaScript will not work. '
+        . 'If you trust the source site, turn on "Keep the original site\'s scripts" in Settings and re-import with overwrite.';
+}
+
 function require_login($auth, string $appUrl): array
 {
     $user = $auth->currentUser();
@@ -1546,7 +1553,8 @@ try {
                     $jobId = $externalImporter->startImportJob(
                         (string) ($_POST['url'] ?? ''),
                         (int) ($_POST['max_pages'] ?? 50),
-                        !empty($_POST['overwrite'])
+                        !empty($_POST['overwrite']),
+                        !empty($_POST['keep_scripts'])
                     );
                 }
                 $step = $externalImporter->runImportJob($jobId, 25, $sendProgress);
@@ -1563,7 +1571,9 @@ try {
         $results = $externalImporter->importSite(
             (string) ($_POST['url'] ?? ''),
             (int) ($_POST['max_pages'] ?? 50),
-            !empty($_POST['overwrite'])
+            !empty($_POST['overwrite']),
+            null,
+            !empty($_POST['keep_scripts'])
         );
         $generator->writeMigrationRedirects($externalImporter->queryRedirects());
 
@@ -1587,6 +1597,9 @@ try {
         }
         if ($results['failed'] !== []) {
             $message .= "\n- " . implode("\n- ", array_slice($results['failed'], 0, 5));
+        }
+        if ((int) ($results['scripts_removed'] ?? 0) > 0) {
+            $message .= "\n" . scripts_removed_notice((int) $results['scripts_removed']);
         }
 
         Flash::push($results['failed'] === [] && ($results['assets_failed'] ?? []) === [] ? 'success' : 'error', $message);

@@ -185,6 +185,10 @@
       appendLog("Saved resource " + event.path);
     } else if (event.type === "page_skipped_nonessential") {
       appendLog("Skipped non-essential " + event.url);
+    } else if (event.type === "page_skipped_existing") {
+      appendLog("Already imported " + event.path + " (following its links)");
+    } else if (event.type === "page_assets_repaired") {
+      appendLog("Pointed " + event.path + " at " + Number(event.assets || 0) + " retried file(s)");
     } else if (event.type === "page_skipped_limit") {
       appendLog("Skipped extra page after limit " + event.url);
     } else if (event.type === "asset_start") {
@@ -213,8 +217,14 @@
         ", /wp-content assets: " + Number(result.wp_content_assets_saved || 0) +
         ", failed: " + count(result.failed) +
         ", page-limit skipped: " + count(result.limit_skipped) +
-        ", non-essential skipped: " + count(result.nonessential_skipped)
+        ", non-essential skipped: " + count(result.nonessential_skipped) +
+        ", already imported: " + count(result.skipped)
       );
+      if (count(result.limit_skipped) > 0 || count(result.failed) > 0 || count(result.assets_failed) > 0) {
+        appendLog(
+          "More pages remain or some failed. Run the import again with the same starting URL (overwrite off) to import the next batch and retry failed pages and files."
+        );
+      }
       if (Number(result.scripts_removed || 0) > 0) {
         appendLog(
           "Scripts removed: " + Number(result.scripts_removed) + ". Menus, tabs, toggles, sliders and animations that the original theme built with JavaScript will not work. " +
@@ -242,7 +252,8 @@
     }
 
     setStatus(
-      "Visited " + visited + "/" + maxPages +
+      "New pages " + visited + "/" + maxPages +
+      ", already imported " + Number(event.skipped_existing || 0) +
       ", queued " + Number(event.queued || 0) +
       ", pages " + Number(event.saved || 0) +
       ", resources " + Number(event.resources_saved || 0) +

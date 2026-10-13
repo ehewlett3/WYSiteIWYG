@@ -59,6 +59,13 @@ final class ExternalSiteImporter
     private $progressCallback = null;
     private int $byteBudget = self::DEFAULT_IMPORT_BYTE_BUDGET;
     private int $bytesUsed = 0;
+    // Set while re-checking an already-imported page: assets already on disk
+    // aren't downloaded again and missing ones (failed earlier) are retried.
+    // Every asset the page resolves locally is collected so references the
+    // earlier import couldn't rewrite can be pointed at the local copies.
+    private bool $linksOnly = false;
+    /** @var array<string, string> source URL => local path */
+    private array $pageAssets = [];
 
     private bool $keepScripts = false;
 
@@ -562,15 +569,42 @@ final class ExternalSiteImporter
                     $target = $this->rootPath . '/' . $relativePath;
                     $isHtml = $this->isHtmlDocumentUrl($url, (string) $fetched['content_type']);
                     $body = (string) $fetched['body'];
-                    if ($isHtml) {
-                        $pagesVisited++;
-                    }
-
                     if (!$overwrite && is_file($target)) {
+                        // Already imported by an earlier run: keep the local copy
+                        // and don't count it toward the page limit, but still follow
+                        // its links so re-running continues past where the last run
+                        // stopped and picks up pages that failed or were never reached.
+                        // Its images and files that are missing locally are retried.
                         $skipped[] = $relativePath;
-                        $progress('page_skipped_existing', ['url' => $url, 'path' => $relativePath]);
+                        $foundLinks = 0;
+                        if ($isHtml) {
+                            $this->linksOnly = true;
+                            $this->pageAssets = [];
+                            try {
+                                $discovered = $this->rewriteImportedHtmlReferences($body, $fetched['url'], $sourceHosts, $assetMap, $assetsSaved, $assetsFailed, $nonEssentialSkipped);
+                            } finally {
+                                $this->linksOnly = false;
+                            }
+                            $repointed = $this->pointPageAtLocalAssets($target, $this->pageAssets, $sourceHosts);
+                            if ($repointed > 0) {
+                                $progress('page_assets_repaired', ['url' => $url, 'path' => $relativePath, 'assets' => $repointed]);
+                            }
+                            $this->pageAssets = [];
+                            $foundLinks = count($discovered['links']);
+                            foreach ($discovered['links'] as $link) {
+                                if (!isset($seen[$link]) && !in_array($link, $queue, true)) {
+                                    $queue[] = $link;
+                                }
+                            }
+                            unset($discovered);
+                        }
+                        $progress('page_skipped_existing', ['url' => $url, 'path' => $relativePath, 'found_links' => $foundLinks]);
                         unset($fetched, $body);
                         continue;
+                    }
+
+                    if ($isHtml) {
+                        $pagesVisited++;
                     }
 
                     if ($isHtml) {
@@ -1839,7 +1873,16 @@ final class ExternalSiteImporter
         array &$assetsFailed
     ): ?string {
         $canonicalUrl = $this->withoutFragment($url);
+        if ($this->linksOnly && !array_key_exists($canonicalUrl, $assetMap)) {
+            $existing = $this->existingLocalAssetPath($canonicalUrl);
+            if ($existing !== null) {
+                $assetMap[$canonicalUrl] = $existing;
+            }
+        }
         if (array_key_exists($canonicalUrl, $assetMap)) {
+            if ($this->linksOnly && $assetMap[$canonicalUrl] !== '') {
+                $this->pageAssets[$canonicalUrl] = $assetMap[$canonicalUrl];
+            }
             return $assetMap[$canonicalUrl] !== '' ? $assetMap[$canonicalUrl] : null;
         }
 
@@ -1892,6 +1935,9 @@ final class ExternalSiteImporter
                 'assets_saved' => count($assetsSaved),
                 'assets_failed' => count($assetsFailed),
             ]);
+            if ($this->linksOnly) {
+                $this->pageAssets[$canonicalUrl] = $relativePath;
+            }
 
             return $relativePath;
         } catch (RuntimeException $error) {
@@ -2466,6 +2512,100 @@ final class ExternalSiteImporter
         }
 
         return array_keys($normalized);
+    }
+
+    /**
+     * The local copy of an asset an earlier run already mirrored, or null when
+     * it is missing (its download failed, or it was never reached).
+     */
+    private function existingLocalAssetPath(string $url): ?string
+    {
+        $relativePath = $this->localAssetPathForUrl($url);
+        if (is_file($this->rootPath . '/' . $relativePath)) {
+            return $relativePath;
+        }
+
+        // No extension in the URL: the saved name's extension came from the
+        // response's content type, which isn't known without downloading.
+        $urlExtension = pathinfo((string) (parse_url($url, PHP_URL_PATH) ?: ''), PATHINFO_EXTENSION);
+        if ($urlExtension === '' && str_ends_with($relativePath, '.asset')) {
+            $stem = substr($relativePath, 0, -strlen('.asset'));
+            foreach (glob($this->rootPath . '/' . $stem . '.*') ?: [] as $candidate) {
+                if (is_file($candidate) && pathinfo($candidate, PATHINFO_FILENAME) === basename($stem)) {
+                    return $stem . '.' . pathinfo($candidate, PATHINFO_EXTENSION);
+                }
+            }
+        }
+
+        return null;
+    }
+
+    /**
+     * When a re-run re-checks an already-imported page, point that page's
+     * leftover source references (absolute, protocol-relative,
+     * root-relative or base-relative, as the failed import left them) at the
+     * local copies. Returns how many assets had references re-pointed.
+     */
+    private function pointPageAtLocalAssets(string $pagePath, array $urlToLocalPath, array $sourceHosts): int
+    {
+        if ($urlToLocalPath === [] || !is_file($pagePath)) {
+            return 0;
+        }
+
+        $contents = (string) file_get_contents($pagePath);
+        $next = $contents;
+        $repointed = 0;
+        foreach ($urlToLocalPath as $url => $localPath) {
+            $parts = parse_url((string) $url);
+            if (!is_array($parts)) {
+                continue;
+            }
+            $pathAndQuery = (string) ($parts['path'] ?? '/') . (isset($parts['query']) ? '?' . $parts['query'] : '');
+            $forms = [];
+            foreach ($sourceHosts as $host) {
+                foreach (['https://', 'http://', '//'] as $prefix) {
+                    $forms[] = $prefix . $host . $pathAndQuery;
+                }
+            }
+            $forms[] = $pathAndQuery;
+            // relocalizeImportedOutput() leaves root-relative references base-relative.
+            if (ltrim($pathAndQuery, '/') !== '') {
+                $forms[] = ltrim($pathAndQuery, '/');
+            }
+
+            $variants = [];
+            foreach ($forms as $form) {
+                $variants[$form] = true;
+                $variants[htmlspecialchars($form, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8')] = true;
+            }
+            $variants = array_keys($variants);
+            usort($variants, static fn(string $a, string $b): int => strlen($b) <=> strlen($a));
+
+            // Only whole references (bounded by quotes, parentheses, whitespace or
+            // srcset commas), so already-local paths that merely end with the same
+            // path, like /assets/imported/<host>/wp-content/..., are left alone.
+            $replacement = '/' . ltrim((string) $localPath, '/');
+            $before = $next;
+            foreach ($variants as $variant) {
+                if (!str_contains($next, $variant)) {
+                    continue;
+                }
+                $next = preg_replace(
+                    '~(?<=["\'(\s,=])' . preg_quote($variant, '~') . '(?=["\')\s,#]|$)~',
+                    str_replace(['\\', '$'], ['\\\\', '\\$'], $replacement),
+                    $next
+                ) ?? $next;
+            }
+            if ($next !== $before) {
+                $repointed++;
+            }
+        }
+
+        if ($next !== $contents) {
+            Filesystem::writeSitePage($pagePath, $next);
+        }
+
+        return $repointed;
     }
 
     private function rewriteImportedAssetReferences(array $urlToLocalPath): int

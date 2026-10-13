@@ -147,3 +147,45 @@ test('An interrupted import retries the URL in progress once, then records it as
     $slowFailures = array_filter($result['failed'], static fn(string $f): bool => str_starts_with($f, $slow . ' - The server stopped twice'));
     assert_same(1, count($slowFailures), 'second interruption: recorded as failed, not retried');
 });
+
+test('Re-checking an already-imported page follows its links and retries only its missing assets', function (): void {
+    $root = scratch_dir();
+    $importer = new ExternalSiteImporter($root, $root . '/edit');
+    $onDisk = 'assets/imported/ex.invalid/wp-content/uploads/on-disk.jpg';
+    mkdir(dirname($root . '/' . $onDisk), 0775, true);
+    file_put_contents($root . '/' . $onDisk, 'jpg');
+    $assetMap = $assetsSaved = $assetsFailed = $nonEssential = [];
+    $html = '<!DOCTYPE html><html><head></head><body>'
+        . '<a href="/about/">About</a><a href="https://ex.invalid/blog/post-1/">Post</a>'
+        . '<img src="/wp-content/uploads/missing.jpg"><img src="/wp-content/uploads/on-disk.jpg"></body></html>';
+    (new \ReflectionProperty($importer, 'linksOnly'))->setValue($importer, true);
+    $method = new \ReflectionMethod($importer, 'rewriteImportedHtmlReferences');
+    $result = $method->invokeArgs($importer, [$html, 'https://ex.invalid/', ['ex.invalid'], &$assetMap, &$assetsSaved, &$assetsFailed, &$nonEssential]);
+    assert_true(in_array('https://ex.invalid/about/', $result['links'], true));
+    assert_true(in_array('https://ex.invalid/blog/post-1/', $result['links'], true));
+    assert_same($onDisk, $assetMap['https://ex.invalid/wp-content/uploads/on-disk.jpg'] ?? null, 'assets already on disk are reused, not downloaded');
+    assert_same(['https://ex.invalid/wp-content/uploads/on-disk.jpg' => $onDisk], (new \ReflectionProperty($importer, 'pageAssets'))->getValue($importer), 'local assets are collected for re-pointing');
+    assert_same(['https://ex.invalid/wp-content/uploads/missing.jpg'], array_keys($assetsFailed), 'the missing asset was retried (and fails here: .invalid host)');
+});
+
+test('Retried assets replace the leftover source references in the kept page', function (): void {
+    $root = scratch_dir();
+    $importer = new ExternalSiteImporter($root, $root . '/edit');
+    $page = $root . '/about/index.html';
+    mkdir(dirname($page), 0775, true);
+    file_put_contents($page, '<img src="/wp-content/uploads/a.jpg" srcset="https://www.ex.com/wp-content/uploads/a.jpg 1x, /wp-content/uploads/b.jpg 2x">'
+        . '<div style="background:url(//ex.com/wp-content/uploads/a.jpg)"></div>'
+        . '<img src="/assets/imported/ex.com/wp-content/uploads/a.jpg"><img src="wp-content/uploads/a.jpg">'
+        . '<img src="assets/imported/ex.com/wp-content/uploads/a.jpg">');
+    $local = 'assets/imported/ex.com/wp-content/uploads/a.jpg';
+    assert_same(1, call_private($importer, 'pointPageAtLocalAssets', $page, ['https://ex.com/wp-content/uploads/a.jpg' => $local], ['ex.com', 'www.ex.com']));
+    $after = file_get_contents($page);
+    assert_same(
+        '<img src="/' . $local . '" srcset="/' . $local . ' 1x, /wp-content/uploads/b.jpg 2x">'
+        . '<div style="background:url(/' . $local . ')"></div>'
+        . '<img src="/' . $local . '"><img src="/' . $local . '">'
+        . '<img src="' . $local . '">',
+        $after
+    );
+    assert_same(0, call_private($importer, 'pointPageAtLocalAssets', $page, ['https://ex.com/wp-content/uploads/a.jpg' => $local], ['ex.com']), 'nothing left to re-point');
+});

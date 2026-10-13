@@ -1598,8 +1598,8 @@ try {
         if ($results['failed'] !== []) {
             $message .= "\n- " . implode("\n- ", array_slice($results['failed'], 0, 5));
         }
-        if (($results['limit_skipped'] ?? []) !== [] || $results['failed'] !== []) {
-            $message .= "\nMore pages remain or some failed. Run the import again with the same starting URL (overwrite off) to import the next batch and retry failed pages.";
+        if (($results['limit_skipped'] ?? []) !== [] || $results['failed'] !== [] || ($results['assets_failed'] ?? []) !== []) {
+            $message .= "\nMore pages remain or some failed. Run the import again with the same starting URL (overwrite off) to import the next batch and retry failed pages and files.";
         }
         if ((int) ($results['scripts_removed'] ?? 0) > 0) {
             $message .= "\n" . scripts_removed_notice((int) $results['scripts_removed']);

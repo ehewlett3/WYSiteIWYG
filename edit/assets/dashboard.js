@@ -187,6 +187,8 @@
       appendLog("Skipped non-essential " + event.url);
     } else if (event.type === "page_skipped_existing") {
       appendLog("Already imported " + event.path + " (following its links)");
+    } else if (event.type === "page_assets_repaired") {
+      appendLog("Pointed " + event.path + " at " + Number(event.assets || 0) + " retried file(s)");
     } else if (event.type === "page_skipped_limit") {
       appendLog("Skipped extra page after limit " + event.url);
     } else if (event.type === "asset_start") {
@@ -218,9 +220,9 @@
         ", non-essential skipped: " + count(result.nonessential_skipped) +
         ", already imported: " + count(result.skipped)
       );
-      if (count(result.limit_skipped) > 0 || count(result.failed) > 0) {
+      if (count(result.limit_skipped) > 0 || count(result.failed) > 0 || count(result.assets_failed) > 0) {
         appendLog(
-          "More pages remain or some failed. Run the import again with the same starting URL (overwrite off) to import the next batch and retry failed pages."
+          "More pages remain or some failed. Run the import again with the same starting URL (overwrite off) to import the next batch and retry failed pages and files."
         );
       }
       if (Number(result.scripts_removed || 0) > 0) {

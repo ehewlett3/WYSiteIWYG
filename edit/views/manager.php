@@ -291,7 +291,7 @@ use function WYSiteIWYG\h;
             <details class="wysite-muted">
               <summary>Importing more than 500 pages, or retrying pages that failed</summary>
               <p>Run the import again with the <strong>same starting URL</strong> and overwrite <strong>off</strong>. Pages you already imported are kept and don't count toward the limit, but the crawler still follows their links, so each run imports the next batch of new pages. Repeat until the report shows nothing skipped after the page limit.</p>
-              <p>The same re-run retries pages that failed last time, because they were never saved. For images or other files that failed, paste their URLs from the import report into <strong>Backfill specific assets</strong> below.</p>
+              <p>The same re-run retries anything that failed last time: pages that were never saved are imported, and images or other files missing from pages you already have are downloaded and those pages are pointed at them. Files already downloaded aren't fetched again. To retry just a few specific files without re-crawling, paste their URLs into <strong>Backfill specific assets</strong> below.</p>
               <p>If an import was interrupted partway through a run, use <strong>Resume</strong> instead to pick up exactly where it stopped.</p>
             </details>
             <?php foreach ($externalImporter->unfinishedImportJobs() as $unfinishedJob): ?>

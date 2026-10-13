@@ -1580,7 +1580,7 @@ try {
         $message = 'External site import finished.' .
             "\n- Saved HTML pages: " . count($results['saved']) .
             "\n- Non-HTML resources saved: " . count($results['resources_saved'] ?? []) .
-            "\n- Skipped existing: " . count($results['skipped']) .
+            "\n- Already imported (kept, links followed): " . count($results['skipped']) .
             "\n- Skipped duplicate URLs: " . count($results['duplicates'] ?? []) .
             "\n- Skipped after page limit: " . count($results['limit_skipped'] ?? []) .
             "\n- Non-essential WordPress endpoints skipped: " . count($results['nonessential_skipped'] ?? []) .
@@ -1597,6 +1597,9 @@ try {
         }
         if ($results['failed'] !== []) {
             $message .= "\n- " . implode("\n- ", array_slice($results['failed'], 0, 5));
+        }
+        if (($results['limit_skipped'] ?? []) !== [] || $results['failed'] !== []) {
+            $message .= "\nMore pages remain or some failed. Run the import again with the same starting URL (overwrite off) to import the next batch and retry failed pages.";
         }
         if ((int) ($results['scripts_removed'] ?? 0) > 0) {
             $message .= "\n" . scripts_removed_notice((int) $results['scripts_removed']);

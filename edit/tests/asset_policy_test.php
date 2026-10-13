@@ -147,3 +147,21 @@ test('An interrupted import retries the URL in progress once, then records it as
     $slowFailures = array_filter($result['failed'], static fn(string $f): bool => str_starts_with($f, $slow . ' - The server stopped twice'));
     assert_same(1, count($slowFailures), 'second interruption: recorded as failed, not retried');
 });
+
+test('Re-run link discovery on already-imported pages finds links without downloading assets', function (): void {
+    $root = scratch_dir();
+    $importer = new ExternalSiteImporter($root, $root . '/edit');
+    $assetMap = ['https://ex.invalid/wp-content/uploads/known.jpg' => 'assets/imported/ex.invalid/known.jpg'];
+    $assetsSaved = $assetsFailed = $nonEssential = [];
+    $html = '<!DOCTYPE html><html><head><link rel="stylesheet" href="/style.css"></head><body>'
+        . '<a href="/about/">About</a><a href="https://ex.invalid/blog/post-1/">Post</a>'
+        . '<img src="/wp-content/uploads/new.jpg"><img src="/wp-content/uploads/known.jpg"></body></html>';
+    (new \ReflectionProperty($importer, 'linksOnly'))->setValue($importer, true);
+    $method = new \ReflectionMethod($importer, 'rewriteImportedHtmlReferences');
+    $result = $method->invokeArgs($importer, [$html, 'https://ex.invalid/', ['ex.invalid'], &$assetMap, &$assetsSaved, &$assetsFailed, &$nonEssential]);
+    assert_true(in_array('https://ex.invalid/about/', $result['links'], true));
+    assert_true(in_array('https://ex.invalid/blog/post-1/', $result['links'], true));
+    assert_same([], $assetsSaved);
+    assert_same([], $assetsFailed, 'no download was attempted');
+    assert_same(['https://ex.invalid/wp-content/uploads/known.jpg'], array_keys($assetMap), 'unseen assets stay unclaimed for a later real import');
+});

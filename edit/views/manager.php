@@ -275,12 +275,12 @@ use function WYSiteIWYG\h;
                 <input type="url" name="url" required placeholder="https://example.com/">
               </label>
               <label>
-                <span>Maximum pages</span>
+                <span>New pages to import this run <em>(up to 500)</em></span>
                 <input type="number" name="max_pages" min="1" max="500" value="50">
               </label>
               <label class="wysite-checkbox">
                 <input type="checkbox" name="overwrite" value="1">
-                <span>Overwrite existing local HTML files</span>
+                <span>Overwrite existing local HTML files <em>(leave off to continue an earlier import; turning it on re-downloads every page and counts each one toward the limit)</em></span>
               </label>
               <label class="wysite-checkbox">
                 <input type="checkbox" name="keep_scripts" value="1"<?= $externalImporter->keepsScripts() ? ' checked' : '' ?>>
@@ -288,6 +288,12 @@ use function WYSiteIWYG\h;
               </label>
               <button class="wysite-button" type="submit">Import Site</button>
             </form>
+            <details class="wysite-muted">
+              <summary>Importing more than 500 pages, or retrying pages that failed</summary>
+              <p>Run the import again with the <strong>same starting URL</strong> and overwrite <strong>off</strong>. Pages you already imported are kept and don't count toward the limit, but the crawler still follows their links, so each run imports the next batch of new pages. Repeat until the report shows nothing skipped after the page limit.</p>
+              <p>The same re-run retries pages that failed last time, because they were never saved. For images or other files that failed, paste their URLs from the import report into <strong>Backfill specific assets</strong> below.</p>
+              <p>If an import was interrupted partway through a run, use <strong>Resume</strong> instead to pick up exactly where it stopped.</p>
+            </details>
             <?php foreach ($externalImporter->unfinishedImportJobs() as $unfinishedJob): ?>
               <div class="wysite-flash wysite-flash--error">
                 Unfinished import of <code><?= h($unfinishedJob['start_url']) ?></code> (<?= (int) $unfinishedJob['saved'] ?> page(s) saved, <?= (int) $unfinishedJob['queued'] ?> URL(s) left).

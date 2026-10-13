@@ -59,6 +59,9 @@ final class ExternalSiteImporter
     private $progressCallback = null;
     private int $byteBudget = self::DEFAULT_IMPORT_BYTE_BUDGET;
     private int $bytesUsed = 0;
+    // Set while reading links from an already-imported page: asset references
+    // are left alone instead of being downloaded again.
+    private bool $linksOnly = false;
 
     private bool $keepScripts = false;
 
@@ -562,15 +565,35 @@ final class ExternalSiteImporter
                     $target = $this->rootPath . '/' . $relativePath;
                     $isHtml = $this->isHtmlDocumentUrl($url, (string) $fetched['content_type']);
                     $body = (string) $fetched['body'];
-                    if ($isHtml) {
-                        $pagesVisited++;
-                    }
-
                     if (!$overwrite && is_file($target)) {
+                        // Already imported by an earlier run: keep the local copy
+                        // and don't count it toward the page limit, but still follow
+                        // its links so re-running continues past where the last run
+                        // stopped and picks up pages that failed or were never reached.
                         $skipped[] = $relativePath;
-                        $progress('page_skipped_existing', ['url' => $url, 'path' => $relativePath]);
+                        $foundLinks = 0;
+                        if ($isHtml) {
+                            $this->linksOnly = true;
+                            try {
+                                $discovered = $this->rewriteImportedHtmlReferences($body, $fetched['url'], $sourceHosts, $assetMap, $assetsSaved, $assetsFailed, $nonEssentialSkipped);
+                            } finally {
+                                $this->linksOnly = false;
+                            }
+                            $foundLinks = count($discovered['links']);
+                            foreach ($discovered['links'] as $link) {
+                                if (!isset($seen[$link]) && !in_array($link, $queue, true)) {
+                                    $queue[] = $link;
+                                }
+                            }
+                            unset($discovered);
+                        }
+                        $progress('page_skipped_existing', ['url' => $url, 'path' => $relativePath, 'found_links' => $foundLinks]);
                         unset($fetched, $body);
                         continue;
+                    }
+
+                    if ($isHtml) {
+                        $pagesVisited++;
                     }
 
                     if ($isHtml) {
@@ -1839,6 +1862,10 @@ final class ExternalSiteImporter
         array &$assetsFailed
     ): ?string {
         $canonicalUrl = $this->withoutFragment($url);
+        if ($this->linksOnly) {
+            $known = (string) ($assetMap[$canonicalUrl] ?? '');
+            return $known !== '' ? $known : null;
+        }
         if (array_key_exists($canonicalUrl, $assetMap)) {
             return $assetMap[$canonicalUrl] !== '' ? $assetMap[$canonicalUrl] : null;
         }

@@ -37,6 +37,7 @@ require_once __DIR__ . '/src/AuditLog.php';
 require_once __DIR__ . '/src/SearchReplace.php';
 require_once __DIR__ . '/src/EditLocks.php';
 require_once __DIR__ . '/src/ThemePackage.php';
+require_once __DIR__ . '/src/MediaLibrary.php';
 require_once __DIR__ . '/src/AiAssistant.php';
 require_once __DIR__ . '/src/SecurityRescan.php';
 require_once __DIR__ . '/src/ImportDedupe.php';
@@ -160,6 +161,7 @@ return [
     'systemCheck' => new WYSiteIWYG\SystemCheck($rootPath, $editPath),
     'rescan' => new WYSiteIWYG\SecurityRescan($rootPath, $editPath, $repository, $settings),
     'componentStyles' => $componentStyles,
+    'media' => new WYSiteIWYG\MediaLibrary($rootPath, $editPath),
     'packages' => new WYSiteIWYG\ThemePackage($rootPath, $themes),
     'locks' => new WYSiteIWYG\EditLocks($editPath),
     'audit' => new WYSiteIWYG\AuditLog(__DIR__ . '/storage/audit.local.jsonl'),

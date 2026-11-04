@@ -52,6 +52,7 @@ function render_dashboard_nav(string $appUrl, ?string $active, array $user): str
     $items = [
         ['id' => 'dashboard', 'label' => 'Dashboard', 'href' => $appUrl . '/index.php', 'admin' => false],
         ['id' => 'themes', 'label' => 'Theme', 'href' => $appUrl . '/index.php?action=themes', 'admin' => false],
+        ['id' => 'media', 'label' => 'Media', 'href' => $appUrl . '/index.php?action=media', 'admin' => false],
         ['id' => 'manager', 'label' => 'Manager', 'href' => $appUrl . '/index.php?action=manager', 'admin' => true],
         ['id' => 'ai', 'label' => 'AI', 'href' => $appUrl . '/index.php?action=ai', 'admin' => true],
         ['id' => 'users', 'label' => 'Users', 'href' => $appUrl . '/index.php?action=users', 'admin' => true],
@@ -1143,6 +1144,7 @@ try {
                         <td><?= h(number_format($revision['bytes'] / 1024, 1)) ?> KB</td>
                         <td class="wysite-table__actions">
                           <a class="wysite-button wysite-button--ghost" href="<?= h($appUrl) ?>/index.php?action=revision-view&path=<?= rawurlencode($page['path']) ?>&id=<?= rawurlencode($revision['id']) ?>" target="_blank" rel="noreferrer">View</a>
+                          <a class="wysite-button wysite-button--ghost" href="<?= h($appUrl) ?>/index.php?action=revision-diff&path=<?= rawurlencode($page['path']) ?>&id=<?= rawurlencode($revision['id']) ?>">Compare</a>
                           <form method="post" action="<?= h($appUrl) ?>/index.php?action=restore-revision" data-wysite-confirm="Restore the version saved <?= h(gmdate('Y-m-d H:i', $revision['time'])) ?> UTC? The current version is kept in the history.">
                             <input type="hidden" name="csrf_token" value="<?= h(Csrf::token()) ?>">
                             <input type="hidden" name="path" value="<?= h($page['path']) ?>">
@@ -2597,7 +2599,7 @@ try {
     if ($action === 'search-replace') {
         require_admin($user);
         $query = [
-            'find' => (string) ($_POST['find'] ?? ''),
+            'find' => (string) ($_POST['find'] ?? ($_GET['find'] ?? '')),
             'replace' => (string) ($_POST['replace'] ?? ''),
             'regex' => !empty($_POST['regex']),
             'case' => !empty($_POST['case']),
@@ -2671,6 +2673,92 @@ try {
         </main>
         <?php
         layout('Search & replace', (string) ob_get_clean(), $appUrl, $siteTitle, $user);
+        return;
+    }
+
+    if ($action === 'media-trash') {
+        require_admin($user);
+        if (!is_post() || !Csrf::validate($_POST['csrf_token'] ?? null)) {
+            throw new RuntimeException('The request was rejected.');
+        }
+        $moved = $app['media']->trashUnused(array_values(array_filter((array) ($_POST['files'] ?? []), 'is_string')));
+        Flash::push('success', 'Moved ' . $moved . ' unused file(s) to edit/storage/trash/. Files still in use were left alone.');
+        redirect($appUrl . '/index.php?action=media&unused=1');
+    }
+
+    if ($action === 'media') {
+        $mediaType = in_array($_GET['type'] ?? '', ['image', 'document', 'media', 'code', 'other'], true) ? (string) $_GET['type'] : '';
+        $unusedOnly = !empty($_GET['unused']);
+        $search = trim((string) ($_GET['q'] ?? ''));
+        $media = $app['media']->list($mediaType, $unusedOnly, $search);
+        ob_start();
+        ?>
+        <main class="wysite-dashboard">
+          <section class="wysite-panel">
+            <div class="wysite-panel__heading">
+              <div>
+                <p class="wysite-kicker">Media</p>
+                <h2><?= (int) $media['total'] ?> file(s)<?= $unusedOnly ? ' not used anywhere' : '' ?></h2>
+              </div>
+            </div>
+            <form method="get" class="wysite-form wysite-grid">
+              <input type="hidden" name="action" value="media">
+              <label><span>Name contains</span><input type="search" name="q" value="<?= h($search) ?>"></label>
+              <label><span>Type</span><select name="type" class="wysite-theme-select"><option value="">All</option><?php foreach (['image' => 'Images', 'document' => 'Documents', 'media' => 'Audio and video', 'code' => 'Styles, scripts and fonts', 'other' => 'Other'] as $value => $label): ?><option value="<?= h($value) ?>"<?= $mediaType === $value ? ' selected' : '' ?>><?= h($label) ?></option><?php endforeach; ?></select></label>
+              <label class="wysite-checkbox"><input type="checkbox" name="unused" value="1"<?= $unusedOnly ? ' checked' : '' ?>><span>Only files no page uses</span></label>
+              <div><button class="wysite-button wysite-button--ghost" type="submit">Show</button> <a class="wysite-button wysite-button--ghost" href="<?= h($appUrl) ?>/index.php?action=import-dedupe">Find duplicates</a></div>
+            </form>
+            <form method="post" action="<?= h($appUrl) ?>/index.php?action=media-trash" data-wysite-confirm="Move the selected unused files out of the site (to edit/storage/trash/)?">
+              <input type="hidden" name="csrf_token" value="<?= h(Csrf::token()) ?>">
+              <div class="wysite-media-grid">
+                <?php foreach ($media['items'] as $item): ?>
+                  <figure class="wysite-media-item">
+                    <?php if ($item['type'] === 'image'): ?><img src="<?= h($siteBaseUrl . $item['path']) ?>" alt="" loading="lazy"><?php else: ?><div class="wysite-media-item__type"><?= h(strtoupper((string) pathinfo($item['path'], PATHINFO_EXTENSION))) ?></div><?php endif; ?>
+                    <figcaption>
+                      <a href="<?= h($siteBaseUrl . $item['path']) ?>" target="_blank" rel="noreferrer"><?= h(basename($item['path'])) ?></a>
+                      <span class="wysite-muted"><?= h(number_format($item['bytes'] / 1024, 0)) ?> KB · <?= $item['uses'] > 0 ? 'used ' . (int) $item['uses'] . '×' : ($item['type'] === 'code' ? 'theme file' : 'unused') ?></span>
+                      <span class="wysite-media-item__actions">
+                        <a href="<?= h($appUrl) ?>/index.php?action=search-replace&find=<?= rawurlencode($item['path']) ?>">Replace everywhere</a>
+                        <?php if ($item['uses'] === 0 && $item['type'] !== 'code' && !empty($user['is_admin'])): ?><label class="wysite-checkbox"><input type="checkbox" name="files[]" value="<?= h($item['path']) ?>"><span>Select</span></label><?php endif; ?>
+                      </span>
+                    </figcaption>
+                  </figure>
+                <?php endforeach; ?>
+              </div>
+              <?php if (!empty($user['is_admin'])): ?><button class="wysite-button wysite-button--ghost" type="submit">Move selected unused files out of the site</button><?php endif; ?>
+            </form>
+          </section>
+        </main>
+        <?php
+        layout('Media', (string) ob_get_clean(), $appUrl, $siteTitle, $user, 'media');
+        return;
+    }
+
+    if ($action === 'revision-diff') {
+        $diffPath = $repository->sitePath()->normalize((string) ($_GET['path'] ?? ''));
+        $rows = \WYSiteIWYG\MediaLibrary::diff($revisions->read($diffPath, (string) ($_GET['id'] ?? '')), $repository->getPage($diffPath)['html']);
+        ob_start();
+        ?>
+        <main class="wysite-dashboard">
+          <section class="wysite-panel">
+            <div class="wysite-panel__heading">
+              <div>
+                <p class="wysite-kicker">Compare versions</p>
+                <h2><?= h($diffPath) ?></h2>
+              </div>
+              <a class="wysite-button wysite-button--ghost" href="<?= h($appUrl) ?>/index.php?action=metadata&path=<?= rawurlencode($diffPath) ?>">Back to page details</a>
+            </div>
+            <p class="wysite-muted"><span class="wysite-diff-del">Removed</span> lines were in the earlier version; <span class="wysite-diff-add">added</span> lines are in the current page.</p>
+            <?php if ($rows === []): ?>
+              <p>The versions are identical.</p>
+            <?php else: ?>
+              <pre class="wysite-diff"><?php foreach ($rows as [$kind, $line]): ?><span class="wysite-diff-<?= h($kind) ?>"><?= h(($kind === 'add' ? '+ ' : ($kind === 'del' ? '- ' : ($kind === 'skip' ? '… ' : '  '))) . $line) ?></span>
+<?php endforeach; ?></pre>
+            <?php endif; ?>
+          </section>
+        </main>
+        <?php
+        layout('Compare versions', (string) ob_get_clean(), $appUrl, $siteTitle, $user);
         return;
     }
 

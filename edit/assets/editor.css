@@ -1032,3 +1032,16 @@ a.wysite-nav__logout {
 .wysite-shortcuts dt { font-family: ui-monospace, monospace; color: #ffa94d; }
 .wysite-shortcuts dd { margin: 0; }
 .wysite-lock-note { background: #ffe3e3; color: #a61e1e; border-radius: 4px; padding: 0 6px; }
+
+/* UX-4 media library, UX-6 revision diff. */
+.wysite-media-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 14px; margin: 14px 0; }
+.wysite-media-item { margin: 0; display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+.wysite-media-item img, .wysite-media-item__type { width: 100%; aspect-ratio: 4 / 3; object-fit: cover; border-radius: 8px; background: rgba(127, 127, 127, 0.15); }
+.wysite-media-item__type { display: grid; place-items: center; font: 700 1.1rem/1 system-ui, sans-serif; opacity: 0.7; }
+.wysite-media-item figcaption { display: flex; flex-direction: column; gap: 2px; font-size: 0.85rem; overflow-wrap: anywhere; }
+.wysite-media-item__actions { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.wysite-diff { overflow-x: auto; font: 12px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; padding: 12px; border-radius: 8px; background: rgba(127, 127, 127, 0.08); }
+.wysite-diff span { display: block; white-space: pre-wrap; }
+.wysite-diff-add { background: rgba(46, 160, 67, 0.18); }
+.wysite-diff-del { background: rgba(248, 81, 73, 0.18); }
+.wysite-diff-skip { opacity: 0.6; font-style: italic; }

@@ -56,6 +56,66 @@ final class SiteReport
     }
 
     /**
+     * UX-9: common accessibility problems per page: images without alt text,
+     * links and buttons without a name, skipped heading levels, a missing page
+     * language, and form fields without a label.
+     *
+     * @return array<string, array<int, array{type:string, detail:string}>>
+     */
+    public function accessibilityReport(?array $pagePaths = null): array
+    {
+        $report = [];
+        foreach ($pagePaths ?? array_column($this->repository->listPages(), 'path') as $path) {
+            $html = (string) @file_get_contents($this->rootPath . '/' . $path);
+            if ($html === '' || stripos($html, 'http-equiv="refresh"') !== false) {
+                continue;
+            }
+            $dom = HtmlDocument::parse($html);
+            $xpath = new \DOMXPath($dom);
+            $findings = [];
+            $root = $dom->documentElement;
+            if ($root instanceof \DOMElement && trim($root->getAttribute('lang')) === '') {
+                $findings[] = ['type' => 'No page language', 'detail' => 'Add lang to <html> (Settings → Language does this for generated pages).'];
+            }
+            foreach ($xpath->query('//body//img[not(@alt)]') ?: [] as $img) {
+                $findings[] = ['type' => 'Image without alt text', 'detail' => basename((string) parse_url($img->getAttribute('src'), PHP_URL_PATH))];
+            }
+            foreach ($xpath->query('//body//a[@href] | //body//button') ?: [] as $link) {
+                $name = trim($link->textContent . ' ' . $link->getAttribute('aria-label') . ' ' . $link->getAttribute('title'));
+                foreach ($xpath->query('.//img[@alt]', $link) ?: [] as $img) {
+                    $name .= $img->getAttribute('alt');
+                }
+                if (trim($name) === '') {
+                    $findings[] = ['type' => ($link->nodeName === 'button' ? 'Button' : 'Link') . ' without a name', 'detail' => (string) $link->getAttribute('href')];
+                }
+            }
+            $previous = 0;
+            foreach ($xpath->query('//body//h1 | //body//h2 | //body//h3 | //body//h4 | //body//h5 | //body//h6') ?: [] as $heading) {
+                $level = (int) substr($heading->nodeName, 1);
+                if ($previous > 0 && $level > $previous + 1) {
+                    $findings[] = ['type' => 'Skipped heading level', 'detail' => 'h' . $previous . ' → h' . $level . ': "' . mb_substr(trim($heading->textContent), 0, 60) . '"'];
+                }
+                $previous = $level;
+            }
+            foreach ($xpath->query('//body//input[not(@type="hidden") and not(@type="submit") and not(@type="button") and not(@type="image")] | //body//select | //body//textarea') ?: [] as $field) {
+                $id = $field->getAttribute('id');
+                $labelled = $field->getAttribute('aria-label') !== '' || $field->getAttribute('aria-labelledby') !== ''
+                    || ($xpath->query('ancestor::label', $field)?->length ?? 0) > 0
+                    || ($id !== '' && ($xpath->query('//label[@for="' . str_replace('"', '', $id) . '"]')?->length ?? 0) > 0);
+                if (!$labelled) {
+                    $findings[] = ['type' => 'Form field without a label', 'detail' => (string) ($field->getAttribute('name') ?: $field->nodeName)];
+                }
+            }
+            if ($findings !== []) {
+                $report[$path] = $findings;
+            }
+        }
+        ksort($report);
+
+        return $report;
+    }
+
+    /**
      * Per-file findings for a migrated site. $sourceHosts are the old site's
      * hostnames (e.g. ["example.org", "www.example.org"]).
      *

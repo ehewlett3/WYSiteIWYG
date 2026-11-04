@@ -2389,6 +2389,34 @@ try {
         return;
     }
 
+    if (in_array($action, ['theme-export', 'site-export'], true)) {
+        require_admin($user);
+        $zipFile = $action === 'theme-export'
+            ? $app['packages']->export((string) ($_GET['theme'] ?? ''))
+            : $app['packages']->exportSite();
+        $downloadName = $action === 'theme-export' ? 'theme-' . preg_replace('/[^a-z0-9-]/', '', (string) ($_GET['theme'] ?? '')) . '.zip' : 'site-' . gmdate('Ymd') . '.zip';
+        header('Content-Type: application/zip');
+        header('Content-Disposition: attachment; filename="' . $downloadName . '"');
+        header('Content-Length: ' . (string) filesize($zipFile));
+        readfile($zipFile);
+        @unlink($zipFile);
+        return;
+    }
+
+    if ($action === 'theme-import') {
+        require_admin($user);
+        if (!is_post() || !Csrf::validate($_POST['csrf_token'] ?? null)) {
+            throw new RuntimeException('The theme import request was rejected.');
+        }
+        $upload = $_FILES['theme_zip'] ?? null;
+        if (!is_array($upload) || ($upload['error'] ?? UPLOAD_ERR_NO_FILE) !== UPLOAD_ERR_OK || !is_uploaded_file((string) $upload['tmp_name'])) {
+            throw new RuntimeException('Choose a theme .zip file exported from WYSiteIWYG.');
+        }
+        $installed = $app['packages']->import((string) $upload['tmp_name']);
+        Flash::push('success', 'Installed the "' . $themes->getTheme($installed)['name'] . '" theme. Preview it below, then apply it.');
+        redirect_to_view($appUrl, 'themes');
+    }
+
     if ($action === 'redirects-download') {
         require_admin($user);
         $file = __DIR__ . '/storage/redirects.txt';
@@ -2453,6 +2481,34 @@ try {
                   <tbody>
                     <?php foreach ($migration as $reportPath => $findings): ?>
                       <?php foreach ($findings as $index => $finding): ?>
+                        <tr>
+                          <td><?php if ($index === 0): ?><a href="<?= h($appUrl) ?>/index.php?action=preview&path=<?= rawurlencode($reportPath) ?>"><code><?= h($reportPath) ?></code></a><?php endif; ?></td>
+                          <td><?= h($finding['type']) ?></td>
+                          <td><?= h($finding['detail']) ?></td>
+                        </tr>
+                      <?php endforeach; ?>
+                    <?php endforeach; ?>
+                  </tbody>
+                </table>
+              </div>
+            <?php endif; ?>
+          </section>
+          <?php $accessibility = $siteReport->accessibilityReport(); ?>
+          <section class="wysite-panel">
+            <div class="wysite-panel__heading">
+              <div>
+                <p class="wysite-kicker">Accessibility</p>
+                <h3><?= $accessibility === [] ? 'No common problems found' : count($accessibility) . ' page(s) with accessibility problems' ?></h3>
+              </div>
+            </div>
+            <p class="wysite-muted">Images need alt text (use an empty alt for decorative images), links and buttons need words, headings shouldn't skip levels, and form fields need labels.</p>
+            <?php if ($accessibility !== []): ?>
+              <div class="wysite-table-wrap">
+                <table class="wysite-table">
+                  <thead><tr><th>Page</th><th>Problem</th><th>Where</th></tr></thead>
+                  <tbody>
+                    <?php foreach ($accessibility as $reportPath => $findings): ?>
+                      <?php foreach (array_slice($findings, 0, 30) as $index => $finding): ?>
                         <tr>
                           <td><?php if ($index === 0): ?><a href="<?= h($appUrl) ?>/index.php?action=preview&path=<?= rawurlencode($reportPath) ?>"><code><?= h($reportPath) ?></code></a><?php endif; ?></td>
                           <td><?= h($finding['type']) ?></td>

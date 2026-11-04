@@ -165,6 +165,13 @@ if (context) {
       toast("Template sections are admin-only.", true);
       return;
     }
+    // THM-H: template elements carry their id in the preview; anything without
+    // one was produced by a token (footer, logo, menu) and is edited elsewhere.
+    const tid = target.closest("[data-wysite-tid]") === target ? target.dataset.wysiteTid : undefined;
+    if (scope === "template" && context.templateHash && tid === undefined) {
+      toast(target.closest(".site-footer, footer") ? "This part comes from Settings → Footer." : "This part is generated (site name, logo, menu or footer) and is edited in Settings or its own block.", true);
+      return;
+    }
     if (scope === "template" && !confirmTemplateEdit(target)) {
       return;
     }
@@ -189,6 +196,8 @@ if (context) {
                 kind: context.pageKind || "page",
                 scope,
                 domPath,
+                tid,
+                templateHash: context.templateHash || "",
                 html,
                 baseHash: scope === "page" ? context.fileHash || "" : "",
               }

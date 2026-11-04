@@ -677,9 +677,25 @@ try {
                 $nonce
             );
         } else {
-            echo $repository->renderPreviewHtml($path, $appUrl, $siteBaseUrl, Csrf::token(), $user['username'], $nonce, [
-                'isAdmin' => !empty($user['is_admin']),
-            ]);
+            // THM-H: admins get template elements tagged with ids, so a selected
+            // header/footer section is saved to the right template element.
+            $page = $repository->getPage($path);
+            $annotated = !empty($user['is_admin']) && $page['blocks'] !== [] ? $generator->renderPageWithTemplateIds($page['path']) : null;
+            if ($annotated !== null) {
+                $templateFile = $rootPath . '/' . $repository->activeTemplateRelativePath($repository->effectiveTemplateKind($page['kind']));
+                echo $repository->renderPreviewHtmlFromSource($page['path'], $annotated, $appUrl, $siteBaseUrl, Csrf::token(), $user['username'], [
+                    'pageKind' => $page['kind'],
+                    'activeTemplatePath' => $repository->activeTemplateRelativePath($repository->effectiveTemplateKind($page['kind'])),
+                    'selectionSaveEnabled' => true,
+                    'fileHash' => sha1($page['html']),
+                    'templateHash' => is_file($templateFile) ? sha1((string) file_get_contents($templateFile)) : '',
+                    'isAdmin' => true,
+                ], $nonce);
+            } else {
+                echo $repository->renderPreviewHtml($path, $appUrl, $siteBaseUrl, Csrf::token(), $user['username'], $nonce, [
+                    'isAdmin' => !empty($user['is_admin']),
+                ]);
+            }
         }
         return;
     }
@@ -726,6 +742,8 @@ try {
             // URLs and marker comments before anything reaches a public page.
             $html = \WYSiteIWYG\Sanitizer::html((string) ($data['html'] ?? ''));
         }
+        // Preview-only template ids never belong in saved content.
+        $html = (string) preg_replace('/\sdata-wysite-tid="\d+"/', '', $html);
         assert_page_unchanged($repository, $path, $data);
 
         if (($block['type'] ?? '') === 'menu' || $name === 'main-menu') {
@@ -761,12 +779,14 @@ try {
         $page = $repository->getPage($path);
         $kind = (string) ($page['kind'] ?? 'page');
 
-        if (!is_array($domPath)) {
+        if (!is_array($domPath) && !isset($data['tid'])) {
             json_response(['ok' => false, 'message' => 'The selected section path was invalid.'], 400);
         }
 
         $backups->create('template-edit');
-        $templatePath = $repository->updateSelectedElementInActiveTemplate($kind, $domPath, $html);
+        $templatePath = isset($data['tid']) && is_numeric($data['tid'])
+            ? $repository->updateActiveTemplateElementByTid($kind, (int) $data['tid'], $html, (string) ($data['templateHash'] ?? ''))
+            : $repository->updateSelectedElementInActiveTemplate($kind, $domPath, $html);
         $updatedPages = $generator->rebuildPagesUsingTemplate($kind);
         json_response([
             'ok' => true,

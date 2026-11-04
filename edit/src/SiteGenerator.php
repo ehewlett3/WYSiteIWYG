@@ -785,6 +785,26 @@ final class SiteGenerator
         );
     }
 
+    /**
+     * THM-H: render a page through its active template with every template
+     * element tagged data-wysite-tid, for the editor preview only. Returns null
+     * when the page doesn't follow its template (excluded or no template).
+     */
+    public function renderPageWithTemplateIds(string $relativePath): ?string
+    {
+        $page = $this->repository->getPage($relativePath);
+        if (($page['meta']['exclude_template'] ?? '') === '1') {
+            return null;
+        }
+        try {
+            $template = $this->repository->loadActiveTemplate($this->repository->effectiveTemplateKind($page['kind']));
+        } catch (RuntimeException) {
+            return null;
+        }
+
+        return $this->renderPage($relativePath, $this->themes->currentThemeId(), '/assets/site.css', $this->repository->annotateTemplate($template));
+    }
+
     public function renderPageForActiveTemplate(string $relativePath): string
     {
         return $this->renderPage(

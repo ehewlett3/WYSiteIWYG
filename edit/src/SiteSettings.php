@@ -28,6 +28,8 @@ final class SiteSettings
         'embed_hosts' => '',
         'import_byte_budget_mb' => 2048,
         'keep_imported_scripts' => false,
+        'import_ignore_params' => '',
+        'import_prefer_originals' => true,
         'search_url' => '',
         'form_endpoint' => '',
         'theme_variables' => [],
@@ -112,6 +114,12 @@ final class SiteSettings
         return $paths;
     }
 
+    /** @return string[] query parameter names imports should ignore */
+    public function importIgnoredParams(): array
+    {
+        return array_values(array_filter(preg_split('/[\s,]+/', (string) $this->get('import_ignore_params')) ?: []));
+    }
+
     /** @return string[] */
     public function embedHosts(): array
     {
@@ -161,7 +169,12 @@ final class SiteSettings
             case 'footer_html':
                 return Sanitizer::html((string) $value);
 
+            case 'import_ignore_params':
+                $names = preg_split('/[\s,]+/', strtolower((string) $value)) ?: [];
+                return implode(', ', array_values(array_unique(array_filter($names, static fn(string $name): bool => preg_match('/^[a-z0-9_.\[\]-]{1,64}$/', $name) === 1))));
+
             case 'live_banner':
+            case 'import_prefer_originals':
             case 'keep_imported_scripts':
             case 'checklist_dismissed':
                 return (bool) $value;

@@ -1174,6 +1174,8 @@ try {
             'embed_hosts' => (string) ($_POST['embed_hosts'] ?? ''),
             'import_byte_budget_mb' => (int) ($_POST['import_byte_budget_mb'] ?? 2048),
             'keep_imported_scripts' => !empty($_POST['keep_imported_scripts']),
+            'import_ignore_params' => (string) ($_POST['import_ignore_params'] ?? ''),
+            'import_prefer_originals' => !empty($_POST['import_prefer_originals']),
             'search_url' => (string) ($_POST['search_url'] ?? ''),
             'form_endpoint' => (string) ($_POST['form_endpoint'] ?? ''),
         ];

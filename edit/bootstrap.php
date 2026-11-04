@@ -19,6 +19,8 @@ require_once __DIR__ . '/src/SiteReport.php';
 require_once __DIR__ . '/src/WxrImporter.php';
 require_once __DIR__ . '/src/UrlLocalizer.php';
 require_once __DIR__ . '/src/BlockRepository.php';
+require_once __DIR__ . '/src/UrlCanonicalizer.php';
+require_once __DIR__ . '/src/AssetIndex.php';
 require_once __DIR__ . '/src/ExternalSiteImporter.php';
 require_once __DIR__ . '/src/SiteGenerator.php';
 require_once __DIR__ . '/src/ThemeManager.php';
@@ -108,6 +110,7 @@ $generator = new SiteGenerator($rootPath, $repository, $themes, $siteBaseUrl, $s
 $externalImporter = new ExternalSiteImporter($rootPath, $editPath);
 $externalImporter->setByteBudget((int) $settings->get('import_byte_budget_mb') * 1_048_576);
 $externalImporter->setKeepScripts((bool) $settings->get('keep_imported_scripts'));
+$externalImporter->setImportOptions($settings->importIgnoredParams(), (bool) $settings->get('import_prefer_originals'));
 if ($settings->embedHosts() !== []) {
     WYSiteIWYG\Sanitizer::setEmbedHosts($settings->embedHosts());
 }

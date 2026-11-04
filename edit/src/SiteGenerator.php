@@ -115,6 +115,7 @@ final class SiteGenerator
                 ? (string) $post['content']
                 : implode("\n", $this->extractImportedPageBlocks($candidate['html'], $containerXPath, $blockXpaths));
             $tags = $this->usableImportTags($post['tags'] ?? []);
+            $content = $this->stripDuplicateTitle($content, $title, 'blog-post');
             $html = $this->renderKind(
                 'blog-post',
                 $this->themes->currentThemeId(),
@@ -145,6 +146,7 @@ final class SiteGenerator
         if ($blocks === []) {
             $blocks = [$this->defaultPageContent()];
         }
+        $blocks[0] = $this->stripDuplicateTitle($blocks[0], $title, $candidate['path'] === 'index.html' ? 'home' : 'page');
 
         $html = $this->renderKind(
             $candidate['path'] === 'index.html' ? 'home' : 'page',
@@ -1791,6 +1793,7 @@ final class SiteGenerator
 
         $html = str_replace(array_keys($replacements), array_values($replacements), $template);
         $html = $this->injectMetaExtras($html, (array) ($data['meta_extra'] ?? []));
+        $html = $this->applyOptionalSlots($html);
 
         return $this->localizeUrls($html, (string) ($data['path'] ?? 'index.html'));
     }
@@ -2183,6 +2186,76 @@ final class SiteGenerator
             '<!-- WYSITE:END name="' . $blockName . '" -->';
     }
 
+    /**
+     * IMP-6: hide a template element marked data-wysite-optional when every
+     * editable block inside it is empty (and show it again once it has content),
+     * so pages with fewer blocks than slots don't show empty boxes. Only the
+     * start tags change; everything else keeps its bytes.
+     */
+    public function applyOptionalSlots(string $html): string
+    {
+        if (!str_contains($html, 'data-wysite-optional')) {
+            return $html;
+        }
+
+        if (preg_match_all('/<([a-z][a-z0-9-]*)\b[^>]*\bdata-wysite-optional\b[^>]*>/i', $html, $matches, PREG_OFFSET_CAPTURE) === 0) {
+            return $html;
+        }
+
+        $tokens = HtmlSource::tokens($html);
+        $edits = [];
+        foreach ($matches[0] as $index => [$startTag, $offset]) {
+            $tag = strtolower($matches[1][$index][0]);
+            $ordinal = 0;
+            foreach ($tokens as $token) {
+                if ($token['start'] >= $offset) {
+                    break;
+                }
+                if ($token['type'] === 'start' && $token['name'] === $tag) {
+                    $ordinal++;
+                }
+            }
+            $range = HtmlSource::innerRange($html, $tag, $ordinal);
+            if ($range === null) {
+                continue;
+            }
+            $inner = substr($html, $range[0], $range[1] - $range[0]);
+            if (!str_contains($inner, 'WYSITE:BEGIN')) {
+                continue; // nothing editable inside: leave the theme's choice alone
+            }
+            $withoutMarkers = (string) preg_replace('/<!--.*?-->/s', '', $inner);
+            $isEmpty = trim(strip_tags($withoutMarkers)) === ''
+                && preg_match('/<(img|picture|video|audio|iframe|svg|object|embed|canvas|input|select|textarea|button|hr|table|form)\b/i', $withoutMarkers) !== 1;
+
+            $cleanTag = (string) preg_replace('/\s+hidden(?:=(?:"[^"]*"|\'[^\']*\'|[^\s>]*))?(?=[\s>\/])/i', '', $startTag);
+            $newTag = $isEmpty ? (string) preg_replace('/\bdata-wysite-optional\b/', 'data-wysite-optional hidden', $cleanTag, 1) : $cleanTag;
+            if ($newTag !== $startTag) {
+                $edits[] = [$offset, strlen($startTag), $newTag];
+            }
+        }
+
+        foreach (array_reverse($edits) as [$offset, $length, $replacement]) {
+            $html = substr_replace($html, $replacement, $offset, $length);
+        }
+
+        return $html;
+    }
+
+    /** Re-apply optional-slot visibility to a saved page (after a block save). */
+    public function refreshOptionalSlots(string $relativePath): void
+    {
+        $file = $this->repository->resolvePath($relativePath);
+        if (!is_file($file)) {
+            return;
+        }
+        $html = (string) file_get_contents($file);
+        $next = $this->applyOptionalSlots($html);
+        if ($next !== $html) {
+            // Same save as the block edit: its revision was already taken.
+            Filesystem::atomicWrite($file, $next);
+        }
+    }
+
     private function publicBridgeHtml(): string
     {
         if (!$this->settings->get('live_banner')) {
@@ -2442,31 +2515,56 @@ final class SiteGenerator
     {
         $xpath = new \DOMXPath($dom);
         $remove = [];
+        // Anything inside these belongs to the content (a table of contents, a
+        // section heading, an article footer), never to the site chrome.
+        $contentAncestors = 'ancestor::article | ancestor::section | ancestor::aside | ancestor::*[@role="main"] | ancestor::main';
 
-        // Navigation and ARIA landmark chrome, anywhere in the container.
-        $landmarks = $xpath->query(
-            ".//nav | .//*[@role='navigation'] | .//*[@role='banner'] | .//*[@role='contentinfo']",
-            $container
-        );
-        if ($landmarks !== false) {
-            foreach ($landmarks as $element) {
-                if ($element instanceof \DOMElement) {
-                    $remove[] = $element;
+        $insideContent = static function (\DOMElement $element) use ($xpath, $contentAncestors, $container): bool {
+            foreach ($xpath->query($contentAncestors, $element) ?: [] as $ancestor) {
+                if ($ancestor !== $container && $ancestor instanceof \DOMElement && $container->contains($ancestor)) {
+                    return true;
                 }
+            }
+            return false;
+        };
+
+        // Site navigation: link-heavy navs that lead to other pages (not a TOC).
+        foreach ($xpath->query(".//nav | .//*[@role='navigation']", $container) ?: [] as $nav) {
+            if (!$nav instanceof \DOMElement || $insideContent($nav)) {
+                continue;
+            }
+            $links = $xpath->query('.//a[@href]', $nav);
+            $count = $links === false ? 0 : $links->length;
+            $fragmentOnly = $count > 0;
+            foreach ($links ?: [] as $link) {
+                if (!str_starts_with(trim((string) $link->getAttribute('href')), '#')) {
+                    $fragmentOnly = false;
+                    break;
+                }
+            }
+            if ($count >= 4 && !$fragmentOnly) {
+                $remove[] = $nav;
             }
         }
 
-        // Page-level <header>/<footer> (those not inside an <article>).
-        $headerFooters = $xpath->query('.//header | .//footer', $container);
-        if ($headerFooters !== false) {
-            foreach ($headerFooters as $element) {
-                if (!$element instanceof \DOMElement) {
-                    continue;
-                }
-                $ancestors = $xpath->query('ancestor::article', $element);
-                if ($ancestors === false || $ancestors->length === 0) {
-                    $remove[] = $element;
-                }
+        // Banner and footer landmarks of the page itself.
+        foreach ($xpath->query(".//*[@role='banner'] | .//*[@role='contentinfo']", $container) ?: [] as $element) {
+            if ($element instanceof \DOMElement && !$insideContent($element)) {
+                $remove[] = $element;
+            }
+        }
+
+        // Page-level <header>/<footer>: outside article/section/aside, and either a
+        // direct child of <body> or without headings of their own.
+        foreach ($xpath->query('.//header | .//footer', $container) ?: [] as $element) {
+            if (!$element instanceof \DOMElement || $insideContent($element)) {
+                continue;
+            }
+            $isPageLevel = $element->parentNode instanceof \DOMElement && strtolower($element->parentNode->tagName) === 'body';
+            $headings = $xpath->query('.//h1 | .//h2 | .//h3 | .//h4 | .//h5 | .//h6', $element);
+            $hasHeading = $headings !== false ? $headings->length : 0;
+            if ($isPageLevel || $hasHeading === 0) {
+                $remove[] = $element;
             }
         }
 
@@ -2475,19 +2573,16 @@ final class SiteGenerator
             'site-header', 'masthead', 'site-footer', 'colophon', 'site-navigation',
             'main-navigation', 'primary-navigation', 'top-bar', 'topbar', 'site-branding',
         ];
-        $divs = $xpath->query('.//div | .//section', $container);
-        if ($divs !== false) {
-            foreach ($divs as $element) {
-                if (!$element instanceof \DOMElement) {
-                    continue;
-                }
-                $tokens = array_map(
-                    'strtolower',
-                    preg_split('/\s+/', trim($element->getAttribute('class') . ' ' . $element->getAttribute('id'))) ?: []
-                );
-                if (array_intersect($tokens, $chromeTokens) !== []) {
-                    $remove[] = $element;
-                }
+        foreach ($xpath->query('.//div | .//section | .//header | .//footer', $container) ?: [] as $element) {
+            if (!$element instanceof \DOMElement) {
+                continue;
+            }
+            $tokens = array_map(
+                'strtolower',
+                preg_split('/\s+/', trim($element->getAttribute('class') . ' ' . $element->getAttribute('id'))) ?: []
+            );
+            if (array_intersect($tokens, $chromeTokens) !== []) {
+                $remove[] = $element;
             }
         }
 
@@ -2496,6 +2591,47 @@ final class SiteGenerator
                 $element->parentNode->removeChild($element);
             }
         }
+    }
+
+    /**
+     * THM-4: when the template prints the page title itself, drop the content's
+     * own leading <h1> with the same text so the title doesn't appear twice.
+     */
+    private function stripDuplicateTitle(string $html, string $title, string $kind): string
+    {
+        $title = $this->normalizeTitleText($title);
+        if ($title === '' || stripos($html, '<h1') === false) {
+            return $html;
+        }
+
+        try {
+            $template = $this->loadActiveTemplateOrTheme($kind, $this->themes->currentThemeId());
+        } catch (RuntimeException) {
+            return $html;
+        }
+        $body = stristr($template, '<body') ?: '';
+        if (!str_contains($body, '{{TITLE}}')) {
+            return $html;
+        }
+
+        if (preg_match('#<h1\b[^>]*>(.*?)</h1>#is', $html, $match, PREG_OFFSET_CAPTURE) !== 1) {
+            return $html;
+        }
+        $headingText = $this->normalizeTitleText(html_entity_decode(strip_tags($match[1][0]), ENT_QUOTES | ENT_HTML5, 'UTF-8'));
+        if ($headingText === '' || ($headingText !== $title && !str_starts_with($title, $headingText) && !str_starts_with($headingText, $title))) {
+            return $html;
+        }
+
+        return trim(substr_replace($html, '', $match[0][1], strlen($match[0][0])));
+    }
+
+    private function normalizeTitleText(string $text): string
+    {
+        $text = trim((string) preg_replace('/\s+/u', ' ', $text));
+        $siteName = trim((string) $this->settings->get('site_name'));
+        // "Post title | Site" / "Post title – Site"
+        $text = (string) preg_replace('/\s*[|\-–—·»:]\s*' . preg_quote($siteName, '/') . '\s*$/iu', '', $text);
+        return function_exists('mb_strtolower') ? mb_strtolower($text) : strtolower($text);
     }
 
     private function queryImportXPath(\DOMXPath $xpath, \DOMNode $contextNode, string $query): \DOMNodeList

@@ -708,6 +708,7 @@ try {
 
         $html = $generator->normalizeEditableBlockHtml((string) ($block['type'] ?? ''), $html);
         $repository->updateBlock($path, $name, $html);
+        $generator->refreshOptionalSlots($path);
         json_response(['ok' => true, 'message' => 'The page was saved.', 'fileHash' => sha1($repository->getPage($path)['html'])]);
     }
 
@@ -1559,6 +1560,7 @@ try {
                 // until the crawl is complete (WP-7).
                 $jobId = trim((string) ($_POST['job_id'] ?? ''));
                 if ($jobId === '') {
+                    $backups->create('site-import');
                     $jobId = $externalImporter->startImportJob(
                         (string) ($_POST['url'] ?? ''),
                         (int) ($_POST['max_pages'] ?? 50),
@@ -1577,6 +1579,7 @@ try {
             return;
         }
 
+        $backups->create('site-import');
         $results = $externalImporter->importSite(
             (string) ($_POST['url'] ?? ''),
             (int) ($_POST['max_pages'] ?? 50),

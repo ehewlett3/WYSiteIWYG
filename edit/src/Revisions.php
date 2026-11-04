@@ -150,6 +150,9 @@ final class Revisions
  */
 final class Backups
 {
+    /** Themes shipped with the app (restored by updating, so not backed up). */
+    private const SHIPPED_THEMES = ['verdant-sanctuary', 'vivid-nocturne', 'stjohn-inspired', 'wysite-cathedral'];
+
     private string $rootPath;
     private string $storePath;
     private int $keep;
@@ -308,8 +311,12 @@ final class Backups
                     if ($relative === 'assets') {
                         return false;
                     }
-                    if ($relative === 'edit' || $relative === 'edit/templates') {
+                    if ($relative === 'edit' || $relative === 'edit/templates' || $relative === 'edit/themes') {
                         return true;
+                    }
+                    // Custom themes (built from imports or by AI) are user work.
+                    if (preg_match('#^edit/themes/([a-z0-9-]+)$#', $relative, $theme) === 1) {
+                        return !in_array($theme[1], self::SHIPPED_THEMES, true);
                     }
                     return !str_starts_with($relative, 'edit/');
                 }
@@ -329,7 +336,13 @@ final class Backups
 
     private function isRestorable(string $relative): bool
     {
-        if (preg_match('/\.html?$/i', $relative) !== 1 || str_contains($relative, '..')) {
+        if (str_contains($relative, '..')) {
+            return false;
+        }
+        if (preg_match('#^edit/themes/([a-z0-9-]+)/(page|home|blog-post|blog-index)\.html$|^edit/themes/([a-z0-9-]+)/(site\.css|theme\.json)$#', $relative, $theme) === 1) {
+            return !in_array($theme[1] !== '' ? $theme[1] : ($theme[3] ?? ''), self::SHIPPED_THEMES, true);
+        }
+        if (preg_match('/\.html?$/i', $relative) !== 1) {
             return false;
         }
 

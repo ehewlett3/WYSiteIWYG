@@ -925,3 +925,21 @@ a.wysite-nav__logout {
 .wysite-checklist__items li.is-done { text-decoration: line-through; opacity: .6; }
 
 .wysite-inline-form { display: inline-flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+
+/* IMP-6: optional slot wrappers hidden on the public page stay visible (and
+   droppable) while editing, so empty sections can be filled. */
+.wysite-preview-mode [data-wysite-optional][hidden] {
+  display: block !important;
+  outline: 2px dashed rgba(45, 98, 74, 0.45);
+  outline-offset: 4px;
+  min-height: 72px;
+  opacity: 0.85;
+}
+
+.wysite-preview-mode [data-wysite-optional][hidden]::before {
+  content: "Empty section: hidden on the live page until it has content";
+  display: block;
+  font: 600 12px/1.4 system-ui, sans-serif;
+  color: #2d624a;
+  padding: 6px 0;
+}

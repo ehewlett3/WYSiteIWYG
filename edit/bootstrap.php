@@ -34,6 +34,7 @@ require_once __DIR__ . '/src/ImportMap.php';
 require_once __DIR__ . '/src/ComponentStyles.php';
 require_once __DIR__ . '/src/ComponentLibrary.php';
 require_once __DIR__ . '/src/AuditLog.php';
+require_once __DIR__ . '/src/SearchReplace.php';
 require_once __DIR__ . '/src/AiAssistant.php';
 require_once __DIR__ . '/src/SecurityRescan.php';
 require_once __DIR__ . '/src/ImportDedupe.php';

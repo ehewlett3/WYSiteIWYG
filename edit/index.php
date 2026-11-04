@@ -2491,6 +2491,86 @@ try {
         redirect_to_view($appUrl, 'manager');
     }
 
+    if ($action === 'search-replace') {
+        require_admin($user);
+        $query = [
+            'find' => (string) ($_POST['find'] ?? ''),
+            'replace' => (string) ($_POST['replace'] ?? ''),
+            'regex' => !empty($_POST['regex']),
+            'case' => !empty($_POST['case']),
+            'text' => is_post() ? !empty($_POST['text']) : true,
+            'links' => is_post() ? !empty($_POST['links']) : true,
+        ];
+        $results = null;
+        if (is_post()) {
+            if (!Csrf::validate($_POST['csrf_token'] ?? null)) {
+                throw new RuntimeException('The request was rejected.');
+            }
+            $searchReplace = new \WYSiteIWYG\SearchReplace($repository, $generator);
+            if (!empty($_POST['apply'])) {
+                $backups->create('search-replace');
+                $done = $searchReplace->run($query, true);
+                Flash::push('success', 'Replaced ' . array_sum(array_column($done, 'count')) . ' occurrence(s) in ' . count($done) . ' block(s). Earlier versions are in each page\'s history.');
+                redirect($appUrl . '/index.php?action=search-replace');
+            }
+            $results = $searchReplace->run($query, false);
+        }
+        $oldHosts = $externalImporter->importedSourceHosts();
+        ob_start();
+        ?>
+        <main class="wysite-dashboard">
+          <section class="wysite-panel">
+            <div class="wysite-panel__heading">
+              <div>
+                <p class="wysite-kicker">Search &amp; replace</p>
+                <h2>Change text or links on every page</h2>
+              </div>
+              <a class="wysite-button wysite-button--ghost" href="<?= h($appUrl) ?>/index.php?action=manager">Back to Manager</a>
+            </div>
+            <p class="wysite-muted">Searches the editable blocks of every page and draft (raw-HTML blocks are skipped). Only visible text, alt/title text, and link and image addresses change; markup stays as it is. Preview first, then replace.</p>
+            <?php if ($oldHosts !== []): ?>
+              <p class="wysite-muted">Links to the old site? Search for <code>https://<?= h($oldHosts[0]) ?>/</code> with "Links" ticked and replace it with your new address (or nothing, to make them relative).</p>
+            <?php endif; ?>
+            <form method="post" class="wysite-form">
+              <input type="hidden" name="csrf_token" value="<?= h(Csrf::token()) ?>">
+              <div class="wysite-grid">
+                <label><span>Find</span><input type="text" name="find" required value="<?= h($query['find']) ?>"></label>
+                <label><span>Replace with</span><input type="text" name="replace" value="<?= h($query['replace']) ?>"></label>
+              </div>
+              <label class="wysite-checkbox"><input type="checkbox" name="text" value="1"<?= $query['text'] ? ' checked' : '' ?>><span>Text (including image alt text and titles)</span></label>
+              <label class="wysite-checkbox"><input type="checkbox" name="links" value="1"<?= $query['links'] ? ' checked' : '' ?>><span>Links and image addresses</span></label>
+              <label class="wysite-checkbox"><input type="checkbox" name="case" value="1"<?= $query['case'] ? ' checked' : '' ?>><span>Match case</span></label>
+              <label class="wysite-checkbox"><input type="checkbox" name="regex" value="1"<?= $query['regex'] ? ' checked' : '' ?>><span>Regular expression (use $1 for groups)</span></label>
+              <div class="wysite-hero-actions">
+                <button class="wysite-button wysite-button--ghost" type="submit">Preview</button>
+                <?php if ($results !== null && $results !== []): ?>
+                  <button class="wysite-button" type="submit" name="apply" value="1">Replace <?= (int) array_sum(array_column($results, 'count')) ?> occurrence(s)</button>
+                <?php endif; ?>
+              </div>
+            </form>
+            <?php if ($results !== null): ?>
+              <?php if ($results === []): ?>
+                <p>No matches.</p>
+              <?php else: ?>
+                <div class="wysite-table-wrap">
+                  <table class="wysite-table">
+                    <thead><tr><th>Page</th><th>Matches</th><th>Examples</th></tr></thead>
+                    <tbody>
+                      <?php foreach ($results as $row): ?>
+                        <tr><td><code><?= h($row['path']) ?></code> · <?= h($row['block']) ?></td><td><?= (int) $row['count'] ?></td><td><?= h(implode(' · ', $row['samples'])) ?></td></tr>
+                      <?php endforeach; ?>
+                    </tbody>
+                  </table>
+                </div>
+              <?php endif; ?>
+            <?php endif; ?>
+          </section>
+        </main>
+        <?php
+        layout('Search & replace', (string) ob_get_clean(), $appUrl, $siteTitle, $user);
+        return;
+    }
+
     if ($action === 'activity') {
         require_admin($user);
         $filters = ['user' => trim((string) ($_GET['user'] ?? '')), 'action' => trim((string) ($_GET['what'] ?? '')), 'path' => trim((string) ($_GET['page'] ?? ''))];

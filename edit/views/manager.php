@@ -60,6 +60,7 @@ use function WYSiteIWYG\h;
             <button class="wysite-button wysite-button--ghost" type="submit">Convert to folder URLs</button>
           </form>
           <a class="wysite-button wysite-button--ghost" href="<?= h($appUrl) ?>/index.php?action=report">Site report (broken links &amp; migration)</a>
+          <a class="wysite-button wysite-button--ghost" href="<?= h($appUrl) ?>/index.php?action=search-replace">Search &amp; replace</a>
           <a class="wysite-button wysite-button--ghost" href="<?= h($appUrl) ?>/index.php?action=rescan">Security re-scan</a>
           <form method="post" action="<?= h($appUrl) ?>/index.php?action=section-styles-gc" data-wysite-confirm="Remove saved looks of copied sections that no page uses any more?">
             <input type="hidden" name="csrf_token" value="<?= h(Csrf::token()) ?>">

@@ -994,3 +994,14 @@ a.wysite-nav__logout {
   flex: 1 1 100%; max-height: 160px; overflow: hidden; pointer-events: none;
   transform: scale(0.6); transform-origin: top left; width: 166%; margin-bottom: -60px;
 }
+
+/* EDT-E: in-place editing keeps the page's own styles; the toolbar sticks above. */
+.pm-dropin.pm-dropin--inplace {
+  position: sticky !important;
+  top: 52px !important;
+  z-index: 2147482000 !important;
+  margin: 0 0 8px !important;
+}
+.pm-dropin.pm-dropin--inplace .pm-editor { display: none !important; }
+.wysite-inplace-editing { outline: 2px dashed rgba(217, 72, 15, 0.75); outline-offset: 4px; min-height: 1.5em; }
+.wysite-inplace-editing:focus { outline-style: solid; }

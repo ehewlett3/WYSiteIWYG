@@ -78,13 +78,19 @@ if (context) {
     opening = true;
     try {
       const frameAdapter = useFrameAdapter ? createFrameAdapter(slot, blockType) : null;
-      if (frameAdapter) {
+      // EDT-E: edit in place (real WYSIWYG) except the menu, whose editor needs
+      // room the header doesn't have. In place, the block's wrapper stays in the
+      // page and the editor works on its content element directly.
+      const inPlace = blockType !== "menu";
+      const mountTarget = inPlace && frameAdapter?.liveElement ? frameAdapter.liveElement : target;
+      if (frameAdapter && !inPlace) {
         slot.innerHTML = frameAdapter.initialHTML;
       }
 
-      currentInstance = await DropInWysiwyg.mount(target, {
-        initialHTML: frameAdapter?.initialHTML,
-        restoreHTML: frameAdapter?.restoreHTML ?? target.innerHTML,
+      currentInstance = await DropInWysiwyg.mount(mountTarget, {
+        inPlace,
+        initialHTML: inPlace ? undefined : frameAdapter?.initialHTML,
+        restoreHTML: inPlace ? mountTarget.innerHTML : (frameAdapter?.restoreHTML ?? target.innerHTML),
         rootClassName: blockType === "menu" ? "pm-dropin--menu" : "",
         rootStyle: blockType === "menu" ? getMenuEditorStyle(slot) : null,
         mountAfterTarget: blockType === "menu" ? getMenuMountAnchor(slot) : null,
@@ -95,7 +101,7 @@ if (context) {
         },
         onSave: async ({ html, target: savedTarget }) => {
           try {
-            if (frameAdapter) {
+            if (frameAdapter && !inPlace) {
               const wrappedHtml = frameAdapter.wrap(html);
               if (savedTarget) {
                 savedTarget.innerHTML = wrappedHtml;
@@ -166,6 +172,7 @@ if (context) {
     opening = true;
     try {
       currentInstance = await DropInWysiwyg.mount(target, {
+        inPlace: true,
         restoreHTML: target.innerHTML,
         uploadImage: uploadImageFile,
         linkSuggestions: loadPageIndex,
@@ -601,9 +608,13 @@ if (context) {
       ? outerChildren[0]
       : null;
 
+    const liveOuter = Array.from(slot.children).find((child) => child.matches(".content-block, .blog-card")) || null;
+    const liveInner = liveOuter && liveOuter.children.length === 1 && liveOuter.firstElementChild.matches(".content-stack, .post-body") ? liveOuter.firstElementChild : null;
+
     if (inner && inner.matches(".content-stack, .post-body")) {
       const innerTemplate = inner.cloneNode(false);
       return {
+        liveElement: liveInner || liveOuter,
         initialHTML: inner.innerHTML,
         restoreHTML: originalHtml,
         wrap(html) {
@@ -617,6 +628,7 @@ if (context) {
     }
 
     return {
+      liveElement: liveOuter,
       initialHTML: outer.innerHTML,
       restoreHTML: originalHtml,
       wrap(html) {

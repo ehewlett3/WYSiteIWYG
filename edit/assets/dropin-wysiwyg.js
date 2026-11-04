@@ -652,8 +652,31 @@ export const DropInWysiwyg = {
 
     const mountAfterTarget = opts.mountAfterTarget || el;
 
-    el.style.display = "none";
-    mountAfterTarget.insertAdjacentElement("afterend", ui.root);
+    // EDT-E: in place, ProseMirror edits the element itself, so every site CSS
+    // rule (the card's background, `.grid > .card h3`, ...) keeps applying while
+    // typing; the toolbar becomes a sticky bar above it.
+    const inPlace = Boolean(opts.inPlace);
+    const savedAttrs = inPlace ? Array.from(el.attributes, (attr) => [attr.name, attr.value]) : null;
+    if (inPlace) {
+      ui.root.classList.add("pm-dropin--inplace");
+      ui.editorHost.style.display = "none";
+      el.insertAdjacentElement("beforebegin", ui.root);
+    } else {
+      el.style.display = "none";
+      mountAfterTarget.insertAdjacentElement("afterend", ui.root);
+    }
+
+    // Put the element back exactly as it was (attributes PM added removed).
+    function restoreElement(html) {
+      try {
+        view.destroy();
+      } catch {}
+      if (inPlace) {
+        for (const attr of Array.from(el.attributes)) el.removeAttribute(attr.name);
+        for (const [name, value] of savedAttrs) el.setAttribute(name, value);
+      }
+      el.innerHTML = html;
+    }
 
     const plugins = [
       history(),
@@ -736,7 +759,11 @@ export const DropInWysiwyg = {
       }
       sourceMode = nextMode;
       ui.sourceHost.classList.toggle("is-active", sourceMode);
-      ui.editorHost.style.display = sourceMode ? "none" : "";
+      if (inPlace) {
+        el.style.display = sourceMode ? "none" : "";
+      } else {
+        ui.editorHost.style.display = sourceMode ? "none" : "";
+      }
       (sourceMode ? ui.sourceEditor : view).focus();
       instance?.updateToolbar?.();
     }
@@ -961,7 +988,8 @@ export const DropInWysiwyg = {
       return updateToolbar;
     }
 
-    view = new EditorView(ui.editorHost, {
+    view = new EditorView(inPlace ? { mount: el } : ui.editorHost, {
+      attributes: inPlace ? { class: "wysite-inplace-editing" } : {},
       state,
       nodeViews: {
         raw_block: (node) => rawNodeView(node),
@@ -1006,6 +1034,16 @@ export const DropInWysiwyg = {
           }
           html = result.html;
         }
+        if (inPlace) {
+          restoreElement(html);
+          try {
+            await opts.onSave?.({ html, target: el });
+          } finally {
+            instance.destroy();
+          }
+          el.style.display = "";
+          return true;
+        }
         el.innerHTML = html;
         await opts.onSave?.({ html, target: el });
         instance.destroy();
@@ -1017,7 +1055,11 @@ export const DropInWysiwyg = {
         if (confirmIfDirty && isDirty() && !window.confirm("Discard your unsaved changes to this section?")) {
           return false;
         }
-        el.innerHTML = originalHTML;
+        if (inPlace) {
+          restoreElement(originalHTML);
+        } else {
+          el.innerHTML = originalHTML;
+        }
         sourceMode = false;
         await opts.onCancel?.({ target: el });
         instance.destroy();

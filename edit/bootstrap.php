@@ -28,6 +28,7 @@ require_once __DIR__ . '/src/AssetIndex.php';
 require_once __DIR__ . '/src/ExternalSiteImporter.php';
 require_once __DIR__ . '/src/SiteGenerator.php';
 require_once __DIR__ . '/src/ThemeManager.php';
+require_once __DIR__ . '/src/ThemeImporter.php';
 require_once __DIR__ . '/src/AiAssistant.php';
 require_once __DIR__ . '/src/SecurityRescan.php';
 require_once __DIR__ . '/src/ImportDedupe.php';
@@ -144,6 +145,7 @@ return [
     'report' => new WYSiteIWYG\SiteReport($rootPath, $repository),
     'systemCheck' => new WYSiteIWYG\SystemCheck($rootPath, $editPath),
     'rescan' => new WYSiteIWYG\SecurityRescan($rootPath, $editPath, $repository, $settings),
+    'themeImporter' => new WYSiteIWYG\ThemeImporter($rootPath, $externalImporter, $themes),
     'dedupe' => new WYSiteIWYG\ImportDedupe($rootPath, $editPath, $externalImporter->assetIndex(), static fn(): array => $externalImporter->importedFiles()),
     'siteOrigin' => $siteOrigin,
     'siteTitle' => (string) $settings->get('site_name'),

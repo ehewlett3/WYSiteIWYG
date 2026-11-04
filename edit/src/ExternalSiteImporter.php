@@ -377,6 +377,36 @@ final class ExternalSiteImporter
         return $html;
     }
 
+    /** One SSRF-guarded GET with redirects followed (theme import). */
+    public function fetchResource(string $url, int $maxBytes = 8_388_608): array
+    {
+        $url = $this->normalizeHttpUrl($url);
+        return $this->fetchUrlBody($url, 20, $maxBytes, "Accept: */*\r\n");
+    }
+
+    /**
+     * Turn a parsed page into a template of $kind. $elements maps template roles
+     * (main-menu, page-content, ...) to elements of $dom.
+     *
+     * @param array<string, \DOMElement> $elements
+     */
+    public function buildTemplateFromDom(DOMDocument $dom, string $kind, array $elements): string
+    {
+        $this->templateFilename($kind);
+        $this->assertRequiredSelections($kind, array_map(static fn(): array => [1], $elements));
+        $this->prepareTemplateDocument($dom, $kind);
+        foreach ($elements as $role => $element) {
+            if ($this->isKnownRole($kind, (string) $role)) {
+                $this->applyTemplateRole($dom, $element, (string) $role);
+            }
+        }
+
+        $html = Sanitizer::document($this->restorePlaceholderTokens(HtmlDocument::serialize($dom)));
+        $this->assertTemplateHasRequiredTokens($kind, $html);
+
+        return $html;
+    }
+
     public function promoteCachedTemplate(string $id, string $kind, array $selections, ?string $themeId = null): string
     {
         $source = $this->getCachedTemplateSource($id);

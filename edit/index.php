@@ -1516,11 +1516,13 @@ try {
         }
 
         $kind = (string) ($data['kind'] ?? 'page');
-        $templatePath = $externalImporter->promoteCachedTemplate(
-            (string) ($data['importId'] ?? ''),
+        // THM-1: build the template with its assets copied into the theme, and
+        // store the regions as selectors that work on every page.
+        $templatePath = $app['themeImporter']->addTemplateFromSelections(
+            $builderTheme,
             $kind,
-            is_array($data['selections'] ?? null) ? $data['selections'] : [],
-            $builderTheme
+            $externalImporter->getCachedTemplateSource((string) ($data['importId'] ?? '')),
+            is_array($data['selections'] ?? null) ? $data['selections'] : []
         );
 
         json_response([

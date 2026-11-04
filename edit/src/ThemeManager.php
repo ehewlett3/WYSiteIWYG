@@ -43,6 +43,7 @@ final class ThemeManager
         '{{SITE_TAGLINE}}',
         '{{SITE_LANG}}',
         '{{SITE_LOGO}}',
+        '{{THEME_ASSET_BASE}}',
         '{{FOOTER}}',
         '{{HEAD_META}}',
         '{{DATE_HUMAN}}',
@@ -581,6 +582,33 @@ final class ThemeManager
         }
         // Cut on a character boundary without depending on mbstring.
         return (preg_match('/^.{0,' . ($max - 1) . '}/us', $value, $m) === 1 ? $m[0] : substr($value, 0, $max - 1)) . '…';
+    }
+
+    /** Raw theme.json data (regions, content_scope, source, ...). */
+    public function meta(string $id): array
+    {
+        $this->getTheme($id);
+        return $this->themeMeta($id);
+    }
+
+    /** Merge keys into a theme's theme.json. */
+    public function updateMeta(string $id, array $changes): void
+    {
+        if (preg_match('/^[a-z0-9-]+$/', $id) !== 1 || !is_dir($this->themePath($id))) {
+            throw new RuntimeException('Unknown theme: ' . $id);
+        }
+        $meta = array_replace($this->themeMeta($id), $changes);
+        Filesystem::atomicWrite($this->themePath($id) . '/theme.json', json_encode($meta, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE) . "\n");
+        $this->themeListCache = null;
+    }
+
+    /** Absolute directory of a theme package (for importers writing into it). */
+    public function themeDirectory(string $id): string
+    {
+        if (preg_match('/^[a-z0-9-]+$/', $id) !== 1) {
+            throw new RuntimeException('Invalid theme id.');
+        }
+        return $this->themePath($id);
     }
 
     /** The theme currently selected as the template build target, or '' if none. */

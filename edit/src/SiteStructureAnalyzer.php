@@ -354,6 +354,11 @@ final class SiteStructureAnalyzer
             if ($stat['presence'] < 0.75 || $isChrome($pathSig)) {
                 continue;
             }
+            // A content region is a container, never a lone paragraph or heading.
+            $tag = (string) preg_replace('/[#.\[].*$/', '', (string) substr($pathSig, (int) strrpos($pathSig, '/') + 1));
+            if (!in_array($tag, ['div', 'main', 'article', 'section', 'td'], true)) {
+                continue;
+            }
             // Judged on the pages that have this element, so one odd page
             // doesn't push the choice up to a wrapper.
             $good = 0;

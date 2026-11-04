@@ -1752,6 +1752,11 @@ final class SiteGenerator
         // editor's own sanitized block output and stay raw.
         $replacements = [
             '{{THEME_CSS_HREF}}' => $cssHref,
+            // Imported themes reference their own copied assets (THM-D): the
+            // published copy, or the theme folder itself while previewing.
+            '{{THEME_ASSET_BASE}}' => str_contains($cssHref, '/themes/' . $themeId . '/')
+                ? substr($cssHref, 0, (int) strrpos($cssHref, '/')) . '/assets/'
+                : '/assets/theme/' . $themeId . '/',
             '{{TITLE}}' => h((string) ($data['title'] ?? 'Untitled')),
             '{{EXCERPT}}' => h((string) ($data['excerpt'] ?? '')),
             '{{DATE}}' => h((string) ($data['date'] ?? gmdate('Y-m-d'))),

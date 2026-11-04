@@ -55,6 +55,7 @@ function render_dashboard_nav(string $appUrl, ?string $active, array $user): str
         ['id' => 'manager', 'label' => 'Manager', 'href' => $appUrl . '/index.php?action=manager', 'admin' => true],
         ['id' => 'ai', 'label' => 'AI', 'href' => $appUrl . '/index.php?action=ai', 'admin' => true],
         ['id' => 'users', 'label' => 'Users', 'href' => $appUrl . '/index.php?action=users', 'admin' => true],
+        ['id' => 'activity', 'label' => 'Activity', 'href' => $appUrl . '/index.php?action=activity', 'admin' => true],
         ['id' => 'settings', 'label' => 'Settings', 'href' => $appUrl . '/index.php?action=settings', 'admin' => true],
         ['id' => 'docs', 'label' => 'Docs', 'href' => $appUrl . '/index.php?action=docs', 'admin' => false],
     ];
@@ -591,6 +592,24 @@ try {
     }
 
     $user = require_login($auth, $appUrl);
+
+    // SEC-7c: log every state-changing request that succeeds.
+    if (is_post() && !in_array($action, ['ai-list-models', 'ai-test'], true)) {
+        $auditUser = (string) $user['username'];
+        $auditData = request_data();
+        register_shutdown_function(static function () use ($app, $auditUser, $action, $auditData): void {
+            if (!empty($GLOBALS['WYSITE_ACTION_FAILED']) || http_response_code() >= 400) {
+                return;
+            }
+            $app['audit']->record($auditUser, $action, [
+                'path' => $auditData['path'] ?? '',
+                'name' => $auditData['name'] ?? ($auditData['theme'] ?? ''),
+                'username' => $auditData['username'] ?? '',
+                'kind' => $auditData['kind'] ?? '',
+                'url' => $auditData['url'] ?? '',
+            ]);
+        });
+    }
 
     if ($action === 'upload-image') {
         if (!is_post() || !Csrf::validate($_POST['csrf_token'] ?? null)) {
@@ -2431,6 +2450,53 @@ try {
         redirect_to_view($appUrl, 'manager');
     }
 
+    if ($action === 'activity') {
+        require_admin($user);
+        $filters = ['user' => trim((string) ($_GET['user'] ?? '')), 'action' => trim((string) ($_GET['what'] ?? '')), 'path' => trim((string) ($_GET['page'] ?? ''))];
+        $entries = $app['audit']->recent(300, $filters['user'], $filters['action'], $filters['path']);
+        ob_start();
+        ?>
+        <main class="wysite-dashboard">
+          <section class="wysite-panel">
+            <div class="wysite-panel__heading">
+              <div>
+                <p class="wysite-kicker">Activity</p>
+                <h2>Who changed what</h2>
+              </div>
+            </div>
+            <form method="get" class="wysite-form wysite-grid">
+              <input type="hidden" name="action" value="activity">
+              <label><span>User</span><input type="text" name="user" value="<?= h($filters['user']) ?>"></label>
+              <label><span>Action</span><input type="text" name="what" value="<?= h($filters['action']) ?>" placeholder="save-block"></label>
+              <label><span>Page contains</span><input type="text" name="page" value="<?= h($filters['path']) ?>"></label>
+              <div><button class="wysite-button wysite-button--ghost" type="submit">Filter</button></div>
+            </form>
+            <?php if ($entries === []): ?>
+              <p class="wysite-muted">Nothing recorded yet.</p>
+            <?php else: ?>
+              <div class="wysite-table-wrap">
+                <table class="wysite-table">
+                  <thead><tr><th>When (UTC)</th><th>User</th><th>Action</th><th>Details</th></tr></thead>
+                  <tbody>
+                    <?php foreach ($entries as $entry): ?>
+                      <tr>
+                        <td><?= h(str_replace(['T', '+00:00'], [' ', ''], (string) $entry['t'])) ?></td>
+                        <td><?= h((string) $entry['user']) ?></td>
+                        <td><code><?= h((string) $entry['action']) ?></code></td>
+                        <td><?php foreach ((array) $entry['detail'] as $key => $value): ?><span class="wysite-muted"><?= h((string) $key) ?>:</span> <?= h((string) $value) ?> <?php endforeach; ?></td>
+                      </tr>
+                    <?php endforeach; ?>
+                  </tbody>
+                </table>
+              </div>
+            <?php endif; ?>
+          </section>
+        </main>
+        <?php
+        layout('Activity', (string) ob_get_clean(), $appUrl, $siteTitle, $user, 'activity');
+        return;
+    }
+
     // ---- Multi-page dashboard router ----
     $view = in_array($action, ['themes', 'manager', 'ai', 'users', 'account', 'settings'], true) ? $action : 'dashboard';
     if (in_array($view, ['manager', 'ai', 'users', 'settings'], true) && !$user['is_admin']) {
@@ -2445,6 +2511,7 @@ try {
     $viewTitles = ['dashboard' => 'Dashboard', 'themes' => 'Theme', 'manager' => 'Manager', 'ai' => 'AI', 'users' => 'Users', 'account' => 'Account', 'settings' => 'Settings'];
     layout($viewTitles[$view], (string) ob_get_clean(), $appUrl, $siteTitle, $user, $view);
 } catch (Throwable $error) {
+    $GLOBALS['WYSITE_ACTION_FAILED'] = true;
     $accept = (string) ($_SERVER['HTTP_ACCEPT'] ?? '');
     if ($accept !== '' && str_contains($accept, 'application/x-ndjson')) {
         header('Content-Type: application/x-ndjson; charset=utf-8');

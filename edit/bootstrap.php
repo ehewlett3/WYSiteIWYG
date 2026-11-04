@@ -33,6 +33,7 @@ require_once __DIR__ . '/src/ContentCleaner.php';
 require_once __DIR__ . '/src/ImportMap.php';
 require_once __DIR__ . '/src/ComponentStyles.php';
 require_once __DIR__ . '/src/ComponentLibrary.php';
+require_once __DIR__ . '/src/AuditLog.php';
 require_once __DIR__ . '/src/AiAssistant.php';
 require_once __DIR__ . '/src/SecurityRescan.php';
 require_once __DIR__ . '/src/ImportDedupe.php';
@@ -151,6 +152,7 @@ return [
     'systemCheck' => new WYSiteIWYG\SystemCheck($rootPath, $editPath),
     'rescan' => new WYSiteIWYG\SecurityRescan($rootPath, $editPath, $repository, $settings),
     'componentStyles' => $componentStyles,
+    'audit' => new WYSiteIWYG\AuditLog(__DIR__ . '/storage/audit.local.jsonl'),
     'components' => new WYSiteIWYG\ComponentLibrary($editPath, $themes, $componentStyles),
     'themeImporter' => new WYSiteIWYG\ThemeImporter($rootPath, $externalImporter, $themes),
     'dedupe' => new WYSiteIWYG\ImportDedupe($rootPath, $editPath, $externalImporter->assetIndex(), static fn(): array => $externalImporter->importedFiles()),

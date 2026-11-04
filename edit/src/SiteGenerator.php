@@ -1829,7 +1829,39 @@ final class SiteGenerator
         $html = $this->injectMetaExtras($html, (array) ($data['meta_extra'] ?? []));
         $html = $this->applyOptionalSlots($html);
 
-        return $this->localizeUrls($html, (string) ($data['path'] ?? 'index.html'));
+        return $this->withContentSecurityPolicy($this->localizeUrls($html, (string) ($data['path'] ?? 'index.html')));
+    }
+
+    /**
+     * SEC-3a: a hash-based Content-Security-Policy for a public page, as the
+     * first element of <head>. Only the inline scripts present now (template,
+     * live-edit bridge, admin raw-HTML blocks) and the hosts of external scripts
+     * are allowed; anything injected later, and every inline event handler, is
+     * blocked even if it got past the sanitizer.
+     */
+    public function withContentSecurityPolicy(string $html): string
+    {
+        $html = (string) preg_replace('#<meta\s+http-equiv=["\']Content-Security-Policy["\'][^>]*>\s*#i', '', $html);
+        if (!$this->settings->get('public_csp') || preg_match('#<head\b[^>]*>#i', $html) !== 1) {
+            return $html;
+        }
+
+        $sources = ["'self'"];
+        $dom = HtmlDocument::parse($html);
+        foreach ($dom->getElementsByTagName('script') as $script) {
+            $src = trim($script->getAttribute('src'));
+            if ($src === '') {
+                $sources[] = "'sha256-" . base64_encode(hash('sha256', $script->textContent, true)) . "'";
+                continue;
+            }
+            if (preg_match('#^(https?:)?//([^/?#]+)#i', $src, $m) === 1) {
+                $sources[] = 'https://' . strtolower($m[2]);
+            }
+        }
+        $policy = 'script-src ' . implode(' ', array_values(array_unique($sources))) . "; object-src 'none'; base-uri 'self'";
+        $meta = '<meta http-equiv="Content-Security-Policy" content="' . h($policy) . '">';
+
+        return (string) preg_replace('#(<head\b[^>]*>)#i', '$1' . $meta, $html, 1);
     }
 
     /**

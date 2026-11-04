@@ -535,6 +535,10 @@ final class BlockRepository
         ];
         $context = array_merge($context, $extraContext);
 
+        // The public page's meta CSP would block the editor's nonced scripts; the
+        // preview response carries its own (stricter) header policy instead.
+        $html = preg_replace('#<meta\s+http-equiv=["\']Content-Security-Policy["\'][^>]*>\s*#i', '', $html) ?? $html;
+
         // Drop the page's own relative <base href> (baked for static serving) and
         // place the preview's absolute base at the very top of <head>, before the
         // page's own (now base-relative) stylesheet/asset links so they resolve.

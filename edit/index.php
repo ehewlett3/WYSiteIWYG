@@ -1217,6 +1217,7 @@ try {
             'keep_imported_scripts' => !empty($_POST['keep_imported_scripts']),
             'import_ignore_params' => (string) ($_POST['import_ignore_params'] ?? ''),
             'import_prefer_originals' => !empty($_POST['import_prefer_originals']),
+            'public_csp' => !empty($_POST['public_csp']),
             'search_url' => (string) ($_POST['search_url'] ?? ''),
             'form_endpoint' => (string) ($_POST['form_endpoint'] ?? ''),
         ];
@@ -2224,6 +2225,8 @@ try {
 
         $backups->create('rescan');
         $result = $app['rescan']->run($externalImporter->importedFiles(), true);
+        // Rebuilding also gives every page the public Content-Security-Policy.
+        $generator->rebuildAllPages();
         Flash::push('success', 'Security re-scan cleaned ' . \WYSiteIWYG\SecurityRescan::count($result) . ' item(s). Earlier versions are in each page\'s history and in Manager → Backups.');
         redirect($appUrl . '/index.php?action=rescan');
     }

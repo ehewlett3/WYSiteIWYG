@@ -690,14 +690,29 @@ try {
                     'fileHash' => sha1($page['html']),
                     'templateHash' => is_file($templateFile) ? sha1((string) file_get_contents($templateFile)) : '',
                     'isAdmin' => true,
+                    'lockHolder' => $app['locks']->holder($page['path'], (string) $user['username']),
                 ], $nonce);
             } else {
                 echo $repository->renderPreviewHtml($path, $appUrl, $siteBaseUrl, Csrf::token(), $user['username'], $nonce, [
                     'isAdmin' => !empty($user['is_admin']),
+                    'lockHolder' => $app['locks']->holder($page['path'], (string) $user['username']),
                 ]);
             }
         }
         return;
+    }
+
+    if ($action === 'edit-lock') {
+        $data = request_data();
+        if (!is_post() || !Csrf::validate($data['csrfToken'] ?? null)) {
+            json_response(['ok' => false, 'message' => 'Invalid CSRF token.'], 419);
+        }
+        $lockPath = $repository->getPage((string) ($data['path'] ?? ''))['path'];
+        if (!empty($data['release'])) {
+            $app['locks']->release($lockPath, (string) $user['username']);
+            json_response(['ok' => true]);
+        }
+        json_response(['ok' => true, 'holder' => $app['locks']->acquire($lockPath, (string) $user['username'])]);
     }
 
     if ($action === 'pages-index') {

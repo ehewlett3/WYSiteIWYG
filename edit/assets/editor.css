@@ -1013,3 +1013,22 @@ a.wysite-nav__logout {
 .wysite-checklist li.is-done::marker { content: "✓  "; }
 .wysite-bulk-form { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-bottom: 10px; }
 .wysite-visually-hidden { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+
+/* UX-7 width preview, UX-11 shortcuts, UX-10 lock note. */
+.wysite-preview-width { font: inherit; }
+.wysite-width-overlay {
+  position: fixed; inset: 48px 0 0; z-index: 2147483002; display: flex; flex-direction: column; align-items: center;
+  gap: 8px; padding: 12px; background: rgba(15, 18, 22, 0.85); overflow: auto;
+}
+.wysite-width-overlay iframe { flex: 1 1 auto; min-height: 70vh; max-width: 100%; border: 0; border-radius: 8px; background: #fff; box-shadow: 0 12px 32px rgba(0, 0, 0, 0.4); }
+.wysite-width-overlay button { font: 600 13px/1 system-ui, sans-serif; padding: 8px 12px; border-radius: 6px; border: 0; cursor: pointer; }
+.wysite-shortcuts {
+  position: fixed; top: 64px; left: 50%; transform: translateX(-50%); z-index: 2147483003;
+  width: min(520px, calc(100vw - 32px)); padding: 16px 20px; border-radius: 12px;
+  background: #1f2328; color: #f6f8fa; font: 14px/1.5 system-ui, sans-serif; box-shadow: 0 12px 32px rgba(0, 0, 0, 0.35);
+}
+.wysite-shortcuts h2 { font: 700 16px/1.3 system-ui, sans-serif; margin: 0 0 8px; color: inherit; }
+.wysite-shortcuts dl { display: grid; grid-template-columns: max-content 1fr; gap: 4px 16px; margin: 0; }
+.wysite-shortcuts dt { font-family: ui-monospace, monospace; color: #ffa94d; }
+.wysite-shortcuts dd { margin: 0; }
+.wysite-lock-note { background: #ffe3e3; color: #a61e1e; border-radius: 4px; padding: 0 6px; }

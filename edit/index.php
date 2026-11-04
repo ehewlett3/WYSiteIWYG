@@ -749,6 +749,46 @@ try {
         ]);
     }
 
+    if (in_array($action, ['save-component-css', 'component-save', 'component-delete'], true)) {
+        $data = request_data();
+        if (!is_post() || !Csrf::validate($data['csrfToken'] ?? null)) {
+            json_response(['ok' => false, 'message' => 'Invalid CSRF token.'], 419);
+        }
+        if ($action === 'save-component-css') {
+            // EDT-C (editors too): only rules for this copied section's own classes pass.
+            $page = $repository->getPage((string) ($data['path'] ?? ''));
+            $app['componentStyles']->save((string) ($data['id'] ?? ''), (string) ($data['css'] ?? ''));
+            $app['componentStyles']->ensureLinked($repository->resolvePath($page['path']));
+            json_response(['ok' => true, 'message' => 'Saved the section\'s look.']);
+        }
+        if ($action === 'component-save') {
+            $saved = $app['components']->save((string) ($data['name'] ?? ''), (string) ($data['html'] ?? ''), is_array($data['styles'] ?? null) ? $data['styles'] : [], (string) $user['username'], (string) ($data['path'] ?? ''));
+            json_response(['ok' => true, 'id' => $saved['id'], 'message' => 'Saved.']);
+        }
+        $app['components']->delete((string) ($data['id'] ?? ''), (string) $user['username'], !empty($user['is_admin']));
+        json_response(['ok' => true, 'message' => 'Deleted.']);
+    }
+
+    if ($action === 'components-list') {
+        json_response(['ok' => true] + $app['components']->all());
+    }
+
+    if ($action === 'section-styles-gc') {
+        require_admin($user);
+        if (!is_post() || !Csrf::validate($_POST['csrf_token'] ?? null)) {
+            throw new RuntimeException('The request was rejected.');
+        }
+        $pageFiles = [];
+        foreach (array_merge($repository->listPages(), $repository->listDrafts()) as $listed) {
+            $pageFiles[] = $repository->resolvePath((string) $listed['path']);
+        }
+        $removed = !empty($_POST['reset']) ? $app['componentStyles']->reset() : count($app['componentStyles']->garbageCollect($pageFiles, true));
+        Flash::push('success', !empty($_POST['reset'])
+            ? 'Copied sections now follow the current theme (' . $removed . ' saved look(s) removed).'
+            : 'Removed ' . $removed . ' unused section style group(s).');
+        redirect_to_view($appUrl, 'manager');
+    }
+
     if ($action === 'create-page') {
         if (!is_post() || !Csrf::validate($_POST['csrf_token'] ?? null)) {
             throw new RuntimeException('The page creation request was rejected.');

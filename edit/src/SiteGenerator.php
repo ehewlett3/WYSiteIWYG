@@ -1949,6 +1949,9 @@ final class SiteGenerator
         if (is_file($this->rootPath . '/assets/wysite-content.css')) {
             $tags[] = '<link rel="stylesheet" href="/assets/wysite-content.css">';
         }
+        if (is_file($this->rootPath . '/' . ComponentStyles::FILE)) {
+            $tags[] = '<link rel="stylesheet" href="/' . ComponentStyles::FILE . '">';
+        }
 
         $favicon = (string) $this->settings->get('favicon');
         if ($favicon !== '') {

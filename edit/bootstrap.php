@@ -31,6 +31,8 @@ require_once __DIR__ . '/src/ThemeManager.php';
 require_once __DIR__ . '/src/ThemeImporter.php';
 require_once __DIR__ . '/src/ContentCleaner.php';
 require_once __DIR__ . '/src/ImportMap.php';
+require_once __DIR__ . '/src/ComponentStyles.php';
+require_once __DIR__ . '/src/ComponentLibrary.php';
 require_once __DIR__ . '/src/AiAssistant.php';
 require_once __DIR__ . '/src/SecurityRescan.php';
 require_once __DIR__ . '/src/ImportDedupe.php';
@@ -128,6 +130,7 @@ WYSiteIWYG\Sanitizer::setSiteHosts(array_filter([
     (string) parse_url((string) $settings->get('canonical_base_url'), PHP_URL_HOST),
 ]));
 $ai = new AiAssistant(__DIR__ . '/storage/ai.local.php');
+$componentStyles = new WYSiteIWYG\ComponentStyles($rootPath, $siteBaseUrl);
 
 return [
     'auth' => $auth,
@@ -147,6 +150,8 @@ return [
     'report' => new WYSiteIWYG\SiteReport($rootPath, $repository),
     'systemCheck' => new WYSiteIWYG\SystemCheck($rootPath, $editPath),
     'rescan' => new WYSiteIWYG\SecurityRescan($rootPath, $editPath, $repository, $settings),
+    'componentStyles' => $componentStyles,
+    'components' => new WYSiteIWYG\ComponentLibrary($editPath, $themes, $componentStyles),
     'themeImporter' => new WYSiteIWYG\ThemeImporter($rootPath, $externalImporter, $themes),
     'dedupe' => new WYSiteIWYG\ImportDedupe($rootPath, $editPath, $externalImporter->assetIndex(), static fn(): array => $externalImporter->importedFiles()),
     'siteOrigin' => $siteOrigin,

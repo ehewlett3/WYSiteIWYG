@@ -1,4 +1,5 @@
 import { DropInWysiwyg } from "./dropin-wysiwyg.js";
+import { setupSectionTools } from "./section-tools.js";
 
 const context = window.WYSITE_PREVIEW_CONTEXT || null;
 
@@ -15,6 +16,15 @@ if (context) {
   setupBlockBadges();
   setupSelectorMode();
   setupLogout();
+  setupSectionTools({
+    context,
+    toast,
+    saveBlock,
+    postJson,
+    fetchJson,
+    isEditorOpen: () => Boolean(currentInstance || opening),
+    openEditor: (target) => openSelectedElementEditor(target).catch((error) => toast(error.message || "The editor could not be opened.", true)),
+  });
 
   // The admin bar's Log out button carries no token in the markup; build the
   // form only when it is used.

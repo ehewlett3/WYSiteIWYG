@@ -1,6 +1,7 @@
 // dropin-wysiwyg.js
 import * as pm from "./pm-bundle.js";
 import { buildSchema, createDocument, serializeDocument, schemaLoss } from "./html-fidelity.js";
+import { duplicateBlock, moveBlock, selectParentBlock } from "./block-commands.js";
 
 function buildUI({ onSave, onCancel }) {
   const root = document.createElement("div");
@@ -661,6 +662,11 @@ export const DropInWysiwyg = {
       richListKeymapPlugin(),
 
       keymap({
+        // EDT-B: whole-block operations (a card, a column, a paragraph).
+        "Mod-d": duplicateBlock,
+        "Alt-Shift-ArrowUp": moveBlock(-1),
+        "Alt-Shift-ArrowDown": moveBlock(1),
+        "Mod-Alt-ArrowUp": selectParentBlock,
         "Mod-z": undo,
         "Shift-Mod-z": redo,
         "Mod-y": redo,
@@ -750,6 +756,10 @@ export const DropInWysiwyg = {
         link: svg('<path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/>'),
         image: svg('<rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="9" cy="9" r="2"/><path d="m21 15-3.1-3.1a2 2 0 0 0-2.8 0L6 21"/>'),
         source: svg('<polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/><line x1="13" y1="4" x2="11" y2="20"/>'),
+        duplicate: svg('<rect x="9" y="9" width="12" height="12" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>'),
+        moveUp: svg('<polyline points="18 15 12 9 6 15"/>'),
+        moveDown: svg('<polyline points="6 9 12 15 18 9"/>'),
+        parent: svg('<rect x="3" y="3" width="18" height="18" rx="2"/><rect x="7" y="7" width="10" height="10" rx="1"/>'),
       };
 
       const registerControl = (control, allowWhenSource = false) => {
@@ -916,6 +926,12 @@ export const DropInWysiwyg = {
       });
       ui.toolbar.appendChild(imgBtn);
       registerControl(imgBtn);
+
+      addSep();
+      add("parent", "Select the surrounding block (Ctrl/Cmd+Alt+↑)", () => selectParentBlock);
+      add("duplicate", "Duplicate block (Ctrl/Cmd+D)", () => duplicateBlock);
+      add("moveUp", "Move block up (Alt+Shift+↑)", () => moveBlock(-1));
+      add("moveDown", "Move block down (Alt+Shift+↓)", () => moveBlock(1));
 
       function updateToolbar() {
         controls.forEach(({ control, allowWhenSource }) => {

@@ -1988,6 +1988,75 @@ try {
         redirect($appUrl . '/index.php?action=report');
     }
 
+    if ($action === 'import-dedupe-apply' || $action === 'import-dedupe-undo') {
+        require_admin($user);
+        if (!is_post() || !Csrf::validate($_POST['csrf_token'] ?? null)) {
+            throw new RuntimeException('The clean-up request was rejected.');
+        }
+
+        if ($action === 'import-dedupe-undo') {
+            $restored = $app['dedupe']->undo((string) ($_POST['run'] ?? ''));
+            Flash::push('success', 'Undid the clean-up: restored ' . $restored . ' file(s).');
+            redirect($appUrl . '/index.php?action=import-dedupe');
+        }
+
+        $backups->create('dedupe');
+        $done = $app['dedupe']->apply($app['dedupe']->scan());
+        Flash::push('success', 'Removed ' . $done['files_moved'] . ' duplicate file(s), updated ' . $done['files_rewritten'] . ' page(s) or stylesheet(s), and turned ' . $done['pages_redirected'] . ' duplicate page(s) into redirects. You can undo this below.');
+        redirect($appUrl . '/index.php?action=import-dedupe');
+    }
+
+    if ($action === 'import-dedupe') {
+        require_admin($user);
+        $scan = $app['dedupe']->scan();
+        $lastRun = $app['dedupe']->lastRun();
+        $duplicateCount = array_sum(array_map(static fn(array $g): int => count($g['duplicates']), $scan['groups']));
+        ob_start();
+        ?>
+        <main class="wysite-dashboard">
+          <section class="wysite-panel">
+            <div class="wysite-panel__heading">
+              <div>
+                <p class="wysite-kicker">Imported files</p>
+                <h2><?= $duplicateCount + count($scan['pages']) === 0 ? 'No duplicates found' : h((string) $duplicateCount) . ' duplicate file(s), ' . count($scan['pages']) . ' duplicate page(s)' ?></h2>
+              </div>
+              <a class="wysite-button wysite-button--ghost" href="<?= h($appUrl) ?>/index.php?action=manager">Back to Manager</a>
+            </div>
+            <p class="wysite-muted">Files under <code>assets/imported/</code> with identical contents are merged into one, and every page and stylesheet that used a copy is pointed at the kept file. Pages that only exist because of tracking, reply or share links become redirects. Removed files go to a trash folder, so you can undo the clean-up.</p>
+            <?php if ($duplicateCount + count($scan['pages']) > 0): ?>
+              <p><strong><?= h(number_format($scan['reclaimable'] / 1048576, 1)) ?> MB</strong> can be reclaimed.</p>
+              <form method="post" action="<?= h($appUrl) ?>/index.php?action=import-dedupe-apply" data-wysite-confirm="Merge the duplicates listed below? A backup of the pages is taken first, and you can undo the clean-up from this page.">
+                <input type="hidden" name="csrf_token" value="<?= h(Csrf::token()) ?>">
+                <button class="wysite-button" type="submit">Merge duplicates</button>
+              </form>
+              <div class="wysite-table-wrap">
+                <table class="wysite-table">
+                  <thead><tr><th>Kept file</th><th>Duplicates removed</th></tr></thead>
+                  <tbody>
+                    <?php foreach (array_slice($scan['groups'], 0, 200) as $group): ?>
+                      <tr><td><code><?= h($group['keeper']) ?></code></td><td><?php foreach ($group['duplicates'] as $duplicate): ?><code><?= h($duplicate) ?></code><br><?php endforeach; ?></td></tr>
+                    <?php endforeach; ?>
+                    <?php foreach ($scan['pages'] as $page): ?>
+                      <tr><td><code><?= h($page['target']) ?></code></td><td><code><?= h($page['path']) ?></code> (page, becomes a redirect)</td></tr>
+                    <?php endforeach; ?>
+                  </tbody>
+                </table>
+              </div>
+            <?php endif; ?>
+            <?php if ($lastRun !== null): ?>
+              <form method="post" action="<?= h($appUrl) ?>/index.php?action=import-dedupe-undo" data-wysite-confirm="Put back every file the last clean-up removed or changed?">
+                <input type="hidden" name="csrf_token" value="<?= h(Csrf::token()) ?>">
+                <input type="hidden" name="run" value="<?= h($lastRun) ?>">
+                <button class="wysite-button wysite-button--ghost" type="submit">Undo the last clean-up (<?= h($lastRun) ?>)</button>
+              </form>
+            <?php endif; ?>
+          </section>
+        </main>
+        <?php
+        layout('Duplicate files', (string) ob_get_clean(), $appUrl, $siteTitle, $user);
+        return;
+    }
+
     if ($action === 'rescan-apply') {
         require_admin($user);
         if (!is_post() || !Csrf::validate($_POST['csrf_token'] ?? null)) {

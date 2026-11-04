@@ -26,6 +26,7 @@ require_once __DIR__ . '/src/SiteGenerator.php';
 require_once __DIR__ . '/src/ThemeManager.php';
 require_once __DIR__ . '/src/AiAssistant.php';
 require_once __DIR__ . '/src/SecurityRescan.php';
+require_once __DIR__ . '/src/ImportDedupe.php';
 
 WYSiteIWYG\apply_security_headers();
 
@@ -139,6 +140,7 @@ return [
     'report' => new WYSiteIWYG\SiteReport($rootPath, $repository),
     'systemCheck' => new WYSiteIWYG\SystemCheck($rootPath, $editPath),
     'rescan' => new WYSiteIWYG\SecurityRescan($rootPath, $editPath, $repository, $settings),
+    'dedupe' => new WYSiteIWYG\ImportDedupe($rootPath, $editPath, $externalImporter->assetIndex(), static fn(): array => $externalImporter->importedFiles()),
     'siteOrigin' => $siteOrigin,
     'siteTitle' => (string) $settings->get('site_name'),
 ];

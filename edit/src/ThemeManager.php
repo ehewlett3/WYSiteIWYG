@@ -568,15 +568,9 @@ final class ThemeManager
      */
     public static function sanitizeGeneratedCss(string $css): string
     {
-        $css = str_ireplace(['</style', '<script', 'javascript:', 'expression(', '-moz-binding', 'behavior:'], '', $css);
-        $css = preg_replace_callback('/@import\s+(?:url\([^)]*\)|"[^"]*"|\'[^\']*\'|[^;"\'\s]+)[^;]*;?/i', static function (array $match): string {
-            return preg_match('#^@import\s+(url\(\s*)?["\']?https://fonts\.googleapis\.com/#i', $match[0]) === 1 ? $match[0] : '';
-        }, $css) ?? '';
-
-        return preg_replace_callback('/url\(\s*(["\']?)(.*?)\1\s*\)/i', static function (array $match): string {
-            $url = trim($match[2]);
-            return preg_match('#^(data:image/(png|jpe?g|gif|webp|svg\+xml)[;,]|https://fonts\.(gstatic|googleapis)\.com/)#i', $url) === 1 ? $match[0] : 'none';
-        }, $css) ?? '';
+        // Shared CSS sanitizer (repeats until stable, resolves CSS escapes); SVG
+        // data URIs are fine as CSS images (they can't run script there).
+        return Sanitizer::css($css, ['data:image/svg+xml']);
     }
 
     private static function clipText(string $value, int $max): string

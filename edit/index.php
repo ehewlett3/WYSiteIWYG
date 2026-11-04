@@ -34,6 +34,15 @@ $GLOBALS['WYSITE_DASHBOARD_CSS'] = $themes->dashboardCssVariables();
 
 $action = $_GET['action'] ?? 'dashboard';
 
+// Defense in depth on top of CSRF tokens and SameSite cookies: browsers label
+// requests from other sites, and no legitimate editor request comes from one.
+if (is_post() && strtolower((string) ($_SERVER['HTTP_SEC_FETCH_SITE'] ?? '')) === 'cross-site') {
+    http_response_code(403);
+    header('Content-Type: text/plain; charset=utf-8');
+    echo 'Cross-site requests are not accepted.';
+    exit;
+}
+
 if (!$auth->isInstalled() && $action !== 'install') {
     redirect($appUrl . '/index.php?action=install');
 }
@@ -708,9 +717,18 @@ try {
             json_response(['ok' => false, 'message' => 'Invalid CSRF token.'], 419);
         }
 
+        // Selector edits only change template chrome (admin-only). Page content is
+        // edited through its block (save-block), which enforces admin-only blocks
+        // and keeps the block markers intact (SEC-4).
+        if ((string) ($data['scope'] ?? 'template') !== 'template') {
+            json_response(['ok' => false, 'message' => 'Page sections are edited through their content block.'], 400);
+        }
+        if (empty($user['is_admin'])) {
+            json_response(['ok' => false, 'message' => 'Template sections are admin-only. Ask an administrator to change the site-wide header, footer, or layout.'], 403);
+        }
+
         $path = (string) ($data['path'] ?? '');
-        $scope = (string) ($data['scope'] ?? 'page');
-        $html = \WYSiteIWYG\Sanitizer::html((string) ($data['html'] ?? ''), $scope === 'template' ? 'import' : 'content');
+        $html = \WYSiteIWYG\Sanitizer::html((string) ($data['html'] ?? ''), 'import');
         $domPath = $data['domPath'] ?? null;
         $page = $repository->getPage($path);
         $kind = (string) ($page['kind'] ?? 'page');
@@ -719,26 +737,15 @@ try {
             json_response(['ok' => false, 'message' => 'The selected section path was invalid.'], 400);
         }
 
-        if ($scope === 'template') {
-            // Templates are site-wide chrome; like theme apply, only admins change them.
-            if (empty($user['is_admin'])) {
-                json_response(['ok' => false, 'message' => 'Template sections are admin-only. Ask an administrator to change the site-wide header, footer, or layout.'], 400);
-            }
-
-            $backups->create('template-edit');
-            $templatePath = $repository->updateSelectedElementInActiveTemplate($kind, $domPath, $html);
-            $updatedPages = $generator->rebuildPagesUsingTemplate($kind);
-            json_response([
-                'ok' => true,
-                'message' => 'The active template was saved and ' . $updatedPages . ' page(s) using it were rebuilt.',
-                'templatePath' => $templatePath,
-                'updatedPages' => $updatedPages,
-            ]);
-        }
-
-        assert_page_unchanged($repository, $path, $data);
-        $repository->updateSelectedElement($path, $domPath, $html);
-        json_response(['ok' => true, 'message' => 'The selected section was saved.', 'fileHash' => sha1($repository->getPage($path)['html'])]);
+        $backups->create('template-edit');
+        $templatePath = $repository->updateSelectedElementInActiveTemplate($kind, $domPath, $html);
+        $updatedPages = $generator->rebuildPagesUsingTemplate($kind);
+        json_response([
+            'ok' => true,
+            'message' => 'The active template was saved and ' . $updatedPages . ' page(s) using it were rebuilt.',
+            'templatePath' => $templatePath,
+            'updatedPages' => $updatedPages,
+        ]);
     }
 
     if ($action === 'create-page') {

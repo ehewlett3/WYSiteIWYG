@@ -561,7 +561,9 @@ final class BlockRepository
             '<div class="wysite-admin-bar__actions">' .
             '<a class="wysite-admin-link" href="' . h($appUrl) . '/index.php">Dashboard</a>' .
             '<a class="wysite-admin-link" href="' . h($siteBaseUrl . ltrim($relativePath, '/')) . '" target="_blank" rel="noreferrer">Open live page</a>' .
-            '<form method="post" action="' . h($appUrl) . '/index.php?action=logout"><input type="hidden" name="csrf_token" value="' . h($csrfToken) . '"><button class="wysite-admin-link wysite-admin-link--button" type="submit">Log out</button></form>' .
+            // No CSRF token in the DOM: page CSS could read an attribute value
+            // (SEC-7a). editor-shell.js submits logout with the token from context.
+            '<button class="wysite-admin-link wysite-admin-link--button" type="button" data-wysite-logout>Log out</button>' .
             '</div>' .
             '</div>';
 

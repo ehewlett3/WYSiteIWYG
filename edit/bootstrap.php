@@ -34,7 +34,10 @@ $appUrl = $appUrl === '' ? '/' : $appUrl;
 $siteBaseUrl = rtrim(str_replace('\\', '/', dirname($appUrl)), '/');
 $siteBaseUrl = $siteBaseUrl === '' ? '/' : $siteBaseUrl . '/';
 
+// The editor hint cookie is read by public pages, so it lives at the site base;
+// the session cookie is only needed by /edit/ itself (SEC-7a).
 $cookiePath = $siteBaseUrl;
+$sessionCookiePath = rtrim($appUrl, '/') . '/';
 $sessionName = 'wysite_session_v2';
 $expireCookie = static function (string $name, string $path, bool $secure): void {
     setcookie($name, '', time() - 42000, $path, '', $secure, true);
@@ -42,8 +45,9 @@ $expireCookie = static function (string $name, string $path, bool $secure): void
 
 if (session_status() !== PHP_SESSION_ACTIVE) {
     $legacyCookies = [
-        ['name' => 'wysite_session', 'paths' => [$cookiePath, rtrim($appUrl, '/') . '/', '/edit/', '/'], 'skip_current_path' => false],
-        ['name' => $sessionName, 'paths' => [rtrim($appUrl, '/') . '/', '/edit/'], 'skip_current_path' => true],
+        ['name' => 'wysite_session', 'paths' => [$cookiePath, $sessionCookiePath, '/edit/', '/'], 'skip_current_path' => false],
+        // Earlier versions scoped the session cookie to the site base.
+        ['name' => $sessionName, 'paths' => [$cookiePath, '/', '/edit/'], 'skip_current_path' => true],
     ];
 
     foreach ($legacyCookies as $legacyCookie) {
@@ -56,7 +60,7 @@ if (session_status() !== PHP_SESSION_ACTIVE) {
                 continue;
             }
 
-            if (!empty($legacyCookie['skip_current_path']) && $legacyPath === $cookiePath) {
+            if (!empty($legacyCookie['skip_current_path']) && $legacyPath === $sessionCookiePath) {
                 continue;
             }
 
@@ -75,7 +79,7 @@ if (session_status() !== PHP_SESSION_ACTIVE) {
     // Match the app's 8-hour idle timeout (PHP's default GC ends sessions after 24 min).
     ini_set('session.gc_maxlifetime', '28800');
     ini_set('session.cookie_samesite', 'Lax');
-    session_set_cookie_params(0, $cookiePath, '', $https, true);
+    session_set_cookie_params(0, $sessionCookiePath, '', $https, true);
     if ($needsSession) {
         session_start();
     }

@@ -644,7 +644,20 @@ final class ExternalSiteImporter
                             $assetsFailed,
                             $nonEssentialSkipped
                         );
-                        Filesystem::atomicWrite($target, $rewrittenResource['body']);
+                        $resourceBody = $rewrittenResource['body'];
+                        if ($this->isXmlLikeStaticDocument($url, (string) $fetched['content_type'])) {
+                            // SEC-2a: an XML document in the site root renders in the
+                            // browser and could run XHTML/SVG script; keep feeds and
+                            // sitemaps (made inert) and store anything else as text.
+                            $inert = AssetPolicy::sanitizeXmlDocument($resourceBody);
+                            if ($inert === null) {
+                                $relativePath .= '.txt';
+                                $target .= '.txt';
+                            } else {
+                                $resourceBody = $inert;
+                            }
+                        }
+                        Filesystem::atomicWrite($target, $resourceBody);
                         $resourcesSaved[] = $relativePath;
                         $progress('resource_saved', [
                             'url' => $url,
@@ -700,7 +713,9 @@ final class ExternalSiteImporter
                 $progress('asset_permissions_repaired', $permissionReport);
             }
 
-            $localizeReport = $this->relocalizeImportedOutput();
+            // Only what this job wrote (plus mirrored CSS it saved) needs localizing.
+            $jobCss = array_values(array_filter(array_keys($assetsSaved), static fn($path): bool => is_string($path) && str_ends_with(strtolower($path), '.css')));
+            $localizeReport = $this->relocalizeImportedOutput(array_merge($saved, $resourcesSaved, $skipped, $jobCss));
             if (($localizeReport['pages'] + $localizeReport['stylesheets']) > 0) {
                 $progress('localized', $localizeReport);
             }
@@ -826,28 +841,28 @@ final class ExternalSiteImporter
         return array_values(is_array($data) ? $data : []);
     }
 
-    public function relocalizeImportedOutput(): array
+    /**
+     * Localize imported output (base-relative URLs, relative <base>). Only files
+     * the importer created are touched: $paths (root-relative) when given, else
+     * every file in the import manifest plus mirrored CSS. Managed pages are left
+     * to SiteGenerator, and other applications' files in the web root are never
+     * read or rewritten (SEC-5).
+     *
+     * @param string[]|null $paths
+     */
+    public function relocalizeImportedOutput(?array $paths = null): array
     {
         $pages = 0;
         $stylesheets = 0;
 
-        if (!is_dir($this->rootPath)) {
-            return ['pages' => 0, 'stylesheets' => 0];
+        if ($paths === null) {
+            $paths = array_merge($this->importedFiles(), $this->mirroredFiles(['css']));
         }
 
-        $iterator = new \RecursiveIteratorIterator(
-            new \RecursiveDirectoryIterator($this->rootPath, \FilesystemIterator::SKIP_DOTS),
-            \RecursiveIteratorIterator::LEAVES_ONLY
-        );
-
-        foreach ($iterator as $file) {
-            if (!$file->isFile()) {
-                continue;
-            }
-
-            $full = str_replace('\\', '/', $file->getPathname());
-            $rel = ltrim(substr($full, strlen($this->rootPath)), '/');
-            if ($rel === '' || str_starts_with($rel, 'edit/')) {
+        foreach (array_unique($paths) as $rel) {
+            $rel = ltrim(str_replace('\\', '/', (string) $rel), '/');
+            $full = $this->rootPath . '/' . $rel;
+            if ($rel === '' || str_starts_with($rel, 'edit/') || str_contains($rel, '..') || !is_file($full)) {
                 continue;
             }
 
@@ -877,6 +892,62 @@ final class ExternalSiteImporter
         }
 
         return ['pages' => $pages, 'stylesheets' => $stylesheets];
+    }
+
+    /**
+     * Root-relative paths of mirrored files under assets/imported/ with one of
+     * $extensions.
+     *
+     * @param string[] $extensions
+     * @return string[]
+     */
+    private function mirroredFiles(array $extensions): array
+    {
+        $base = $this->rootPath . '/assets/imported';
+        if (!is_dir($base)) {
+            return [];
+        }
+
+        $files = [];
+        $iterator = new \RecursiveIteratorIterator(new \RecursiveDirectoryIterator($base, \FilesystemIterator::SKIP_DOTS));
+        foreach ($iterator as $file) {
+            if ($file->isFile() && in_array(strtolower((string) pathinfo($file->getFilename(), PATHINFO_EXTENSION)), $extensions, true)) {
+                $files[] = ltrim(substr(str_replace('\\', '/', $file->getPathname()), strlen($this->rootPath)), '/');
+            }
+        }
+
+        return $files;
+    }
+
+    /**
+     * Managed pages (they carry WYSITE markers), found by scanning HTML files
+     * under the root. Only read here; callers decide what to write.
+     *
+     * @return string[]
+     */
+    private function managedPageFiles(): array
+    {
+        $files = [];
+        $iterator = new \RecursiveIteratorIterator(
+            new \RecursiveCallbackFilterIterator(
+                new \RecursiveDirectoryIterator($this->rootPath, \FilesystemIterator::SKIP_DOTS),
+                function (\SplFileInfo $file): bool {
+                    $rel = ltrim(substr(str_replace('\\', '/', $file->getPathname()), strlen($this->rootPath)), '/');
+                    return !str_starts_with($file->getFilename(), '.') && $rel !== 'edit' && $rel !== 'assets';
+                }
+            )
+        );
+        foreach ($iterator as $file) {
+            if (!$file->isFile() || !in_array(strtolower((string) pathinfo($file->getFilename(), PATHINFO_EXTENSION)), ['html', 'htm'], true)) {
+                continue;
+            }
+            $head = (string) @file_get_contents($file->getPathname(), false, null, 0, 4096);
+            if (str_contains($head, 'WYSITE:')) {
+                $files[] = ltrim(substr(str_replace('\\', '/', $file->getPathname()), strlen($this->rootPath)), '/');
+            }
+        }
+
+        return $files;
     }
 
     public function importAssetUrls(array $urls): array
@@ -1916,6 +1987,9 @@ final class ExternalSiteImporter
                 $this->makePublicFile($target);
             } else {
                 Filesystem::ensureDirectory(dirname($target));
+                $this->neutralizeActiveAsset($asset['path'], $relativePath, $asset['content_type']);
+                $assetMap[$canonicalUrl] = $relativePath;
+                $target = $this->rootPath . '/' . $relativePath;
                 if (is_file($target)) {
                     @unlink($target);
                 }
@@ -1952,6 +2026,31 @@ final class ExternalSiteImporter
             ]);
             return null;
         }
+    }
+
+    /**
+     * SEC-2a: rewrite a downloaded SVG or XML asset in place so it can't run
+     * script in this origin. Unparseable SVG is stored as text by renaming the
+     * caller's target (handled through the returned path suffix check).
+     */
+    private function neutralizeActiveAsset(string $tmpPath, string &$relativePath, string $contentType): void
+    {
+        $type = $this->normalizedContentType($contentType);
+        $extension = strtolower((string) pathinfo($relativePath, PATHINFO_EXTENSION));
+        $isSvg = $extension === 'svg' || $type === 'image/svg+xml';
+        $isXml = in_array($extension, ['xml', 'rss', 'atom', 'xsl', 'xslt'], true) || str_ends_with($type, '+xml') || in_array($type, ['application/xml', 'text/xml'], true);
+        if (!$isSvg && !$isXml) {
+            return;
+        }
+
+        $contents = (string) file_get_contents($tmpPath);
+        $inert = $isSvg ? AssetPolicy::sanitizeSvg($contents) : AssetPolicy::sanitizeXmlDocument($contents, false);
+        if ($inert === null || in_array($extension, ['xsl', 'xslt'], true)) {
+            $relativePath .= '.txt';
+            return;
+        }
+
+        file_put_contents($tmpPath, $inert);
     }
 
     private function documentBaseUrl(DOMDocument $dom, string $pageUrl): string
@@ -2608,29 +2707,27 @@ final class ExternalSiteImporter
         return $repointed;
     }
 
+    /**
+     * Point references to backfilled assets at their local copies. Only the
+     * importer's own files (manifest pages, mirrored CSS/JS) and managed pages
+     * are rewritten; nothing else in the web root is touched (SEC-5).
+     */
     private function rewriteImportedAssetReferences(array $urlToLocalPath): int
     {
         if ($urlToLocalPath === []) {
             return 0;
         }
 
+        $candidates = array_unique(array_merge(
+            array_filter($this->importedFiles(), static fn(string $path): bool => preg_match('/\.(html?|css|js)$/i', $path) === 1),
+            $this->mirroredFiles(['css', 'js']),
+            $this->managedPageFiles()
+        ));
+
         $updated = 0;
-        $iterator = new \RecursiveIteratorIterator(
-            new \RecursiveDirectoryIterator($this->rootPath, \FilesystemIterator::SKIP_DOTS)
-        );
-
-        foreach ($iterator as $file) {
-            if (!$file->isFile()) {
-                continue;
-            }
-
-            $fullPath = str_replace('\\', '/', $file->getPathname());
-            if (str_starts_with($fullPath, $this->editPath . '/')) {
-                continue;
-            }
-
-            $extension = strtolower((string) pathinfo($fullPath, PATHINFO_EXTENSION));
-            if (!in_array($extension, ['html', 'htm', 'css', 'js'], true)) {
+        foreach ($candidates as $relative) {
+            $fullPath = $this->rootPath . '/' . $relative;
+            if (str_contains($relative, '..') || str_starts_with($relative, 'edit/') || !is_file($fullPath)) {
                 continue;
             }
 

@@ -14,6 +14,26 @@ if (context) {
 
   setupBlockBadges();
   setupSelectorMode();
+  setupLogout();
+
+  // The admin bar's Log out button carries no token in the markup; build the
+  // form only when it is used.
+  function setupLogout() {
+    document.querySelectorAll("[data-wysite-logout]").forEach((button) => {
+      button.addEventListener("click", () => {
+        const form = document.createElement("form");
+        form.method = "post";
+        form.action = `${context.appUrl}/index.php?action=logout`;
+        const input = document.createElement("input");
+        input.type = "hidden";
+        input.name = "csrf_token";
+        input.value = context.csrfToken;
+        form.appendChild(input);
+        document.body.appendChild(form);
+        form.submit();
+      });
+    });
+  }
 
   function setupBlockBadges() {
     document.querySelectorAll(".wysite-edit-button").forEach((button) => {

@@ -17,21 +17,30 @@ final class ImportMap
     private string $file;
     private BlockRepository $repository;
     private SiteGenerator $generator;
+    private ExternalSiteImporter $importer;
 
-    public function __construct(string $rootPath, string $editPath, BlockRepository $repository, SiteGenerator $generator)
+    public function __construct(string $rootPath, string $editPath, BlockRepository $repository, SiteGenerator $generator, ExternalSiteImporter $importer)
     {
         $this->rootPath = rtrim($rootPath, '/');
         $this->file = rtrim($editPath, '/') . '/storage/import-map.local.json';
         $this->repository = $repository;
         $this->generator = $generator;
+        $this->importer = $importer;
     }
 
     /** Analyse the site's unmanaged HTML pages (redirect stubs excluded). */
     public function analyze(int $limit = 400): array
     {
+        // Staged crawls first (SEC-3b); otherwise unmanaged pages in the site.
+        $sources = $this->importer->stagedPages();
+        if ($sources === []) {
+            foreach ($this->repository->listImportCandidates() as $candidate) {
+                $sources[(string) $candidate['path']] = (string) @file_get_contents($this->rootPath . '/' . $candidate['path']);
+            }
+        }
         $pages = [];
-        foreach ($this->repository->listImportCandidates() as $candidate) {
-            $html = (string) @file_get_contents($this->rootPath . '/' . $candidate['path']);
+        foreach ($sources as $path => $html) {
+            $candidate = ['path' => $path];
             if ($html === '' || preg_match('/<meta[^>]+http-equiv=["\']?refresh/i', $html) === 1) {
                 continue;
             }
@@ -148,7 +157,7 @@ final class ImportMap
                 continue; // incomplete group: the theme falls back to its page template
             }
             $sources[$kind] = [
-                'html' => (string) file_get_contents($this->rootPath . '/' . $cluster['representative']),
+                'html' => $this->importer->importedPageHtml((string) $cluster['representative']),
                 'base' => '',
                 'local' => true,
                 'regions' => $regions,
@@ -169,6 +178,9 @@ final class ImportMap
     {
         $map = $this->load() ?? throw new RuntimeException('Analyse the imported pages first.');
         $result = ['converted' => 0, 'skipped' => [], 'failed' => []];
+        // Staged pages go live now: published first, then converted in place.
+        $published = $this->importer->publishStaged(null, true);
+        $this->importer->relocalizeImportedOutput($published['published']);
         foreach ($map['clusters'] as $cluster) {
             $kind = (string) $cluster['kind'];
             $contentRole = $kind === 'blog-post' ? 'blog-post-content' : 'page-content';
@@ -221,6 +233,6 @@ final class ImportMap
 
     private function parse(string $path): \DOMDocument
     {
-        return HtmlDocument::parse((string) @file_get_contents($this->rootPath . '/' . $path));
+        return HtmlDocument::parse($this->importer->importedPageHtml($path));
     }
 }

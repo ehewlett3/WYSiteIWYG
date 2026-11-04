@@ -1237,6 +1237,7 @@ try {
             'import_ignore_params' => (string) ($_POST['import_ignore_params'] ?? ''),
             'import_prefer_originals' => !empty($_POST['import_prefer_originals']),
             'public_csp' => !empty($_POST['public_csp']),
+            'stage_imports' => !empty($_POST['stage_imports']),
             'search_url' => (string) ($_POST['search_url'] ?? ''),
             'form_endpoint' => (string) ($_POST['form_endpoint'] ?? ''),
         ];
@@ -2056,7 +2057,7 @@ try {
             throw new RuntimeException('The analysis request was rejected.');
         }
         @set_time_limit(300);
-        $importMap = new \WYSiteIWYG\ImportMap($rootPath, $app['editPath'], $repository, $generator);
+        $importMap = new \WYSiteIWYG\ImportMap($rootPath, $app['editPath'], $repository, $generator, $externalImporter);
         $map = $importMap->analyze();
         $reviewed = 0;
         // THM-F: AI only reviews regions the comparison was unsure about.
@@ -2092,7 +2093,7 @@ try {
         if (!is_post() || !Csrf::validate($_POST['csrf_token'] ?? null)) {
             throw new RuntimeException('The request was rejected.');
         }
-        $importMap = new \WYSiteIWYG\ImportMap($rootPath, $app['editPath'], $repository, $generator);
+        $importMap = new \WYSiteIWYG\ImportMap($rootPath, $app['editPath'], $repository, $generator, $externalImporter);
         $cluster = $importMap->updateRole((string) ($_POST['cluster'] ?? ''), (string) ($_POST['role'] ?? ''), (string) ($_POST['selector'] ?? ''));
         $info = $cluster['roles'][(string) ($_POST['role'] ?? '')];
         Flash::push('success', 'The selector matches exactly once on ' . (int) $info['matches']['1'] . ' of ' . count($cluster['pages']) . ' page(s).');
@@ -2105,7 +2106,7 @@ try {
             throw new RuntimeException('The request was rejected.');
         }
         @set_time_limit(900);
-        $importMap = new \WYSiteIWYG\ImportMap($rootPath, $app['editPath'], $repository, $generator);
+        $importMap = new \WYSiteIWYG\ImportMap($rootPath, $app['editPath'], $repository, $generator, $externalImporter);
         $backups->create('import-map');
         $messages = [];
         if (!empty($_POST['create_theme'])) {
@@ -2138,7 +2139,7 @@ try {
 
     if ($action === 'import-region-preview') {
         require_admin($user);
-        $importMap = new \WYSiteIWYG\ImportMap($rootPath, $app['editPath'], $repository, $generator);
+        $importMap = new \WYSiteIWYG\ImportMap($rootPath, $app['editPath'], $repository, $generator, $externalImporter);
         $cluster = $importMap->cluster((string) ($_GET['cluster'] ?? ''));
         $pagePath = (string) ($_GET['page'] ?? '');
         if (!in_array($pagePath, $cluster['pages'], true)) {
@@ -2146,7 +2147,7 @@ try {
         }
         \WYSiteIWYG\send_csp('preview');
         $nonce = \WYSiteIWYG\csp_nonce();
-        $html = \WYSiteIWYG\strip_active_content((string) file_get_contents($repository->resolvePath($pagePath)));
+        $html = \WYSiteIWYG\strip_active_content($externalImporter->importedPageHtml($pagePath));
         $html = preg_replace('#\s*<base\b[^>]*>#i', '', $html) ?? $html;
         $roles = [];
         foreach ($cluster['roles'] as $role => $info) {
@@ -2158,9 +2159,21 @@ try {
         return;
     }
 
+    if ($action === 'import-publish-staged') {
+        require_admin($user);
+        if (!is_post() || !Csrf::validate($_POST['csrf_token'] ?? null)) {
+            throw new RuntimeException('The request was rejected.');
+        }
+        $backups->create('publish-staged');
+        $published = $externalImporter->publishStaged(null, true);
+        $externalImporter->relocalizeImportedOutput($published['published']);
+        Flash::push('success', 'Published ' . count($published['published']) . ' staged file(s) to the site as they were crawled.');
+        redirect_to_view($appUrl, 'manager');
+    }
+
     if ($action === 'import-map') {
         require_admin($user);
-        $map = (new \WYSiteIWYG\ImportMap($rootPath, $app['editPath'], $repository, $generator))->load();
+        $map = (new \WYSiteIWYG\ImportMap($rootPath, $app['editPath'], $repository, $generator, $externalImporter))->load();
         ob_start();
         include __DIR__ . '/views/import-map.php';
         layout('Import map', (string) ob_get_clean(), $appUrl, $siteTitle, $user);

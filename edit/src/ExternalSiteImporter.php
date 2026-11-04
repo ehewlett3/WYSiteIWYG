@@ -78,6 +78,107 @@ final class ExternalSiteImporter
     private bool $preferOriginals = true;
     /** Re-validate already-mirrored assets (overwrite runs) instead of reusing them. */
     private bool $refreshAssets = false;
+    /** SEC-3b: new crawls write HTML to the private staging folder (Settings). */
+    private bool $stageImports = true;
+    /** Where the running job writes pages: the site root or the staging folder. */
+    private ?string $pageRoot = null;
+
+    public function setStageImports(bool $stage): void
+    {
+        $this->stageImports = $stage;
+    }
+
+    /** Folder holding crawled pages that are not published yet. */
+    public function stagingPath(): string
+    {
+        return $this->editPath . '/storage/import-staging';
+    }
+
+    private function pageRoot(): string
+    {
+        return $this->pageRoot ?? $this->rootPath;
+    }
+
+    /**
+     * Crawled pages waiting in staging (root-relative path => HTML).
+     *
+     * @return array<string, string>
+     */
+    public function stagedPages(): array
+    {
+        $base = $this->stagingPath();
+        if (!is_dir($base)) {
+            return [];
+        }
+        $pages = [];
+        foreach (new \RecursiveIteratorIterator(new \RecursiveDirectoryIterator($base, \FilesystemIterator::SKIP_DOTS)) as $file) {
+            if ($file->isFile() && preg_match('/\.html?$/i', $file->getFilename()) === 1) {
+                $relative = ltrim(substr(str_replace('\\', '/', $file->getPathname()), strlen($base)), '/');
+                $pages[$relative] = (string) file_get_contents($file->getPathname());
+            }
+        }
+        ksort($pages);
+
+        return $pages;
+    }
+
+    /** HTML of a crawled page, staged or published. */
+    public function importedPageHtml(string $relative): string
+    {
+        $relative = ltrim($relative, '/');
+        if (str_contains($relative, '..')) {
+            return '';
+        }
+        foreach ([$this->stagingPath(), $this->rootPath] as $base) {
+            if (is_file($base . '/' . $relative)) {
+                return (string) file_get_contents($base . '/' . $relative);
+            }
+        }
+
+        return '';
+    }
+
+    /**
+     * Move staged files into the site root (all, or only $paths). Existing
+     * pages are replaced only when $overwrite is set.
+     *
+     * @param string[]|null $paths
+     * @return array{published:string[], skipped:string[]}
+     */
+    public function publishStaged(?array $paths = null, bool $overwrite = true): array
+    {
+        $base = $this->stagingPath();
+        $result = ['published' => [], 'skipped' => []];
+        if (!is_dir($base)) {
+            return $result;
+        }
+        $files = [];
+        foreach (new \RecursiveIteratorIterator(new \RecursiveDirectoryIterator($base, \FilesystemIterator::SKIP_DOTS)) as $file) {
+            if ($file->isFile()) {
+                $files[] = ltrim(substr(str_replace('\\', '/', $file->getPathname()), strlen($base)), '/');
+            }
+        }
+        foreach ($files as $relative) {
+            if ($paths !== null && !in_array($relative, $paths, true)) {
+                continue;
+            }
+            if ($relative === '' || str_contains($relative, '..') || str_starts_with($relative, 'edit/')) {
+                continue;
+            }
+            $target = $this->rootPath . '/' . $relative;
+            if (!$overwrite && is_file($target)) {
+                $result['skipped'][] = $relative;
+                continue;
+            }
+            Filesystem::ensureDirectory(dirname($target));
+            Filesystem::writeSitePage($target, (string) file_get_contents($base . '/' . $relative));
+            @unlink($base . '/' . $relative);
+            $result['published'][] = $relative;
+        }
+        $this->recordImportedFiles($result['published']);
+
+        return $result;
+    }
 
     /**
      * Replace HTTP with a function (tests only): it receives the URL and request
@@ -485,6 +586,7 @@ final class ExternalSiteImporter
             'overwrite' => $overwrite,
             // Fixed at start so every batch of a resumed job treats scripts alike.
             'keep_scripts' => $keepScripts ?? $this->keepScripts,
+            'staged' => $this->stageImports,
             'source_hosts' => $sourceHosts,
             'created_at' => gmdate('c'),
             'updated_at' => gmdate('c'),
@@ -538,6 +640,8 @@ final class ExternalSiteImporter
             $keepScripts = (bool) ($state['keep_scripts'] ?? $this->keepScripts);
             $sourceHosts = (array) $state['source_hosts'];
             $canon = $this->canon = new UrlCanonicalizer($sourceHosts, $this->ignoredParams, $this->preferOriginals);
+            $staged = !empty($state['staged']);
+            $this->pageRoot = $staged ? $this->stagingPath() : null;
             $this->refreshAssets = $overwrite;
             // The asset index replaces the per-job asset map; this map only
             // remembers what this batch already resolved (and failures).
@@ -696,10 +800,11 @@ final class ExternalSiteImporter
                     }
                     $visitedLocalPaths[$relativePath] = true;
 
-                    $target = $this->rootPath . '/' . $relativePath;
+                    $target = $this->pageRoot() . '/' . $relativePath;
                     $isHtml = $this->isHtmlDocumentUrl($url, (string) $fetched['content_type']);
                     $body = (string) $fetched['body'];
-                    if (!$overwrite && is_file($target)) {
+                    if (!$overwrite && (is_file($target) || is_file($this->rootPath . '/' . $relativePath))) {
+                        $target = is_file($target) ? $target : $this->rootPath . '/' . $relativePath;
                         // Already imported by an earlier run: keep the local copy
                         // and don't count it toward the page limit, but still follow
                         // its links so re-running continues past where the last run
@@ -844,13 +949,19 @@ final class ExternalSiteImporter
 
             // Only what this job wrote (plus mirrored CSS it saved) needs localizing.
             $jobCss = array_values(array_filter(array_keys($assetsSaved), static fn($path): bool => is_string($path) && str_ends_with(strtolower($path), '.css')));
-            $localizeReport = $this->relocalizeImportedOutput(array_merge($saved, $resourcesSaved, $skipped, $jobCss));
+            $localizeReport = $this->relocalizeImportedOutput($staged ? $jobCss : array_merge($saved, $resourcesSaved, $skipped, $jobCss));
+            if ($staged) {
+                $stagedReport = $this->relocalizePages($this->stagingPath(), array_merge($saved, $resourcesSaved));
+                $localizeReport['pages'] += $stagedReport;
+            }
             if (($localizeReport['pages'] + $localizeReport['stylesheets']) > 0) {
                 $progress('localized', $localizeReport);
             }
 
             $saved = array_values(array_unique($saved));
-            $this->recordImportedFiles(array_merge($saved, $resourcesSaved));
+            if (!$staged) {
+                $this->recordImportedFiles(array_merge($saved, $resourcesSaved));
+            }
             $this->recordQueryRedirects($queryRedirects);
 
             $result = [
@@ -872,6 +983,7 @@ final class ExternalSiteImporter
                 // Menus, tabs, toggles and sliders built by the source theme's
                 // JavaScript stop working when these are stripped.
                 'scripts_removed' => (int) ($state['scripts_removed'] ?? 0),
+                'staged' => $staged,
             ];
             $state['done'] = true;
             $state['result'] = $result;
@@ -884,6 +996,7 @@ final class ExternalSiteImporter
             return ['done' => true, 'job' => $id, 'result' => $result, 'queued' => 0, 'saved' => count($saved)];
         } finally {
             $this->progressCallback = $previousProgressCallback;
+            $this->pageRoot = null;
         }
     }
 
@@ -972,7 +1085,7 @@ final class ExternalSiteImporter
     /** A static redirect page at $fromPath pointing at the page saved at $toPath. */
     private function writePageRedirectStub(string $fromPath, string $toPath, bool $overwrite): bool
     {
-        $target = $this->rootPath . '/' . $fromPath;
+        $target = $this->pageRoot() . '/' . $fromPath;
         if ($fromPath === $toPath || (!$overwrite && is_file($target))) {
             return false;
         }
@@ -1107,6 +1220,27 @@ final class ExternalSiteImporter
         }
 
         return ['pages' => $pages, 'stylesheets' => $stylesheets];
+    }
+
+    /** Localize HTML pages stored under $base (staging), by their site path. */
+    private function relocalizePages(string $base, array $paths): int
+    {
+        $count = 0;
+        foreach (array_unique($paths) as $rel) {
+            $rel = ltrim((string) $rel, '/');
+            $full = $base . '/' . $rel;
+            if ($rel === '' || str_contains($rel, '..') || preg_match('/\.html?$/i', $rel) !== 1 || !is_file($full)) {
+                continue;
+            }
+            $html = (string) file_get_contents($full);
+            $localized = UrlLocalizer::localizeHtml($html, $rel);
+            if ($localized !== $html) {
+                Filesystem::atomicWrite($full, $localized);
+                $count++;
+            }
+        }
+
+        return $count;
     }
 
     /**
@@ -3645,7 +3779,7 @@ final class ExternalSiteImporter
             return null;
         }
 
-        $target = $this->rootPath . '/' . $relativePath;
+        $target = $this->pageRoot() . '/' . $relativePath;
         if (!$overwrite && is_file($target)) {
             return null;
         }

@@ -31,6 +31,7 @@ final class SiteSettings
         'import_ignore_params' => '',
         'import_prefer_originals' => true,
         'public_csp' => true,
+        'stage_imports' => true,
         'search_url' => '',
         'form_endpoint' => '',
         'theme_variables' => [],
@@ -177,6 +178,7 @@ final class SiteSettings
             case 'live_banner':
             case 'import_prefer_originals':
             case 'public_csp':
+            case 'stage_imports':
             case 'keep_imported_scripts':
             case 'checklist_dismissed':
                 return (bool) $value;

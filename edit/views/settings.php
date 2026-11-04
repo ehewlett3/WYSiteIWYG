@@ -97,6 +97,10 @@ use function WYSiteIWYG\h;
           </div>
           <label><span>Ignore these query parameters when importing <em>(comma-separated; cache busters such as <code>ver</code> and tracking such as <code>utm_*</code> are always ignored)</em></span><input type="text" name="import_ignore_params" class="wysite-code-field" value="<?= h((string) $current['import_ignore_params']) ?>" placeholder="sessionid, lang"></label>
           <label class="wysite-checkbox">
+            <input type="checkbox" name="stage_imports" value="1"<?= $current['stage_imports'] ? ' checked' : '' ?>>
+            <span>Keep crawled pages in a private staging area until you publish them (Manager → Import map)</span>
+          </label>
+          <label class="wysite-checkbox">
             <input type="checkbox" name="public_csp" value="1"<?= $current['public_csp'] ? ' checked' : '' ?>>
             <span>Protect public pages with a Content-Security-Policy (blocks injected scripts and inline event handlers; scripts in templates and raw-HTML blocks keep working)</span>
           </label>

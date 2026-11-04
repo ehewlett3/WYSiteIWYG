@@ -301,6 +301,17 @@ use function WYSiteIWYG\h;
               <p>The same re-run retries anything that failed last time: pages that were never saved are imported, and images or other files missing from pages you already have are downloaded and those pages are pointed at them. Files already downloaded aren't fetched again. To retry just a few specific files without re-crawling, paste their URLs into <strong>Backfill specific assets</strong> below.</p>
               <p>If an import was interrupted partway through a run, use <strong>Resume</strong> instead to pick up exactly where it stopped.</p>
             </details>
+            <?php $stagedCount = count($externalImporter->stagedPages()); ?>
+            <?php if ($stagedCount > 0): ?>
+              <div class="wysite-flash wysite-flash--success">
+                <?= (int) $stagedCount ?> crawled page(s) are waiting in staging and are not on the live site yet.
+                <a class="wysite-button" href="<?= h($appUrl) ?>/index.php?action=import-map">Review in the Import map</a>
+                <form method="post" action="<?= h($appUrl) ?>/index.php?action=import-publish-staged" class="wysite-inline-form" data-wysite-confirm="Publish every staged page exactly as it was crawled? Existing pages at the same addresses are replaced (a backup is taken first).">
+                  <input type="hidden" name="csrf_token" value="<?= h(Csrf::token()) ?>">
+                  <button type="submit" class="wysite-button wysite-button--ghost">Publish as crawled</button>
+                </form>
+              </div>
+            <?php endif; ?>
             <?php foreach ($externalImporter->unfinishedImportJobs() as $unfinishedJob): ?>
               <div class="wysite-flash wysite-flash--error">
                 Unfinished import of <code><?= h($unfinishedJob['start_url']) ?></code> (<?= (int) $unfinishedJob['saved'] ?> page(s) saved, <?= (int) $unfinishedJob['queued'] ?> URL(s) left).

@@ -103,6 +103,7 @@ test('IMP-1/2/3: one file per resource, no duplicate pages, collisions kept apar
     [$transport, $log] = dedupe_fake_site();
     $importer = new ExternalSiteImporter($root, $root . '/edit');
     $importer->setTransport($transport);
+    $importer->setStageImports(false);
 
     $result = $importer->importSite('https://example.com/', 50);
     $files = dedupe_mirrored_files($root);
@@ -130,6 +131,7 @@ test('IMP-1/2/3: one file per resource, no duplicate pages, collisions kept apar
     $log->exchangeArray([]);
     $importer2 = new ExternalSiteImporter($root, $root . '/edit');
     $importer2->setTransport($transport);
+    $importer2->setStageImports(false);
     $importer2->importSite('https://www.example.com/', 50);
     $assetCalls = array_filter($log->getArrayCopy(), static fn(string $u): bool => str_contains($u, '/wp-content/') || str_contains($u, '.pdf'));
     assert_same([], array_values($assetCalls), 're-run downloads no known asset');
@@ -138,6 +140,29 @@ test('IMP-1/2/3: one file per resource, no duplicate pages, collisions kept apar
     // Overwrite re-run: assets are revalidated (304) and still not duplicated.
     $importer3 = new ExternalSiteImporter($root, $root . '/edit');
     $importer3->setTransport($transport);
+    $importer3->setStageImports(false);
     $importer3->importSite('https://example.com/', 50, true);
     assert_same($files, dedupe_mirrored_files($root), 'revalidation keeps one copy');
+});
+
+test('SEC-3b: crawls are staged until published; assets go straight to /assets/', function (): void {
+    $root = scratch_dir();
+    mkdir($root . '/edit/storage', 0775, true);
+    [$transport] = dedupe_fake_site();
+    $importer = new ExternalSiteImporter($root, $root . '/edit');
+    $importer->setTransport($transport);
+    $result = $importer->importSite('https://example.com/', 50);
+    assert_true($result['staged']);
+    assert_same([], glob($root . '/*.html') ?: [], 'no page reaches the live site');
+    assert_false(is_file($root . '/about/index.html'));
+    assert_true(isset($importer->stagedPages()['about/index.html']));
+    assert_contains('<base href="../">', $importer->stagedPages()['about/index.html'], 'staged pages are already localized');
+    assert_true(is_file($root . '/assets/imported/example.com/wp-content/uploads/a.jpg'));
+    assert_contains('About', $importer->importedPageHtml('about/index.html'));
+
+    $published = $importer->publishStaged();
+    assert_true(in_array('about/index.html', $published['published'], true));
+    assert_true(is_file($root . '/about/index.html'));
+    assert_same([], $importer->stagedPages());
+    assert_true(in_array('about/index.html', $importer->importedFiles(), true));
 });

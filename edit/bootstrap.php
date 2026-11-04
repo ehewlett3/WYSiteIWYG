@@ -121,6 +121,7 @@ $generator = new SiteGenerator($rootPath, $repository, $themes, $siteBaseUrl, $s
 $externalImporter = new ExternalSiteImporter($rootPath, $editPath);
 $externalImporter->setByteBudget((int) $settings->get('import_byte_budget_mb') * 1_048_576);
 $externalImporter->setKeepScripts((bool) $settings->get('keep_imported_scripts'));
+$externalImporter->setStageImports((bool) $settings->get('stage_imports'));
 $externalImporter->setImportOptions($settings->importIgnoredParams(), (bool) $settings->get('import_prefer_originals'));
 if ($settings->embedHosts() !== []) {
     WYSiteIWYG\Sanitizer::setEmbedHosts($settings->embedHosts());

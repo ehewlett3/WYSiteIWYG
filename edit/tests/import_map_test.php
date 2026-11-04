@@ -27,7 +27,7 @@ test('THM-C: analyse, review, create theme, adopt menu and convert every page', 
             . '<footer><p>Acme</p></footer></body></html>');
     }
 
-    $map = new ImportMap($root, $site['edit'], $site['repository'], $site['generator']);
+    $map = new ImportMap($root, $site['edit'], $site['repository'], $site['generator'], new ExternalSiteImporter($root, $site['edit']));
     $analysis = $map->analyze();
     assert_same(3, $analysis['pages_total']);
     $cluster = $analysis['clusters'][0];

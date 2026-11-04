@@ -40,6 +40,16 @@ final class SiteGenerator
         $this->repository->setExcludedPaths($this->settings->excludedPaths());
     }
 
+    private string $editorOrigin = '';
+    private string $editorAppPath = '/edit';
+
+    /** SEC-3c: the editor runs on its own origin; public pages reach it cross-origin. */
+    public function setEditorOrigin(string $origin, string $appPath): void
+    {
+        $this->editorOrigin = $origin;
+        $this->editorAppPath = '/' . trim($appPath, '/');
+    }
+
     public function settings(): SiteSettings
     {
         return $this->settings;
@@ -1847,6 +1857,9 @@ final class SiteGenerator
         }
 
         $sources = ["'self'"];
+        if ($this->editorOrigin !== '') {
+            $sources[] = $this->editorOrigin; // the live-edit banner loads from there
+        }
         $dom = HtmlDocument::parse($html);
         foreach ($dom->getElementsByTagName('script') as $script) {
             $src = trim($script->getAttribute('src'));
@@ -2339,8 +2352,9 @@ final class SiteGenerator
         // loaded when the non-secret editor hint cookie (set at sign-in) is present.
         // Paths are base-relative so they resolve against the page's own <base href>
         // from any deployment subdirectory.
-        return '<script>if(/(?:^|;\s*)' . AuthManager::HINT_COOKIE . '=1/.test(document.cookie)){window.WYSITE_PUBLIC_CONTEXT={appUrl:"edit"};'
-            . 'let s=document.createElement("script");s.type="module";s.src="edit/assets/live-edit-banner.js";document.head.appendChild(s);}</script>';
+        $appUrl = $this->editorOrigin !== '' ? $this->editorOrigin . $this->editorAppPath : 'edit';
+        return '<script>if(/(?:^|;\s*)' . AuthManager::HINT_COOKIE . '=1/.test(document.cookie)){window.WYSITE_PUBLIC_CONTEXT={appUrl:' . json_encode($appUrl, JSON_UNESCAPED_SLASHES) . '};'
+            . 'let s=document.createElement("script");s.type="module";s.src=' . json_encode($appUrl . '/assets/live-edit-banner.js', JSON_UNESCAPED_SLASHES) . ';document.head.appendChild(s);}</script>';
     }
 
     /**

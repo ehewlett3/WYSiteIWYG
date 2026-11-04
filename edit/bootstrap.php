@@ -106,7 +106,10 @@ WYSiteIWYG\Filesystem::setRevisions($revisions);
 $backups = new WYSiteIWYG\Backups($rootPath, __DIR__ . '/storage/backups');
 
 $auth = new AuthManager(__DIR__ . '/storage/users.local.php');
-$auth->setHintCookie($cookiePath, $https);
+// SEC-3c: optional separate editor origin (e.g. https://edit.example.com).
+$editorOrigin = rtrim((string) getenv('WYSITE_EDITOR_ORIGIN'), '/');
+$editorOrigin = preg_match('#^https?://[a-z0-9.-]+(:\d+)?$#i', $editorOrigin) === 1 ? strtolower($editorOrigin) : '';
+$auth->setHintCookie($editorOrigin !== '' ? '/' : $cookiePath, $https, (string) getenv('WYSITE_COOKIE_DOMAIN'));
 $repository = new BlockRepository($rootPath, $editPath);
 $themes = new ThemeManager(__DIR__ . '/storage/config.php', __DIR__ . '/themes', __DIR__ . '/storage/state.local.php');
 $settings = new WYSiteIWYG\SiteSettings(__DIR__ . '/storage/site.local.php');
@@ -118,6 +121,7 @@ $requestHost = (string) ($_SERVER['HTTP_HOST'] ?? '');
 $siteOrigin = preg_match('/^[A-Za-z0-9.-]+(:\d{1,5})?$/', $requestHost) === 1 ? ($https ? 'https://' : 'http://') . strtolower($requestHost) : '';
 
 $generator = new SiteGenerator($rootPath, $repository, $themes, $siteBaseUrl, $settings, $siteOrigin);
+$generator->setEditorOrigin($editorOrigin, $appUrl);
 $externalImporter = new ExternalSiteImporter($rootPath, $editPath);
 $externalImporter->setByteBudget((int) $settings->get('import_byte_budget_mb') * 1_048_576);
 $externalImporter->setKeepScripts((bool) $settings->get('keep_imported_scripts'));
@@ -158,5 +162,6 @@ return [
     'themeImporter' => new WYSiteIWYG\ThemeImporter($rootPath, $externalImporter, $themes),
     'dedupe' => new WYSiteIWYG\ImportDedupe($rootPath, $editPath, $externalImporter->assetIndex(), static fn(): array => $externalImporter->importedFiles()),
     'siteOrigin' => $siteOrigin,
+    'editorOrigin' => $editorOrigin,
     'siteTitle' => (string) $settings->get('site_name'),
 ];

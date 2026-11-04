@@ -428,6 +428,14 @@ try {
     $hashSummary = $auth->passwordHashSummary();
 
     if ($action === 'session-status') {
+        // SEC-3c: public pages on another origin may ask, with credentials.
+        $requestOrigin = strtolower((string) ($_SERVER['HTTP_ORIGIN'] ?? ''));
+        $publicOrigin = strtolower(rtrim((string) preg_replace('#^(https?://[^/]+).*$#i', '$1', (string) $settings->get('canonical_base_url')), '/'));
+        if ($app['editorOrigin'] !== '' && $requestOrigin !== '' && $requestOrigin === $publicOrigin) {
+            header('Access-Control-Allow-Origin: ' . $requestOrigin);
+            header('Access-Control-Allow-Credentials: true');
+            header('Vary: Origin');
+        }
         $user = $auth->currentUser();
         $requestPath = (string) ($_GET['path'] ?? '/');
         $relativePath = $repository->relativeFromRequestPath($requestPath);
@@ -436,9 +444,9 @@ try {
             'loggedIn' => $user !== null,
             'username' => $user['username'] ?? null,
             'editUrl' => $user !== null && $relativePath !== null
-                ? $appUrl . '/index.php?action=preview&path=' . rawurlencode($relativePath)
+                ? $app['editorOrigin'] . $appUrl . '/index.php?action=preview&path=' . rawurlencode($relativePath)
                 : null,
-            'dashboardUrl' => $user !== null ? $appUrl . '/index.php' : null,
+            'dashboardUrl' => $user !== null ? $app['editorOrigin'] . $appUrl . '/index.php' : null,
         ]);
     }
 

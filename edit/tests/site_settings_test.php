@@ -116,3 +116,13 @@ test('DROP-5: purge touches only managed pages, stubs and imported files; scans 
     assert_same(true, is_file($site['root'] . '/shop/cart.html'));
     assert_same(false, is_file($site['root'] . '/index.html'));
 });
+
+WYSiteIWYG\Tests\test('SEC-3c: with a separate editor origin, pages load the banner from it and allow it in the CSP', function (): void {
+    $site = WYSiteIWYG\Tests\make_site();
+    $site['generator']->setEditorOrigin('https://edit.example.com', '/edit');
+    $site['generator']->applyTheme('verdant-sanctuary');
+    $html = (string) file_get_contents($site['root'] . '/' . $site['generator']->createPage('About', 'about'));
+    WYSiteIWYG\Tests\assert_contains('appUrl:"https://edit.example.com/edit"', $html);
+    WYSiteIWYG\Tests\assert_contains('https://edit.example.com/edit/assets/live-edit-banner.js', $html);
+    WYSiteIWYG\Tests\assert_contains('https://edit.example.com', (string) preg_replace('/.*<meta http-equiv="Content-Security-Policy" content="([^"]+)".*/s', '$1', $html));
+});

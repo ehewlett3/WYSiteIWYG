@@ -598,6 +598,7 @@ final class AuthManager
     private int $idleTimeout = 28800;
     private ?string $hintCookiePath = null;
     private bool $hintCookieSecure = false;
+    private string $hintCookieDomain = '';
 
     /**
      * Enable the editor hint cookie. It is deliberately readable by JavaScript and
@@ -605,8 +606,11 @@ final class AuthManager
      * /edit/ for the session status, so ordinary visitors never touch PHP or get a
      * session cookie.
      */
-    public function setHintCookie(string $path, bool $secure): void
+    public function setHintCookie(string $path, bool $secure, string $domain = ''): void
     {
+        // SEC-3c: with a separate editor origin, the hint must be readable on the
+        // public host too, so it can be scoped to the shared parent domain.
+        $this->hintCookieDomain = preg_match('/^\.?[a-z0-9.-]+$/i', $domain) === 1 ? $domain : '';
         $this->hintCookiePath = $path;
         $this->hintCookieSecure = $secure;
     }
@@ -620,6 +624,7 @@ final class AuthManager
         setcookie(self::HINT_COOKIE, $signedIn ? '1' : '', [
             'expires' => $signedIn ? 0 : time() - 42000,
             'path' => $this->hintCookiePath,
+            'domain' => $this->hintCookieDomain,
             'secure' => $this->hintCookieSecure,
             'httponly' => false,
             'samesite' => 'Lax',

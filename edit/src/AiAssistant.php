@@ -679,10 +679,8 @@ PROMPT;
             return ['', []];
         }
 
-        $dom = new DOMDocument('1.0', 'UTF-8');
-        libxml_use_internal_errors(true);
-        $dom->loadHTML('<?xml encoding="UTF-8">' . $html);
-        libxml_clear_errors();
+        // Same HTML5 tree the designer builds in the browser, so paths agree.
+        $dom = HtmlDocument::parse($html);
 
         $body = $dom->getElementsByTagName('body')->item(0);
         $root = $body instanceof DOMElement ? $body : $dom->documentElement;
@@ -769,29 +767,7 @@ PROMPT;
     /** DOM path in the same tag/nth-of-tag form the browser's buildDomPath produces. */
     private function computeDomPath(DOMElement $element): array
     {
-        $path = [];
-        $current = $element;
-
-        while ($current instanceof DOMElement) {
-            $tag = strtolower($current->tagName);
-            $index = 1;
-            $sibling = $current->previousSibling;
-            while ($sibling) {
-                if ($sibling instanceof DOMElement && strtolower($sibling->tagName) === $tag) {
-                    $index++;
-                }
-                $sibling = $sibling->previousSibling;
-            }
-
-            array_unshift($path, ['tag' => $tag, 'index' => $index]);
-            if ($tag === 'html') {
-                break;
-            }
-            $parent = $current->parentNode;
-            $current = $parent instanceof DOMElement ? $parent : null;
-        }
-
-        return $path;
+        return HtmlDocument::domPath($element);
     }
 
     private function systemPrompt(): string

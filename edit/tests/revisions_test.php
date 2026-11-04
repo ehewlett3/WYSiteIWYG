@@ -58,3 +58,24 @@ test('DATA-7: restoring a pre-theme-apply backup restores every page', function 
         assert_same($before[$file], file_get_contents($site['root'] . '/' . $file), $file);
     }
 });
+
+WYSiteIWYG\Tests\test('SEC-7b: backups include custom themes but not shipped ones', function (): void {
+    $site = WYSiteIWYG\Tests\make_site();
+    mkdir($site['edit'] . '/themes/my-import', 0775, true);
+    file_put_contents($site['edit'] . '/themes/my-import/page.html', '<html><body>custom</body></html>');
+    file_put_contents($site['edit'] . '/themes/my-import/site.css', 'body{color:red}');
+    $name = $site['backups']->create('test');
+    file_put_contents($site['edit'] . '/themes/my-import/site.css', 'broken');
+    $count = $site['backups']->restore($name);
+    WYSiteIWYG\Tests\assert_true($count >= 2);
+    WYSiteIWYG\Tests\assert_same('body{color:red}', file_get_contents($site['edit'] . '/themes/my-import/site.css'));
+    $zip = new ZipArchive();
+    $zip->open($site['edit'] . '/storage/backups/' . $name . '.zip');
+    $names = [];
+    for ($i = 0; $i < $zip->numFiles; $i++) {
+        $names[] = $zip->getNameIndex($i);
+    }
+    $zip->close();
+    WYSiteIWYG\Tests\assert_true(in_array('edit/themes/my-import/page.html', $names, true));
+    WYSiteIWYG\Tests\assert_true([] === array_filter($names, static fn(string $n): bool => str_starts_with($n, 'edit/themes/verdant-sanctuary/')));
+});

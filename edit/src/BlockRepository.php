@@ -400,6 +400,85 @@ final class BlockRepository
         );
     }
 
+    /** Tags never edited as template sections (document scaffolding). */
+    private const UNTAGGED = ['html', 'head', 'meta', 'link', 'title', 'script', 'style', 'base', 'noscript', 'template'];
+
+    /**
+     * THM-H: start tags of a template that can be edited as template sections,
+     * in order; the index is the element's template id. Tags inside editable
+     * blocks (menu, content) are page content, not template, and are skipped.
+     *
+     * @return array<int, array{name:string, start:int, end:int, ordinal:int}>
+     */
+    public function templateTidTokens(string $template): array
+    {
+        $blocked = [];
+        foreach ($this->parseBlocks($template) as $block) {
+            $blocked[] = [$block['offset'], $block['offset'] + $block['length']];
+        }
+        $out = [];
+        $ordinals = [];
+        foreach (HtmlSource::tokens($template) as $token) {
+            if ($token['type'] !== 'start') {
+                continue;
+            }
+            $ordinal = $ordinals[$token['name']] ?? 0;
+            $ordinals[$token['name']] = $ordinal + 1;
+            if (in_array($token['name'], self::UNTAGGED, true)) {
+                continue;
+            }
+            foreach ($blocked as [$from, $to]) {
+                if ($token['start'] > $from && $token['start'] < $to) {
+                    continue 2;
+                }
+            }
+            $out[] = $token + ['ordinal' => $ordinal];
+        }
+
+        return $out;
+    }
+
+    /** The template with data-wysite-tid="<n>" on every editable template element (preview only). */
+    public function annotateTemplate(string $template): string
+    {
+        foreach (array_reverse($this->templateTidTokens($template), true) as $tid => $token) {
+            $at = $token['start'] + 1 + strlen($token['name']);
+            $template = substr_replace($template, ' data-wysite-tid="' . $tid . '"', $at, 0);
+        }
+
+        return $template;
+    }
+
+    /**
+     * Replace the inner HTML of template element $tid in the active template for
+     * $kind. $templateHash (sha1 of the file the preview was built from) guards
+     * against editing a template that changed meanwhile.
+     */
+    public function updateActiveTemplateElementByTid(string $kind, int $tid, string $newInnerHtml, string $templateHash = ''): string
+    {
+        $filename = $this->activeTemplateFilename($this->effectiveTemplateKind($kind));
+        $fullPath = $this->editPath . '/templates/' . $filename;
+        if (!is_file($fullPath)) {
+            throw new RuntimeException('Active template file not found: edit/templates/' . $filename);
+        }
+        $template = (string) file_get_contents($fullPath);
+        if ($templateHash !== '' && !hash_equals(sha1($template), $templateHash)) {
+            throw new RuntimeException('The template changed since this page was opened. Reload the page and try again.');
+        }
+        $token = $this->templateTidTokens($template)[$tid] ?? null;
+        if ($token === null) {
+            throw new RuntimeException('That template section no longer exists. Reload the page and try again.');
+        }
+        $range = HtmlSource::innerRange($template, $token['name'], $token['ordinal']);
+        if ($range === null) {
+            throw new RuntimeException('That template section can\'t be edited (it has no closing tag).');
+        }
+        $newInnerHtml = str_replace('<?', '&lt;?', (string) preg_replace('/\sdata-wysite-tid="\d+"/', '', $newInnerHtml));
+        Filesystem::writeSitePage($fullPath, substr_replace($template, $newInnerHtml, $range[0], $range[1] - $range[0]));
+
+        return 'edit/templates/' . $filename;
+    }
+
     public function updateSelectedElementInActiveTemplate(string $kind, array $domPath, string $newInnerHtml): string
     {
         $filename = $this->activeTemplateFilename($this->effectiveTemplateKind($kind));
@@ -535,6 +614,10 @@ final class BlockRepository
         ];
         $context = array_merge($context, $extraContext);
 
+        // The public page's meta CSP would block the editor's nonced scripts; the
+        // preview response carries its own (stricter) header policy instead.
+        $html = preg_replace('#<meta\s+http-equiv=["\']Content-Security-Policy["\'][^>]*>\s*#i', '', $html) ?? $html;
+
         // Drop the page's own relative <base href> (baked for static serving) and
         // place the preview's absolute base at the very top of <head>, before the
         // page's own (now base-relative) stylesheet/asset links so they resolve.
@@ -561,7 +644,9 @@ final class BlockRepository
             '<div class="wysite-admin-bar__actions">' .
             '<a class="wysite-admin-link" href="' . h($appUrl) . '/index.php">Dashboard</a>' .
             '<a class="wysite-admin-link" href="' . h($siteBaseUrl . ltrim($relativePath, '/')) . '" target="_blank" rel="noreferrer">Open live page</a>' .
-            '<form method="post" action="' . h($appUrl) . '/index.php?action=logout"><input type="hidden" name="csrf_token" value="' . h($csrfToken) . '"><button class="wysite-admin-link wysite-admin-link--button" type="submit">Log out</button></form>' .
+            // No CSRF token in the DOM: page CSS could read an attribute value
+            // (SEC-7a). editor-shell.js submits logout with the token from context.
+            '<button class="wysite-admin-link wysite-admin-link--button" type="button" data-wysite-logout>Log out</button>' .
             '</div>' .
             '</div>';
 

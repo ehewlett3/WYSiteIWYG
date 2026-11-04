@@ -69,6 +69,150 @@ final class ExternalSiteImporter
 
     private bool $keepScripts = false;
 
+    /** @var (callable(string $url, array $headers): array{status:int, headers:array<string,string>, body:string})|null */
+    private $transport = null;
+    private ?UrlCanonicalizer $canon = null;
+    private ?AssetIndex $index = null;
+    /** @var string[] */
+    private array $ignoredParams = [];
+    private bool $preferOriginals = true;
+    /** Re-validate already-mirrored assets (overwrite runs) instead of reusing them. */
+    private bool $refreshAssets = false;
+    /** SEC-3b: new crawls write HTML to the private staging folder (Settings). */
+    private bool $stageImports = true;
+    /** Where the running job writes pages: the site root or the staging folder. */
+    private ?string $pageRoot = null;
+
+    public function setStageImports(bool $stage): void
+    {
+        $this->stageImports = $stage;
+    }
+
+    /** Folder holding crawled pages that are not published yet. */
+    public function stagingPath(): string
+    {
+        return $this->editPath . '/storage/import-staging';
+    }
+
+    private function pageRoot(): string
+    {
+        return $this->pageRoot ?? $this->rootPath;
+    }
+
+    /**
+     * Crawled pages waiting in staging (root-relative path => HTML).
+     *
+     * @return array<string, string>
+     */
+    public function stagedPages(): array
+    {
+        $base = $this->stagingPath();
+        if (!is_dir($base)) {
+            return [];
+        }
+        $pages = [];
+        foreach (new \RecursiveIteratorIterator(new \RecursiveDirectoryIterator($base, \FilesystemIterator::SKIP_DOTS)) as $file) {
+            if ($file->isFile() && preg_match('/\.html?$/i', $file->getFilename()) === 1) {
+                $relative = ltrim(substr(str_replace('\\', '/', $file->getPathname()), strlen($base)), '/');
+                $pages[$relative] = (string) file_get_contents($file->getPathname());
+            }
+        }
+        ksort($pages);
+
+        return $pages;
+    }
+
+    /** HTML of a crawled page, staged or published. */
+    public function importedPageHtml(string $relative): string
+    {
+        $relative = ltrim($relative, '/');
+        if (str_contains($relative, '..')) {
+            return '';
+        }
+        foreach ([$this->stagingPath(), $this->rootPath] as $base) {
+            if (is_file($base . '/' . $relative)) {
+                return (string) file_get_contents($base . '/' . $relative);
+            }
+        }
+
+        return '';
+    }
+
+    /**
+     * Move staged files into the site root (all, or only $paths). Existing
+     * pages are replaced only when $overwrite is set.
+     *
+     * @param string[]|null $paths
+     * @return array{published:string[], skipped:string[]}
+     */
+    public function publishStaged(?array $paths = null, bool $overwrite = true): array
+    {
+        $base = $this->stagingPath();
+        $result = ['published' => [], 'skipped' => []];
+        if (!is_dir($base)) {
+            return $result;
+        }
+        $files = [];
+        foreach (new \RecursiveIteratorIterator(new \RecursiveDirectoryIterator($base, \FilesystemIterator::SKIP_DOTS)) as $file) {
+            if ($file->isFile()) {
+                $files[] = ltrim(substr(str_replace('\\', '/', $file->getPathname()), strlen($base)), '/');
+            }
+        }
+        foreach ($files as $relative) {
+            if ($paths !== null && !in_array($relative, $paths, true)) {
+                continue;
+            }
+            if ($relative === '' || str_contains($relative, '..') || str_starts_with($relative, 'edit/')) {
+                continue;
+            }
+            $target = $this->rootPath . '/' . $relative;
+            if (!$overwrite && is_file($target)) {
+                $result['skipped'][] = $relative;
+                continue;
+            }
+            Filesystem::ensureDirectory(dirname($target));
+            Filesystem::writeSitePage($target, (string) file_get_contents($base . '/' . $relative));
+            @unlink($base . '/' . $relative);
+            $result['published'][] = $relative;
+        }
+        $this->recordImportedFiles($result['published']);
+
+        return $result;
+    }
+
+    /**
+     * Replace HTTP with a function (tests only): it receives the URL and request
+     * headers (lowercase names) and returns status, lowercase headers and body.
+     * One hop per call; redirects are followed by the importer.
+     */
+    public function setTransport(?callable $transport): void
+    {
+        $this->transport = $transport;
+    }
+
+    /**
+     * IMP-1 options from Site settings: extra query parameters to ignore, and
+     * whether image CDN proxy URLs are replaced by the original image.
+     *
+     * @param string[] $ignoredParams
+     */
+    public function setImportOptions(array $ignoredParams, bool $preferOriginals): void
+    {
+        $this->ignoredParams = $ignoredParams;
+        $this->preferOriginals = $preferOriginals;
+        $this->canon = null;
+    }
+
+    private function canon(): UrlCanonicalizer
+    {
+        return $this->canon ??= new UrlCanonicalizer($this->importedSourceHosts(), $this->ignoredParams, $this->preferOriginals);
+    }
+
+    public function assetIndex(): AssetIndex
+    {
+        return $this->index ??= new AssetIndex($this->editPath . '/storage/import-assets.local.json', $this->rootPath);
+    }
+
     /**
      * WP-5: crawled pages are published under the site root before anyone imports
      * them, so by default their scripts, event handlers and javascript: URLs are
@@ -334,6 +478,36 @@ final class ExternalSiteImporter
         return $html;
     }
 
+    /** One SSRF-guarded GET with redirects followed (theme import). */
+    public function fetchResource(string $url, int $maxBytes = 8_388_608): array
+    {
+        $url = $this->normalizeHttpUrl($url);
+        return $this->fetchUrlBody($url, 20, $maxBytes, "Accept: */*\r\n");
+    }
+
+    /**
+     * Turn a parsed page into a template of $kind. $elements maps template roles
+     * (main-menu, page-content, ...) to elements of $dom.
+     *
+     * @param array<string, \DOMElement> $elements
+     */
+    public function buildTemplateFromDom(DOMDocument $dom, string $kind, array $elements): string
+    {
+        $this->templateFilename($kind);
+        $this->assertRequiredSelections($kind, array_map(static fn(): array => [1], $elements));
+        $this->prepareTemplateDocument($dom, $kind);
+        foreach ($elements as $role => $element) {
+            if ($this->isKnownRole($kind, (string) $role)) {
+                $this->applyTemplateRole($dom, $element, (string) $role);
+            }
+        }
+
+        $html = Sanitizer::document($this->restorePlaceholderTokens(HtmlDocument::serialize($dom)));
+        $this->assertTemplateHasRequiredTokens($kind, $html);
+
+        return $html;
+    }
+
     public function promoteCachedTemplate(string $id, string $kind, array $selections, ?string $themeId = null): string
     {
         $source = $this->getCachedTemplateSource($id);
@@ -412,6 +586,7 @@ final class ExternalSiteImporter
             'overwrite' => $overwrite,
             // Fixed at start so every batch of a resumed job treats scripts alike.
             'keep_scripts' => $keepScripts ?? $this->keepScripts,
+            'staged' => $this->stageImports,
             'source_hosts' => $sourceHosts,
             'created_at' => gmdate('c'),
             'updated_at' => gmdate('c'),
@@ -464,6 +639,21 @@ final class ExternalSiteImporter
             $overwrite = (bool) $state['overwrite'];
             $keepScripts = (bool) ($state['keep_scripts'] ?? $this->keepScripts);
             $sourceHosts = (array) $state['source_hosts'];
+            $canon = $this->canon = new UrlCanonicalizer($sourceHosts, $this->ignoredParams, $this->preferOriginals);
+            $staged = !empty($state['staged']);
+            $this->pageRoot = $staged ? $this->stagingPath() : null;
+            $this->refreshAssets = $overwrite;
+            // The asset index replaces the per-job asset map; this map only
+            // remembers what this batch already resolved (and failures).
+            $assetMap = [];
+            unset($state['asset_map']);
+            if (!isset($state['queued']) || !is_array($state['queued'])) {
+                $state['queued'] = [];
+                foreach ((array) $state['queue'] as $queuedUrl) {
+                    $state['queued'][$canon->page((string) $queuedUrl)] = true;
+                }
+            }
+            $queued = &$state['queued'];
             $queue = &$state['queue'];
             $seen = &$state['seen'];
             $pagesVisited = &$state['pages_visited'];
@@ -475,7 +665,6 @@ final class ExternalSiteImporter
             $resourcesSaved = &$state['resources_saved'];
             $nonEssentialSkipped = &$state['nonessential_skipped'];
             $visitedLocalPaths = &$state['visited_local_paths'];
-            $assetMap = &$state['asset_map'];
             $assetsSaved = &$state['assets_saved'];
             $assetsFailed = &$state['assets_failed'];
             $queryRedirects = &$state['query_redirects'];
@@ -501,6 +690,15 @@ final class ExternalSiteImporter
                 ], $extra));
             };
 
+            $enqueue = function (string $link) use (&$queue, &$queued, &$seen, $canon): void {
+                $linkKey = $canon->page($link);
+                if (!isset($seen[$linkKey]) && !isset($queued[$linkKey])) {
+                    $queue[] = $link;
+                    $queued[$linkKey] = true;
+                }
+            };
+            $lastCheckpoint = 0.0;
+
             if (empty($state['started'])) {
                 $state['started'] = true;
                 $progress('start', ['url' => $startUrl]);
@@ -511,7 +709,7 @@ final class ExternalSiteImporter
             // A previous batch was cut off (host/proxy time limit, dropped
             // connection) while working on this URL: retry it once, then give up
             // on it so one slow page can't stall the whole import.
-            $interrupted = (string) ($state['in_progress'] ?? '');
+            $interrupted = $this->loadJobProgress($id) ?? (string) ($state['in_progress'] ?? '');
             $state['in_progress'] = '';
             if ($interrupted !== '') {
                 $attempts = (int) ($state['interrupted'][$interrupted] ?? 0) + 1;
@@ -520,7 +718,7 @@ final class ExternalSiteImporter
                     $failed[] = $interrupted . ' - The server stopped twice while importing this URL (likely a host time limit).';
                     $progress('page_failed', ['url' => $interrupted, 'message' => 'Gave up after the server stopped twice while importing it.']);
                 } else {
-                    unset($seen[$interrupted]);
+                    unset($seen[$canon->page($interrupted)]);
                     array_unshift($queue, $interrupted);
                 }
             }
@@ -529,24 +727,35 @@ final class ExternalSiteImporter
                 $this->refreshExecutionBudget();
 
                 $url = array_shift($queue);
-                if (!is_string($url) || isset($seen[$url])) {
+                if (!is_string($url)) {
+                    continue;
+                }
+                $urlKey = $canon->page($url);
+                unset($queued[$urlKey]);
+                if (isset($seen[$urlKey])) {
                     continue;
                 }
 
                 if ($pagesVisited >= $maxPages && !$this->isQueuedResourceCandidate($url)) {
-                    $seen[$url] = true;
+                    $seen[$urlKey] = true;
                     $limitSkipped[] = $url;
                     $progress('page_skipped_limit', ['url' => $url, 'message' => 'Skipped because the HTML page limit was reached.']);
                     continue;
                 }
 
-                $seen[$url] = true;
-                // Checkpoint before each URL so an interrupted batch resumes here
-                // instead of repeating everything since the last batch.
-                $state['in_progress'] = $url;
-                $state['bytes_used'] = $this->bytesUsed;
-                $state['updated_at'] = gmdate('c');
-                $this->saveJob($id, $state);
+                $seen[$urlKey] = true;
+                // Record the URL being worked on (a tiny file) before each URL so an
+                // interrupted batch resumes here; the full state is checkpointed at
+                // most every few seconds (IMP-7).
+                $this->saveJobProgress($id, $url);
+                if (microtime(true) - $lastCheckpoint >= 3.0) {
+                    $state['in_progress'] = $url;
+                    $state['bytes_used'] = $this->bytesUsed;
+                    $state['updated_at'] = gmdate('c');
+                    $this->saveJob($id, $state);
+                    $this->assetIndex()->save();
+                    $lastCheckpoint = microtime(true);
+                }
                 $progress('page_start', ['url' => $url]);
 
                 try {
@@ -559,6 +768,31 @@ final class ExternalSiteImporter
 
                     $fetched = $this->fetchImportableDocument($url);
                     $relativePath = $this->localDocumentPathForUrl($url, (string) $fetched['content_type']);
+                    $aliasPath = '';
+                    // IMP-3: a page that names another URL as canonical (?p=123,
+                    // ?replytocom=…, an old slug) is the same page: store it once
+                    // under the canonical address and redirect the alias there.
+                    $canonicalHref = $this->isHtmlDocumentUrl($url, (string) $fetched['content_type'])
+                        ? $this->canonicalHrefFor((string) $fetched['body'], (string) $fetched['url'], $sourceHosts)
+                        : null;
+                    if ($canonicalHref !== null && $canon->page($canonicalHref) !== $urlKey) {
+                        $canonicalKey = $canon->page($canonicalHref);
+                        $canonicalPath = $this->localPathForUrl($canonicalHref);
+                        if ($canonicalPath !== $relativePath) {
+                            if (isset($seen[$canonicalKey]) || isset($visitedLocalPaths[$canonicalPath]) || isset($queued[$canonicalKey])) {
+                                if ($this->writePageRedirectStub($relativePath, $canonicalPath, $overwrite)) {
+                                    $resourcesSaved[] = $relativePath;
+                                }
+                                $this->recordAliasRedirect($queryRedirects, $url, $canonicalPath);
+                                $duplicates[] = $relativePath;
+                                $progress('page_duplicate', ['url' => $url, 'path' => $relativePath, 'canonical' => $canonicalPath]);
+                                continue;
+                            }
+                            $seen[$canonicalKey] = true;
+                            $aliasPath = $relativePath;
+                            $relativePath = $canonicalPath;
+                        }
+                    }
                     if (isset($visitedLocalPaths[$relativePath])) {
                         $duplicates[] = $relativePath;
                         $progress('page_duplicate', ['url' => $url, 'path' => $relativePath]);
@@ -566,10 +800,11 @@ final class ExternalSiteImporter
                     }
                     $visitedLocalPaths[$relativePath] = true;
 
-                    $target = $this->rootPath . '/' . $relativePath;
+                    $target = $this->pageRoot() . '/' . $relativePath;
                     $isHtml = $this->isHtmlDocumentUrl($url, (string) $fetched['content_type']);
                     $body = (string) $fetched['body'];
-                    if (!$overwrite && is_file($target)) {
+                    if (!$overwrite && (is_file($target) || is_file($this->rootPath . '/' . $relativePath))) {
+                        $target = is_file($target) ? $target : $this->rootPath . '/' . $relativePath;
                         // Already imported by an earlier run: keep the local copy
                         // and don't count it toward the page limit, but still follow
                         // its links so re-running continues past where the last run
@@ -592,9 +827,7 @@ final class ExternalSiteImporter
                             $this->pageAssets = [];
                             $foundLinks = count($discovered['links']);
                             foreach ($discovered['links'] as $link) {
-                                if (!isset($seen[$link]) && !in_array($link, $queue, true)) {
-                                    $queue[] = $link;
-                                }
+                                $enqueue($link);
                             }
                             unset($discovered);
                         }
@@ -622,6 +855,9 @@ final class ExternalSiteImporter
                         }
                         Filesystem::writeSitePage($target, $keepScripts ? $rewritten['html'] : Sanitizer::document($rewritten['html']));
                         $saved[] = $relativePath;
+                        if ($aliasPath !== '' && $this->writePageRedirectStub($aliasPath, $relativePath, $overwrite)) {
+                            $resourcesSaved[] = $aliasPath;
+                        }
                         $sourceQuery = (string) parse_url($url, PHP_URL_QUERY);
                         if ($sourceQuery !== '') {
                             $queryRedirects[] = ['path' => (string) (parse_url($url, PHP_URL_PATH) ?: '/'), 'query' => $sourceQuery, 'target' => $relativePath];
@@ -629,9 +865,7 @@ final class ExternalSiteImporter
                         $progress('page_saved', ['url' => $url, 'path' => $relativePath, 'found_links' => count($rewritten['links'])]);
 
                         foreach ($rewritten['links'] as $link) {
-                            if (!isset($seen[$link]) && !in_array($link, $queue, true)) {
-                                $queue[] = $link;
-                            }
+                            $enqueue($link);
                         }
                     } else {
                         $rewrittenResource = $this->rewriteStaticResourceReferences(
@@ -644,7 +878,20 @@ final class ExternalSiteImporter
                             $assetsFailed,
                             $nonEssentialSkipped
                         );
-                        Filesystem::atomicWrite($target, $rewrittenResource['body']);
+                        $resourceBody = $rewrittenResource['body'];
+                        if ($this->isXmlLikeStaticDocument($url, (string) $fetched['content_type'])) {
+                            // SEC-2a: an XML document in the site root renders in the
+                            // browser and could run XHTML/SVG script; keep feeds and
+                            // sitemaps (made inert) and store anything else as text.
+                            $inert = AssetPolicy::sanitizeXmlDocument($resourceBody);
+                            if ($inert === null) {
+                                $relativePath .= '.txt';
+                                $target .= '.txt';
+                            } else {
+                                $resourceBody = $inert;
+                            }
+                        }
+                        Filesystem::atomicWrite($target, $resourceBody);
                         $resourcesSaved[] = $relativePath;
                         $progress('resource_saved', [
                             'url' => $url,
@@ -655,9 +902,7 @@ final class ExternalSiteImporter
                         ]);
 
                         foreach ($rewrittenResource['links'] as $link) {
-                            if (!isset($seen[$link]) && !in_array($link, $queue, true)) {
-                                $queue[] = $link;
-                            }
+                            $enqueue($link);
                         }
                     }
 
@@ -687,6 +932,8 @@ final class ExternalSiteImporter
             }
 
             $state['in_progress'] = '';
+            $this->assetIndex()->save();
+            $this->saveJobProgress($id, null);
             if ($queue !== []) {
                 $state['bytes_used'] = $this->bytesUsed;
                 $state['updated_at'] = gmdate('c');
@@ -700,12 +947,21 @@ final class ExternalSiteImporter
                 $progress('asset_permissions_repaired', $permissionReport);
             }
 
-            $localizeReport = $this->relocalizeImportedOutput();
+            // Only what this job wrote (plus mirrored CSS it saved) needs localizing.
+            $jobCss = array_values(array_filter(array_keys($assetsSaved), static fn($path): bool => is_string($path) && str_ends_with(strtolower($path), '.css')));
+            $localizeReport = $this->relocalizeImportedOutput($staged ? $jobCss : array_merge($saved, $resourcesSaved, $skipped, $jobCss));
+            if ($staged) {
+                $stagedReport = $this->relocalizePages($this->stagingPath(), array_merge($saved, $resourcesSaved));
+                $localizeReport['pages'] += $stagedReport;
+            }
             if (($localizeReport['pages'] + $localizeReport['stylesheets']) > 0) {
                 $progress('localized', $localizeReport);
             }
 
-            $this->recordImportedFiles(array_merge($saved, $resourcesSaved));
+            $saved = array_values(array_unique($saved));
+            if (!$staged) {
+                $this->recordImportedFiles(array_merge($saved, $resourcesSaved));
+            }
             $this->recordQueryRedirects($queryRedirects);
 
             $result = [
@@ -727,18 +983,20 @@ final class ExternalSiteImporter
                 // Menus, tabs, toggles and sliders built by the source theme's
                 // JavaScript stop working when these are stripped.
                 'scripts_removed' => (int) ($state['scripts_removed'] ?? 0),
+                'staged' => $staged,
             ];
             $state['done'] = true;
             $state['result'] = $result;
             $state['bytes_used'] = $this->bytesUsed;
             $state['updated_at'] = gmdate('c');
             // Keep only the summary once finished; the queue/maps can be large.
-            $this->saveJob($id, array_intersect_key($state, array_flip(['id', 'start_url', 'max_pages', 'created_at', 'updated_at', 'done', 'result', 'saved'])));
+            $this->saveJob($id, array_intersect_key($state, array_flip(['id', 'start_url', 'max_pages', 'created_at', 'updated_at', 'done', 'result', 'saved', 'keep_scripts', 'source_hosts'])));
             $progress('complete', ['result' => $result]);
 
             return ['done' => true, 'job' => $id, 'result' => $result, 'queued' => 0, 'saved' => count($saved)];
         } finally {
             $this->progressCallback = $previousProgressCallback;
+            $this->pageRoot = null;
         }
     }
 
@@ -766,6 +1024,91 @@ final class ExternalSiteImporter
     {
         $this->assertImportId($id);
         @unlink($this->importJobsPath() . '/' . $id . '.json');
+    }
+
+    private function saveJobProgress(string $id, ?string $url): void
+    {
+        $this->assertImportId($id);
+        $file = $this->importJobsPath() . '/' . $id . '.progress';
+        if ($url === null) {
+            @unlink($file);
+            return;
+        }
+        Filesystem::ensureDirectory($this->importJobsPath());
+        @file_put_contents($file, $url, LOCK_EX);
+    }
+
+    private function loadJobProgress(string $id): ?string
+    {
+        $file = $this->importJobsPath() . '/' . $id . '.progress';
+        $url = is_file($file) ? trim((string) file_get_contents($file)) : '';
+        return $url !== '' ? $url : null;
+    }
+
+    /**
+     * The page's declared canonical URL (rel=canonical, else og:url) when it is on
+     * the source site. A canonical that sends every page to the homepage (a
+     * common SEO-plugin misconfiguration) is ignored.
+     */
+    private function canonicalHrefFor(string $html, string $pageUrl, array $sourceHosts): ?string
+    {
+        $href = null;
+        if (preg_match_all('/<link\b[^>]*>/i', $html, $links) > 0) {
+            foreach ($links[0] as $tag) {
+                if (preg_match('/\brel\s*=\s*["\']?[^"\'>]*\bcanonical\b/i', $tag) === 1 && preg_match('/\bhref\s*=\s*(["\'])(.*?)\1/i', $tag, $m) === 1) {
+                    $href = $m[2];
+                    break;
+                }
+            }
+        }
+        if ($href === null && preg_match('/<meta\b[^>]*\bproperty\s*=\s*["\']og:url["\'][^>]*>/i', $html, $meta) === 1
+            && preg_match('/\bcontent\s*=\s*(["\'])(.*?)\1/i', $meta[0], $m) === 1) {
+            $href = $m[2];
+        }
+        if ($href === null) {
+            return null;
+        }
+
+        $absolute = $this->absolutizeUrl($href, $pageUrl);
+        if ($absolute === null || !$this->hostMatches($sourceHosts, strtolower((string) parse_url($absolute, PHP_URL_HOST)))) {
+            return null;
+        }
+        $canonicalPath = (string) (parse_url($absolute, PHP_URL_PATH) ?: '/');
+        $pagePath = (string) (parse_url($pageUrl, PHP_URL_PATH) ?: '/');
+        if (trim($canonicalPath, '/') === '' && trim($pagePath, '/') !== '') {
+            return null;
+        }
+
+        return $absolute;
+    }
+
+    /** A static redirect page at $fromPath pointing at the page saved at $toPath. */
+    private function writePageRedirectStub(string $fromPath, string $toPath, bool $overwrite): bool
+    {
+        $target = $this->pageRoot() . '/' . $fromPath;
+        if ($fromPath === $toPath || (!$overwrite && is_file($target))) {
+            return false;
+        }
+
+        $toUrl = $toPath === 'index.html' ? '/' : '/' . (str_ends_with($toPath, '/index.html') ? substr($toPath, 0, -strlen('index.html')) : $toPath);
+        $html = '<!doctype html><html><head><meta charset="utf-8">'
+            . '<link rel="canonical" href="' . h($toUrl) . '">'
+            . '<meta http-equiv="refresh" content="0; url=' . h($toUrl) . '">'
+            . '<title>Redirecting</title></head><body>'
+            . '<p><a href="' . h($toUrl) . '">This page moved</a></p>'
+            . '</body></html>';
+        Filesystem::writeSitePage($target, $html);
+
+        return true;
+    }
+
+    /** Server-level redirect for an alias URL with a query string (?p=123). */
+    private function recordAliasRedirect(array &$queryRedirects, string $aliasUrl, string $targetPath): void
+    {
+        $query = (string) parse_url($aliasUrl, PHP_URL_QUERY);
+        if ($query !== '') {
+            $queryRedirects[] = ['path' => (string) (parse_url($aliasUrl, PHP_URL_PATH) ?: '/'), 'query' => $query, 'target' => $targetPath];
+        }
     }
 
     private function importJobsPath(): string
@@ -826,28 +1169,28 @@ final class ExternalSiteImporter
         return array_values(is_array($data) ? $data : []);
     }
 
-    public function relocalizeImportedOutput(): array
+    /**
+     * Localize imported output (base-relative URLs, relative <base>). Only files
+     * the importer created are touched: $paths (root-relative) when given, else
+     * every file in the import manifest plus mirrored CSS. Managed pages are left
+     * to SiteGenerator, and other applications' files in the web root are never
+     * read or rewritten (SEC-5).
+     *
+     * @param string[]|null $paths
+     */
+    public function relocalizeImportedOutput(?array $paths = null): array
     {
         $pages = 0;
         $stylesheets = 0;
 
-        if (!is_dir($this->rootPath)) {
-            return ['pages' => 0, 'stylesheets' => 0];
+        if ($paths === null) {
+            $paths = array_merge($this->importedFiles(), $this->mirroredFiles(['css']));
         }
 
-        $iterator = new \RecursiveIteratorIterator(
-            new \RecursiveDirectoryIterator($this->rootPath, \FilesystemIterator::SKIP_DOTS),
-            \RecursiveIteratorIterator::LEAVES_ONLY
-        );
-
-        foreach ($iterator as $file) {
-            if (!$file->isFile()) {
-                continue;
-            }
-
-            $full = str_replace('\\', '/', $file->getPathname());
-            $rel = ltrim(substr($full, strlen($this->rootPath)), '/');
-            if ($rel === '' || str_starts_with($rel, 'edit/')) {
+        foreach (array_unique($paths) as $rel) {
+            $rel = ltrim(str_replace('\\', '/', (string) $rel), '/');
+            $full = $this->rootPath . '/' . $rel;
+            if ($rel === '' || str_starts_with($rel, 'edit/') || str_contains($rel, '..') || !is_file($full)) {
                 continue;
             }
 
@@ -877,6 +1220,83 @@ final class ExternalSiteImporter
         }
 
         return ['pages' => $pages, 'stylesheets' => $stylesheets];
+    }
+
+    /** Localize HTML pages stored under $base (staging), by their site path. */
+    private function relocalizePages(string $base, array $paths): int
+    {
+        $count = 0;
+        foreach (array_unique($paths) as $rel) {
+            $rel = ltrim((string) $rel, '/');
+            $full = $base . '/' . $rel;
+            if ($rel === '' || str_contains($rel, '..') || preg_match('/\.html?$/i', $rel) !== 1 || !is_file($full)) {
+                continue;
+            }
+            $html = (string) file_get_contents($full);
+            $localized = UrlLocalizer::localizeHtml($html, $rel);
+            if ($localized !== $html) {
+                Filesystem::atomicWrite($full, $localized);
+                $count++;
+            }
+        }
+
+        return $count;
+    }
+
+    /**
+     * Root-relative paths of mirrored files under assets/imported/ with one of
+     * $extensions.
+     *
+     * @param string[] $extensions
+     * @return string[]
+     */
+    private function mirroredFiles(array $extensions): array
+    {
+        $base = $this->rootPath . '/assets/imported';
+        if (!is_dir($base)) {
+            return [];
+        }
+
+        $files = [];
+        $iterator = new \RecursiveIteratorIterator(new \RecursiveDirectoryIterator($base, \FilesystemIterator::SKIP_DOTS));
+        foreach ($iterator as $file) {
+            if ($file->isFile() && in_array(strtolower((string) pathinfo($file->getFilename(), PATHINFO_EXTENSION)), $extensions, true)) {
+                $files[] = ltrim(substr(str_replace('\\', '/', $file->getPathname()), strlen($this->rootPath)), '/');
+            }
+        }
+
+        return $files;
+    }
+
+    /**
+     * Managed pages (they carry WYSITE markers), found by scanning HTML files
+     * under the root. Only read here; callers decide what to write.
+     *
+     * @return string[]
+     */
+    private function managedPageFiles(): array
+    {
+        $files = [];
+        $iterator = new \RecursiveIteratorIterator(
+            new \RecursiveCallbackFilterIterator(
+                new \RecursiveDirectoryIterator($this->rootPath, \FilesystemIterator::SKIP_DOTS),
+                function (\SplFileInfo $file): bool {
+                    $rel = ltrim(substr(str_replace('\\', '/', $file->getPathname()), strlen($this->rootPath)), '/');
+                    return !str_starts_with($file->getFilename(), '.') && $rel !== 'edit' && $rel !== 'assets';
+                }
+            )
+        );
+        foreach ($iterator as $file) {
+            if (!$file->isFile() || !in_array(strtolower((string) pathinfo($file->getFilename(), PATHINFO_EXTENSION)), ['html', 'htm'], true)) {
+                continue;
+            }
+            $head = (string) @file_get_contents($file->getPathname(), false, null, 0, 4096);
+            if (str_contains($head, 'WYSITE:')) {
+                $files[] = ltrim(substr(str_replace('\\', '/', $file->getPathname()), strlen($this->rootPath)), '/');
+            }
+        }
+
+        return $files;
     }
 
     public function importAssetUrls(array $urls): array
@@ -1865,6 +2285,15 @@ final class ExternalSiteImporter
         return null;
     }
 
+    /**
+     * Mirror one asset and return its root-relative local path (null on failure).
+     *
+     * IMP-1/IMP-2: every URL is reduced to a canonical key first. A key the asset
+     * index already knows is reused without downloading (or revalidated with a
+     * conditional request on overwrite runs); a download whose redirect target or
+     * bytes match a known file reuses that file; and a path already holding a
+     * different file gets a hash suffix instead of being overwritten.
+     */
     private function mirrorAsset(
         string $url,
         array $sourceHosts,
@@ -1872,45 +2301,112 @@ final class ExternalSiteImporter
         array &$assetsSaved,
         array &$assetsFailed
     ): ?string {
-        $canonicalUrl = $this->withoutFragment($url);
-        if ($this->linksOnly && !array_key_exists($canonicalUrl, $assetMap)) {
-            $existing = $this->existingLocalAssetPath($canonicalUrl);
-            if ($existing !== null) {
-                $assetMap[$canonicalUrl] = $existing;
+        $canon = $this->canon();
+        $index = $this->assetIndex();
+        $rawUrl = $this->withoutFragment($url);
+        $key = $canon->asset($rawUrl);
+
+        if (array_key_exists($key, $assetMap)) {
+            if ($this->linksOnly && $assetMap[$key] !== '') {
+                $this->pageAssets[$rawUrl] = $assetMap[$key];
             }
-        }
-        if (array_key_exists($canonicalUrl, $assetMap)) {
-            if ($this->linksOnly && $assetMap[$canonicalUrl] !== '') {
-                $this->pageAssets[$canonicalUrl] = $assetMap[$canonicalUrl];
-            }
-            return $assetMap[$canonicalUrl] !== '' ? $assetMap[$canonicalUrl] : null;
+            return $assetMap[$key] !== '' ? $assetMap[$key] : null;
         }
 
-        $assetMap[$canonicalUrl] = '';
+        $known = $index->lookup($key);
+        if ($known === null && ($legacy = $this->legacyLocalAssetPath($rawUrl)) !== null) {
+            $known = ['path' => $legacy];
+        }
+        if ($known !== null && !$this->refreshAssets) {
+            $assetMap[$key] = (string) $known['path'];
+            $index->addAlias($key, $rawUrl);
+            if ($this->linksOnly) {
+                $this->pageAssets[$rawUrl] = $assetMap[$key];
+            }
+            return $assetMap[$key];
+        }
+
+        $assetMap[$key] = '';
 
         try {
             $this->emitProgress([
                 'type' => 'asset_start',
-                'url' => $canonicalUrl,
+                'url' => $rawUrl,
                 'assets_saved' => count($assetsSaved),
                 'assets_failed' => count($assetsFailed),
             ]);
 
             $this->assertStorageAvailable();
-            $asset = $this->downloadAssetToTemp($canonicalUrl);
+            $conditional = $known !== null ? ['etag' => (string) ($known['etag'] ?? ''), 'last_modified' => (string) ($known['last_modified'] ?? '')] : [];
+            $fetchUrl = $canon->fetchUrl($rawUrl);
+            try {
+                $asset = $this->downloadAssetToTemp($fetchUrl, $conditional);
+            } catch (RuntimeException $error) {
+                // Preferring the original behind an image CDN: fall back to the copy
+                // the page referenced if the origin doesn't have it.
+                if ($fetchUrl === $rawUrl) {
+                    throw $error;
+                }
+                $asset = $this->downloadAssetToTemp($rawUrl, $conditional);
+            }
+
+            $reuse = function (array $entry, string $entryKey) use (&$assetMap, $key, $rawUrl, $index, $asset): string {
+                @unlink($asset['path']);
+                $path = (string) $entry['path'];
+                if ($entryKey !== $key) {
+                    $index->link($key, $entryKey);
+                }
+                $index->addAlias($entryKey, $rawUrl);
+                $assetMap[$key] = $path;
+                if ($this->linksOnly) {
+                    $this->pageAssets[$rawUrl] = $path;
+                }
+                return $path;
+            };
+
+            if ($asset['not_modified'] && $known !== null) {
+                return $reuse($known, $key);
+            }
+
+            $finalKey = $canon->asset($asset['final_url']);
+            if ($finalKey !== $key && ($final = $index->lookup($finalKey)) !== null) {
+                return $reuse($final, $finalKey);
+            }
+
+            $sha = (string) hash_file('sha256', $asset['path']);
+            $same = $index->lookupHash($sha);
+            if ($same !== null && ($known === null || $same['path'] !== $known['path'])) {
+                return $reuse($same, (string) $same['key']);
+            }
+
             $this->bytesUsed += (int) ($asset['bytes'] ?? (is_file($asset['path']) ? filesize($asset['path']) : 0));
             if ($this->bytesUsed > $this->byteBudget) {
                 @unlink($asset['path']);
                 throw new RuntimeException('Skipped: this import reached its storage budget of ' . $this->bytesLabel($this->byteBudget) . '.');
             }
-            $relativePath = $this->localAssetPathForUrl($canonicalUrl, $asset['content_type']);
-            $assetMap[$canonicalUrl] = $relativePath;
+
+            $relativePath = $known !== null ? (string) $known['path'] : $this->localAssetPathForUrl($rawUrl, $asset['content_type']);
+            $isCss = $this->assetLooksLikeCss($rawUrl, $asset['content_type']);
+            if (!$isCss) {
+                $this->neutralizeActiveAsset($asset['path'], $relativePath, $asset['content_type']);
+            }
             $target = $this->rootPath . '/' . $relativePath;
+
+            // D8: never overwrite a different file that happens to map to this path.
+            if (is_file($target) && ($known === null || $known['path'] !== $relativePath)) {
+                $existingSha = $index->hashForPath($relativePath) ?? (string) hash_file('sha256', $target);
+                if ($existingSha !== $sha) {
+                    $relativePath = $this->appendSlugBeforeExtension($relativePath, substr($sha, 0, 8));
+                    $target = $this->rootPath . '/' . $relativePath;
+                }
+            }
+
+            $assetMap[$key] = $relativePath;
             AssetPolicy::ensureAssetsHtaccess($this->rootPath);
 
-            if ($this->assetLooksLikeCss($canonicalUrl, $asset['content_type'])) {
+            if ($isCss) {
                 $contents = (string) file_get_contents($asset['path']);
-                $contents = $this->rewriteCssReferences($contents, $canonicalUrl, $sourceHosts, $assetMap, $assetsSaved, $assetsFailed);
+                $contents = $this->rewriteCssReferences($contents, $asset['final_url'], $sourceHosts, $assetMap, $assetsSaved, $assetsFailed);
                 @unlink($asset['path']);
                 Filesystem::atomicWrite($target, $contents);
                 $this->makePublicFile($target);
@@ -1926,32 +2422,71 @@ final class ExternalSiteImporter
                 $this->makePublicFile($target);
             }
 
-            $assetsSaved[$relativePath] = $canonicalUrl;
+            $index->record($key, [
+                'path' => $relativePath,
+                'sha256' => $sha,
+                'bytes' => (int) $asset['bytes'],
+                'content_type' => (string) $asset['content_type'],
+                'etag' => (string) $asset['etag'],
+                'last_modified' => (string) $asset['last_modified'],
+                'final_url' => (string) $asset['final_url'],
+                'aliases' => [$rawUrl],
+            ]);
+            if ($finalKey !== $key) {
+                $index->link($finalKey, $key);
+            }
+
+            $assetsSaved[$relativePath] = $rawUrl;
             $this->emitProgress([
                 'type' => 'asset_saved',
-                'url' => $canonicalUrl,
+                'url' => $rawUrl,
                 'path' => $relativePath,
                 'bytes' => (int) ($asset['bytes'] ?? 0),
                 'assets_saved' => count($assetsSaved),
                 'assets_failed' => count($assetsFailed),
             ]);
             if ($this->linksOnly) {
-                $this->pageAssets[$canonicalUrl] = $relativePath;
+                $this->pageAssets[$rawUrl] = $relativePath;
             }
 
             return $relativePath;
         } catch (RuntimeException $error) {
-            $assetMap[$canonicalUrl] = '';
-            $assetsFailed[$canonicalUrl] = $canonicalUrl . ' - ' . $error->getMessage();
+            $assetMap[$key] = '';
+            $assetsFailed[$rawUrl] = $rawUrl . ' - ' . $error->getMessage();
             $this->emitProgress([
                 'type' => 'asset_failed',
-                'url' => $canonicalUrl,
+                'url' => $rawUrl,
                 'message' => $error->getMessage(),
                 'assets_saved' => count($assetsSaved),
                 'assets_failed' => count($assetsFailed),
             ]);
             return null;
         }
+    }
+
+    /**
+     * SEC-2a: rewrite a downloaded SVG or XML asset in place so it can't run
+     * script in this origin. Unparseable SVG is stored as text by renaming the
+     * caller's target (handled through the returned path suffix check).
+     */
+    private function neutralizeActiveAsset(string $tmpPath, string &$relativePath, string $contentType): void
+    {
+        $type = $this->normalizedContentType($contentType);
+        $extension = strtolower((string) pathinfo($relativePath, PATHINFO_EXTENSION));
+        $isSvg = $extension === 'svg' || $type === 'image/svg+xml';
+        $isXml = in_array($extension, ['xml', 'rss', 'atom', 'xsl', 'xslt'], true) || str_ends_with($type, '+xml') || in_array($type, ['application/xml', 'text/xml'], true);
+        if (!$isSvg && !$isXml) {
+            return;
+        }
+
+        $contents = (string) file_get_contents($tmpPath);
+        $inert = $isSvg ? AssetPolicy::sanitizeSvg($contents) : AssetPolicy::sanitizeXmlDocument($contents, false);
+        if ($inert === null || in_array($extension, ['xsl', 'xslt'], true)) {
+            $relativePath .= '.txt';
+            return;
+        }
+
+        file_put_contents($tmpPath, $inert);
     }
 
     private function documentBaseUrl(DOMDocument $dom, string $pageUrl): string
@@ -2025,6 +2560,19 @@ final class ExternalSiteImporter
      */
     private function streamRequestOnce(string $url, int $timeoutSeconds, int $maxBytes, string $acceptHeader): array
     {
+        if ($this->transport !== null) {
+            $response = $this->transportRequest($url, ['accept' => trim((string) preg_replace('/^Accept:\s*/i', '', trim($acceptHeader)))]);
+            if (strlen($response['body']) > $maxBytes) {
+                throw new RuntimeException('Resource is larger than the import limit of ' . $this->bytesLabel($maxBytes) . '.');
+            }
+            return [
+                'status' => $response['status'],
+                'location' => (string) ($response['headers']['location'] ?? ''),
+                'body' => $response['body'],
+                'content_type' => (string) ($response['headers']['content-type'] ?? ''),
+            ];
+        }
+
         // Connect to the IP the SSRF check validated (no DNS rebinding window).
         $pin = pin_url($url);
         $context = stream_context_create([
@@ -2091,6 +2639,9 @@ final class ExternalSiteImporter
      */
     private function assertPublicUrl(string $url): void
     {
+        if ($this->transport !== null) {
+            return; // tests: no DNS, no network
+        }
         assert_public_url($url);
     }
 
@@ -2118,19 +2669,82 @@ final class ExternalSiteImporter
         return $value;
     }
 
-    private function downloadAssetToTemp(string $url): array
+    /**
+     * @param array{etag?:string, last_modified?:string} $conditional validators of the copy we have
+     * @return array{path:string, content_type:string, bytes:int, final_url:string, etag:string, last_modified:string, not_modified:bool}
+     */
+    private function downloadAssetToTemp(string $url, array $conditional = []): array
     {
         $this->refreshExecutionBudget();
 
         $url = $this->normalizeHttpUrl($url);
+        if ($this->transport !== null) {
+            return $this->downloadAssetToTempWithTransport($url, $conditional);
+        }
         if (function_exists('curl_init')) {
-            return $this->downloadAssetToTempWithCurl($url);
+            return $this->downloadAssetToTempWithCurl($url, $conditional);
         }
 
-        return $this->downloadAssetToTempWithStream($url);
+        return $this->downloadAssetToTempWithStream($url, $conditional);
     }
 
-    private function downloadAssetToTempWithCurl(string $url): array
+    /** @return array{status:int, headers:array<string,string>, body:string} */
+    private function transportRequest(string $url, array $headers): array
+    {
+        $response = ($this->transport)($url, $headers);
+        $lower = [];
+        foreach ((array) ($response['headers'] ?? []) as $name => $value) {
+            $lower[strtolower((string) $name)] = (string) $value;
+        }
+
+        return ['status' => (int) ($response['status'] ?? 0), 'headers' => $lower, 'body' => (string) ($response['body'] ?? '')];
+    }
+
+    private function downloadAssetToTempWithTransport(string $url, array $conditional): array
+    {
+        $tmpDir = $this->importsPath() . '/tmp';
+        Filesystem::ensureDirectory($tmpDir);
+        $tmpPath = (string) tempnam($tmpDir, 'asset-');
+        $current = $url;
+        for ($hop = 0; $hop <= self::MAX_FETCH_REDIRECTS; $hop++) {
+            $headers = ['accept' => '*/*'];
+            if (($conditional['etag'] ?? '') !== '') {
+                $headers['if-none-match'] = (string) $conditional['etag'];
+            }
+            if (($conditional['last_modified'] ?? '') !== '') {
+                $headers['if-modified-since'] = (string) $conditional['last_modified'];
+            }
+            $response = $this->transportRequest($current, $headers);
+            if ($this->isRedirectStatus($response['status']) && $response['status'] !== 304 && ($response['headers']['location'] ?? '') !== '') {
+                $next = $this->absolutizeUrl($response['headers']['location'], $current, false);
+                if ($next === null) {
+                    @unlink($tmpPath);
+                    throw new RuntimeException('Unable to follow asset redirect.');
+                }
+                $current = $this->normalizeHttpUrl($next);
+                continue;
+            }
+            if ($response['status'] >= 400) {
+                @unlink($tmpPath);
+                throw new RuntimeException('Asset request returned HTTP ' . $response['status'] . '.');
+            }
+            file_put_contents($tmpPath, $response['body']);
+            return [
+                'path' => $tmpPath,
+                'content_type' => (string) ($response['headers']['content-type'] ?? ''),
+                'bytes' => strlen($response['body']),
+                'final_url' => $current,
+                'etag' => (string) ($response['headers']['etag'] ?? ''),
+                'last_modified' => (string) ($response['headers']['last-modified'] ?? ''),
+                'not_modified' => $response['status'] === 304,
+            ];
+        }
+
+        @unlink($tmpPath);
+        throw new RuntimeException('Too many redirects while fetching asset ' . $url . '.');
+    }
+
+    private function downloadAssetToTempWithCurl(string $url, array $conditional = []): array
     {
         $tmpDir = $this->importsPath() . '/tmp';
         Filesystem::ensureDirectory($tmpDir);
@@ -2145,9 +2759,9 @@ final class ExternalSiteImporter
         try {
             for ($hop = 0; $hop <= self::MAX_FETCH_REDIRECTS; $hop++) {
                 $this->assertPublicUrl($current);
-                $result = $this->curlDownloadOnce($current, $tmpPath);
+                $result = $this->curlDownloadOnce($current, $tmpPath, $conditional);
 
-                if ($this->isRedirectStatus($result['status']) && $result['redirect_url'] !== '') {
+                if ($this->isRedirectStatus($result['status']) && $result['status'] !== 304 && $result['redirect_url'] !== '') {
                     $next = $this->absolutizeUrl($result['redirect_url'], $current, false);
                     if ($next === null) {
                         throw new RuntimeException('Unable to follow asset redirect to ' . $result['redirect_url'] . '.');
@@ -2164,6 +2778,10 @@ final class ExternalSiteImporter
                     'path' => $tmpPath,
                     'content_type' => $result['content_type'],
                     'bytes' => $result['bytes'],
+                    'final_url' => $current,
+                    'etag' => (string) ($result['etag'] ?? ''),
+                    'last_modified' => (string) ($result['last_modified'] ?? ''),
+                    'not_modified' => $result['status'] === 304,
                 ];
             }
 
@@ -2179,8 +2797,17 @@ final class ExternalSiteImporter
      * disabled. Returns the status, resolved redirect target (if any), content type,
      * and byte count so the caller can validate and follow redirects itself.
      */
-    private function curlDownloadOnce(string $url, string $tmpPath): array
+    private function curlDownloadOnce(string $url, string $tmpPath, array $conditional = []): array
     {
+        $etag = '';
+        $lastModified = '';
+        $requestHeaders = ['Accept: */*'];
+        if (($conditional['etag'] ?? '') !== '') {
+            $requestHeaders[] = 'If-None-Match: ' . $conditional['etag'];
+        }
+        if (($conditional['last_modified'] ?? '') !== '') {
+            $requestHeaders[] = 'If-Modified-Since: ' . $conditional['last_modified'];
+        }
         $out = @fopen($tmpPath, 'wb');
         if (!is_resource($out)) {
             throw new RuntimeException('Unable to open a temporary asset file.');
@@ -2210,14 +2837,19 @@ final class ExternalSiteImporter
             CURLOPT_CONNECTTIMEOUT => 30,
             CURLOPT_BUFFERSIZE => 1024 * 1024,
             CURLOPT_USERAGENT => 'WYSiteIWYG Migration Importer',
-            CURLOPT_HTTPHEADER => ['Accept: */*'],
+            CURLOPT_HTTPHEADER => $requestHeaders,
             CURLOPT_NOPROGRESS => false,
         ]);
 
-        curl_setopt($ch, CURLOPT_HEADERFUNCTION, function ($curl, string $header) use (&$contentType, &$maxBytes, &$abortReason, $url): int {
+        curl_setopt($ch, CURLOPT_HEADERFUNCTION, function ($curl, string $header) use (&$contentType, &$maxBytes, &$abortReason, &$etag, &$lastModified, $url): int {
             $line = trim($header);
             if ($line === '') {
                 return strlen($header);
+            }
+            if (stripos($line, 'etag:') === 0) {
+                $etag = trim(substr($line, 5));
+            } elseif (stripos($line, 'last-modified:') === 0) {
+                $lastModified = trim(substr($line, 14));
             }
 
             if (preg_match('/^HTTP\//i', $line) === 1) {
@@ -2307,10 +2939,12 @@ final class ExternalSiteImporter
             'redirect_url' => $redirectUrl,
             'content_type' => $contentType,
             'bytes' => $bytes,
+            'etag' => $etag,
+            'last_modified' => $lastModified,
         ];
     }
 
-    private function downloadAssetToTempWithStream(string $url): array
+    private function downloadAssetToTempWithStream(string $url, array $conditional = []): array
     {
         $tmpDir = $this->importsPath() . '/tmp';
         Filesystem::ensureDirectory($tmpDir);
@@ -2324,9 +2958,9 @@ final class ExternalSiteImporter
         try {
             for ($hop = 0; $hop <= self::MAX_FETCH_REDIRECTS; $hop++) {
                 $this->assertPublicUrl($current);
-                $result = $this->streamDownloadOnce($current, $tmpPath);
+                $result = $this->streamDownloadOnce($current, $tmpPath, $conditional);
 
-                if ($this->isRedirectStatus($result['status']) && (string) $result['redirect_url'] !== '') {
+                if ($this->isRedirectStatus($result['status']) && $result['status'] !== 304 && (string) $result['redirect_url'] !== '') {
                     $next = $this->absolutizeUrl((string) $result['redirect_url'], $current, false);
                     if ($next === null) {
                         throw new RuntimeException('Unable to follow asset redirect to ' . $result['redirect_url'] . '.');
@@ -2343,6 +2977,10 @@ final class ExternalSiteImporter
                     'path' => $tmpPath,
                     'content_type' => $result['content_type'],
                     'bytes' => $result['bytes'],
+                    'final_url' => $current,
+                    'etag' => (string) ($result['etag'] ?? ''),
+                    'last_modified' => (string) ($result['last_modified'] ?? ''),
+                    'not_modified' => $result['status'] === 304,
                 ];
             }
 
@@ -2357,9 +2995,16 @@ final class ExternalSiteImporter
      * One streaming GET to $tmpPath (truncating it) with no automatic redirect
      * following. Returns status, resolved redirect target, content type, and bytes.
      */
-    private function streamDownloadOnce(string $url, string $tmpPath): array
+    private function streamDownloadOnce(string $url, string $tmpPath, array $conditional = []): array
     {
         $pin = pin_url($url);
+        $conditionalHeaders = '';
+        if (($conditional['etag'] ?? '') !== '') {
+            $conditionalHeaders .= 'If-None-Match: ' . $conditional['etag'] . "\r\n";
+        }
+        if (($conditional['last_modified'] ?? '') !== '') {
+            $conditionalHeaders .= 'If-Modified-Since: ' . $conditional['last_modified'] . "\r\n";
+        }
         $context = stream_context_create([
             'http' => [
                 'timeout' => self::LARGE_ASSET_FETCH_TIMEOUT_SECONDS,
@@ -2367,7 +3012,7 @@ final class ExternalSiteImporter
                 'max_redirects' => 1,
                 'ignore_errors' => true,
                 'user_agent' => 'WYSiteIWYG Migration Importer',
-                'header' => $pin['host_header'] . "\r\nAccept: */*\r\n",
+                'header' => $pin['host_header'] . "\r\nAccept: */*\r\n" . $conditionalHeaders,
             ],
             'ssl' => $pin['ssl'],
         ]);
@@ -2439,6 +3084,8 @@ final class ExternalSiteImporter
             'redirect_url' => $location,
             'content_type' => $contentType,
             'bytes' => $bytes,
+            'etag' => (string) ($this->responseHeaderValue($headers, 'etag') ?? ''),
+            'last_modified' => (string) ($this->responseHeaderValue($headers, 'last-modified') ?? ''),
         ];
     }
 
@@ -2520,8 +3167,29 @@ final class ExternalSiteImporter
      */
     private function existingLocalAssetPath(string $url): ?string
     {
-        $relativePath = $this->localAssetPathForUrl($url);
-        if (is_file($this->rootPath . '/' . $relativePath)) {
+        $entry = $this->assetIndex()->lookup($this->canon()->asset($this->withoutFragment($url)));
+        if ($entry !== null) {
+            return (string) $entry['path'];
+        }
+
+        $canonicalPath = $this->localAssetPathForUrl($url);
+        if (is_file($this->rootPath . '/' . $canonicalPath)) {
+            return $canonicalPath;
+        }
+
+        return $this->legacyLocalAssetPath($url);
+    }
+
+    /**
+     * Where imports before IMP-1 stored an asset (raw host folder, every query
+     * parameter in the name), if that file exists.
+     */
+    private function legacyLocalAssetPath(string $url): ?string
+    {
+        $relativePath = $this->legacyAssetPathForUrl($url);
+        // A path the index owns was saved by a current import for some other URL
+        // (e.g. a name collision), so it is not this URL's old copy.
+        if (is_file($this->rootPath . '/' . $relativePath) && $this->assetIndex()->hashForPath($relativePath) === null) {
             return $relativePath;
         }
 
@@ -2608,29 +3276,27 @@ final class ExternalSiteImporter
         return $repointed;
     }
 
+    /**
+     * Point references to backfilled assets at their local copies. Only the
+     * importer's own files (manifest pages, mirrored CSS/JS) and managed pages
+     * are rewritten; nothing else in the web root is touched (SEC-5).
+     */
     private function rewriteImportedAssetReferences(array $urlToLocalPath): int
     {
         if ($urlToLocalPath === []) {
             return 0;
         }
 
+        $candidates = array_unique(array_merge(
+            array_filter($this->importedFiles(), static fn(string $path): bool => preg_match('/\.(html?|css|js)$/i', $path) === 1),
+            $this->mirroredFiles(['css', 'js']),
+            $this->managedPageFiles()
+        ));
+
         $updated = 0;
-        $iterator = new \RecursiveIteratorIterator(
-            new \RecursiveDirectoryIterator($this->rootPath, \FilesystemIterator::SKIP_DOTS)
-        );
-
-        foreach ($iterator as $file) {
-            if (!$file->isFile()) {
-                continue;
-            }
-
-            $fullPath = str_replace('\\', '/', $file->getPathname());
-            if (str_starts_with($fullPath, $this->editPath . '/')) {
-                continue;
-            }
-
-            $extension = strtolower((string) pathinfo($fullPath, PATHINFO_EXTENSION));
-            if (!in_array($extension, ['html', 'htm', 'css', 'js'], true)) {
+        foreach ($candidates as $relative) {
+            $fullPath = $this->rootPath . '/' . $relative;
+            if (str_contains($relative, '..') || str_starts_with($relative, 'edit/') || !is_file($fullPath)) {
                 continue;
             }
 
@@ -2987,6 +3653,7 @@ final class ExternalSiteImporter
 
     private function localPathForUrl(string $url): string
     {
+        $url = $this->canon()->page($url);
         $path = rawurldecode((string) (parse_url($url, PHP_URL_PATH) ?: '/'));
         $path = $this->normalizeUrlPath($path);
         $path = trim($path, '/');
@@ -3040,6 +3707,7 @@ final class ExternalSiteImporter
 
     private function localStaticDocumentPathForUrl(string $url, string $contentType): string
     {
+        $url = $this->canon()->asset($url);
         $path = rawurldecode((string) (parse_url($url, PHP_URL_PATH) ?: '/'));
         $isDirectory = str_ends_with($path, '/');
         $path = trim($this->normalizeUrlPath($path), '/');
@@ -3111,7 +3779,7 @@ final class ExternalSiteImporter
             return null;
         }
 
-        $target = $this->rootPath . '/' . $relativePath;
+        $target = $this->pageRoot() . '/' . $relativePath;
         if (!$overwrite && is_file($target)) {
             return null;
         }
@@ -3127,7 +3795,51 @@ final class ExternalSiteImporter
         return $relativePath;
     }
 
+    /**
+     * Local path for an asset, derived from its canonical key (IMP-1): one folder
+     * per site (www and apex share it), and only query parameters that change the
+     * content become part of the name.
+     */
     private function localAssetPathForUrl(string $url, string $contentType = ''): string
+    {
+        $key = $this->canon()->asset($this->withoutFragment($url));
+        $host = $this->canon()->hostFolder((string) parse_url($key, PHP_URL_HOST));
+
+        $rawPath = rawurldecode((string) (parse_url($key, PHP_URL_PATH) ?: '/'));
+        $isDirectory = str_ends_with($rawPath, '/');
+        $path = trim($this->normalizeUrlPath($rawPath), '/');
+        $segments = [];
+
+        foreach ($path !== '' ? explode('/', $path) : [] as $segment) {
+            $clean = $this->sanitizePathSegment($segment);
+            if ($clean !== '') {
+                $segments[] = $clean;
+            }
+        }
+
+        if ($segments === [] || $isDirectory) {
+            $segments[] = 'index';
+        }
+
+        $lastIndex = count($segments) - 1;
+        $extension = strtolower((string) pathinfo($segments[$lastIndex], PATHINFO_EXTENSION));
+        if ($extension === '') {
+            $extension = $this->extensionForContentType($contentType) ?: 'asset';
+            $segments[$lastIndex] .= '.' . $extension;
+        }
+
+        $querySlug = $this->querySlugForUrl($key);
+        if ($querySlug !== '') {
+            $segments[$lastIndex] = $this->appendSlugBeforeExtension($segments[$lastIndex], $querySlug);
+        }
+
+        // Keep the remote name only when its type is on the publish allowlist, so a
+        // compromised source can't plant shell.php/.phtml/.phar under /assets/.
+        return 'assets/imported/' . $host . '/' . AssetPolicy::safeRelativePath(implode('/', $segments));
+    }
+
+    /** Pre-IMP-1 naming, kept only to find files earlier imports saved. */
+    private function legacyAssetPathForUrl(string $url, string $contentType = ''): string
     {
         $host = $this->sanitizePathSegment(strtolower((string) parse_url($url, PHP_URL_HOST)));
         if ($host === '') {

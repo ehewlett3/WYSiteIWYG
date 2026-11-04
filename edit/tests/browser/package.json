@@ -1,0 +1,6 @@
+{
+  "name": "wysiteiwyg-browser-tests",
+  "private": true,
+  "type": "module",
+  "description": "Browser checks for WYSiteIWYG (run: npm install --no-save playwright@1 && npx playwright install chromium && node run.mjs)"
+}

@@ -34,6 +34,15 @@ $GLOBALS['WYSITE_DASHBOARD_CSS'] = $themes->dashboardCssVariables();
 
 $action = $_GET['action'] ?? 'dashboard';
 
+// Defense in depth on top of CSRF tokens and SameSite cookies: browsers label
+// requests from other sites, and no legitimate editor request comes from one.
+if (is_post() && strtolower((string) ($_SERVER['HTTP_SEC_FETCH_SITE'] ?? '')) === 'cross-site') {
+    http_response_code(403);
+    header('Content-Type: text/plain; charset=utf-8');
+    echo 'Cross-site requests are not accepted.';
+    exit;
+}
+
 if (!$auth->isInstalled() && $action !== 'install') {
     redirect($appUrl . '/index.php?action=install');
 }
@@ -43,9 +52,11 @@ function render_dashboard_nav(string $appUrl, ?string $active, array $user): str
     $items = [
         ['id' => 'dashboard', 'label' => 'Dashboard', 'href' => $appUrl . '/index.php', 'admin' => false],
         ['id' => 'themes', 'label' => 'Theme', 'href' => $appUrl . '/index.php?action=themes', 'admin' => false],
+        ['id' => 'media', 'label' => 'Media', 'href' => $appUrl . '/index.php?action=media', 'admin' => false],
         ['id' => 'manager', 'label' => 'Manager', 'href' => $appUrl . '/index.php?action=manager', 'admin' => true],
         ['id' => 'ai', 'label' => 'AI', 'href' => $appUrl . '/index.php?action=ai', 'admin' => true],
         ['id' => 'users', 'label' => 'Users', 'href' => $appUrl . '/index.php?action=users', 'admin' => true],
+        ['id' => 'activity', 'label' => 'Activity', 'href' => $appUrl . '/index.php?action=activity', 'admin' => true],
         ['id' => 'settings', 'label' => 'Settings', 'href' => $appUrl . '/index.php?action=settings', 'admin' => true],
         ['id' => 'docs', 'label' => 'Docs', 'href' => $appUrl . '/index.php?action=docs', 'admin' => false],
     ];
@@ -418,6 +429,14 @@ try {
     $hashSummary = $auth->passwordHashSummary();
 
     if ($action === 'session-status') {
+        // SEC-3c: public pages on another origin may ask, with credentials.
+        $requestOrigin = strtolower((string) ($_SERVER['HTTP_ORIGIN'] ?? ''));
+        $publicOrigin = strtolower(rtrim((string) preg_replace('#^(https?://[^/]+).*$#i', '$1', (string) $settings->get('canonical_base_url')), '/'));
+        if ($app['editorOrigin'] !== '' && $requestOrigin !== '' && $requestOrigin === $publicOrigin) {
+            header('Access-Control-Allow-Origin: ' . $requestOrigin);
+            header('Access-Control-Allow-Credentials: true');
+            header('Vary: Origin');
+        }
         $user = $auth->currentUser();
         $requestPath = (string) ($_GET['path'] ?? '/');
         $relativePath = $repository->relativeFromRequestPath($requestPath);
@@ -426,9 +445,9 @@ try {
             'loggedIn' => $user !== null,
             'username' => $user['username'] ?? null,
             'editUrl' => $user !== null && $relativePath !== null
-                ? $appUrl . '/index.php?action=preview&path=' . rawurlencode($relativePath)
+                ? $app['editorOrigin'] . $appUrl . '/index.php?action=preview&path=' . rawurlencode($relativePath)
                 : null,
-            'dashboardUrl' => $user !== null ? $appUrl . '/index.php' : null,
+            'dashboardUrl' => $user !== null ? $app['editorOrigin'] . $appUrl . '/index.php' : null,
         ]);
     }
 
@@ -583,6 +602,24 @@ try {
 
     $user = require_login($auth, $appUrl);
 
+    // SEC-7c: log every state-changing request that succeeds.
+    if (is_post() && !in_array($action, ['ai-list-models', 'ai-test'], true)) {
+        $auditUser = (string) $user['username'];
+        $auditData = request_data();
+        register_shutdown_function(static function () use ($app, $auditUser, $action, $auditData): void {
+            if (!empty($GLOBALS['WYSITE_ACTION_FAILED']) || http_response_code() >= 400) {
+                return;
+            }
+            $app['audit']->record($auditUser, $action, [
+                'path' => $auditData['path'] ?? '',
+                'name' => $auditData['name'] ?? ($auditData['theme'] ?? ''),
+                'username' => $auditData['username'] ?? '',
+                'kind' => $auditData['kind'] ?? '',
+                'url' => $auditData['url'] ?? '',
+            ]);
+        });
+    }
+
     if ($action === 'upload-image') {
         if (!is_post() || !Csrf::validate($_POST['csrf_token'] ?? null)) {
             json_response(['ok' => false, 'message' => 'Invalid CSRF token.'], 419);
@@ -641,11 +678,42 @@ try {
                 $nonce
             );
         } else {
-            echo $repository->renderPreviewHtml($path, $appUrl, $siteBaseUrl, Csrf::token(), $user['username'], $nonce, [
-                'isAdmin' => !empty($user['is_admin']),
-            ]);
+            // THM-H: admins get template elements tagged with ids, so a selected
+            // header/footer section is saved to the right template element.
+            $page = $repository->getPage($path);
+            $annotated = !empty($user['is_admin']) && $page['blocks'] !== [] ? $generator->renderPageWithTemplateIds($page['path']) : null;
+            if ($annotated !== null) {
+                $templateFile = $rootPath . '/' . $repository->activeTemplateRelativePath($repository->effectiveTemplateKind($page['kind']));
+                echo $repository->renderPreviewHtmlFromSource($page['path'], $annotated, $appUrl, $siteBaseUrl, Csrf::token(), $user['username'], [
+                    'pageKind' => $page['kind'],
+                    'activeTemplatePath' => $repository->activeTemplateRelativePath($repository->effectiveTemplateKind($page['kind'])),
+                    'selectionSaveEnabled' => true,
+                    'fileHash' => sha1($page['html']),
+                    'templateHash' => is_file($templateFile) ? sha1((string) file_get_contents($templateFile)) : '',
+                    'isAdmin' => true,
+                    'lockHolder' => $app['locks']->holder($page['path'], (string) $user['username']),
+                ], $nonce);
+            } else {
+                echo $repository->renderPreviewHtml($path, $appUrl, $siteBaseUrl, Csrf::token(), $user['username'], $nonce, [
+                    'isAdmin' => !empty($user['is_admin']),
+                    'lockHolder' => $app['locks']->holder($page['path'], (string) $user['username']),
+                ]);
+            }
         }
         return;
+    }
+
+    if ($action === 'edit-lock') {
+        $data = request_data();
+        if (!is_post() || !Csrf::validate($data['csrfToken'] ?? null)) {
+            json_response(['ok' => false, 'message' => 'Invalid CSRF token.'], 419);
+        }
+        $lockPath = $repository->getPage((string) ($data['path'] ?? ''))['path'];
+        if (!empty($data['release'])) {
+            $app['locks']->release($lockPath, (string) $user['username']);
+            json_response(['ok' => true]);
+        }
+        json_response(['ok' => true, 'holder' => $app['locks']->acquire($lockPath, (string) $user['username'])]);
     }
 
     if ($action === 'pages-index') {
@@ -690,6 +758,8 @@ try {
             // URLs and marker comments before anything reaches a public page.
             $html = \WYSiteIWYG\Sanitizer::html((string) ($data['html'] ?? ''));
         }
+        // Preview-only template ids never belong in saved content.
+        $html = (string) preg_replace('/\sdata-wysite-tid="\d+"/', '', $html);
         assert_page_unchanged($repository, $path, $data);
 
         if (($block['type'] ?? '') === 'menu' || $name === 'main-menu') {
@@ -699,6 +769,7 @@ try {
 
         $html = $generator->normalizeEditableBlockHtml((string) ($block['type'] ?? ''), $html);
         $repository->updateBlock($path, $name, $html);
+        $generator->refreshOptionalSlots($path);
         json_response(['ok' => true, 'message' => 'The page was saved.', 'fileHash' => sha1($repository->getPage($path)['html'])]);
     }
 
@@ -708,37 +779,77 @@ try {
             json_response(['ok' => false, 'message' => 'Invalid CSRF token.'], 419);
         }
 
+        // Selector edits only change template chrome (admin-only). Page content is
+        // edited through its block (save-block), which enforces admin-only blocks
+        // and keeps the block markers intact (SEC-4).
+        if ((string) ($data['scope'] ?? 'template') !== 'template') {
+            json_response(['ok' => false, 'message' => 'Page sections are edited through their content block.'], 400);
+        }
+        if (empty($user['is_admin'])) {
+            json_response(['ok' => false, 'message' => 'Template sections are admin-only. Ask an administrator to change the site-wide header, footer, or layout.'], 403);
+        }
+
         $path = (string) ($data['path'] ?? '');
-        $scope = (string) ($data['scope'] ?? 'page');
-        $html = \WYSiteIWYG\Sanitizer::html((string) ($data['html'] ?? ''), $scope === 'template' ? 'import' : 'content');
+        $html = \WYSiteIWYG\Sanitizer::html((string) ($data['html'] ?? ''), 'import');
         $domPath = $data['domPath'] ?? null;
         $page = $repository->getPage($path);
         $kind = (string) ($page['kind'] ?? 'page');
 
-        if (!is_array($domPath)) {
+        if (!is_array($domPath) && !isset($data['tid'])) {
             json_response(['ok' => false, 'message' => 'The selected section path was invalid.'], 400);
         }
 
-        if ($scope === 'template') {
-            // Templates are site-wide chrome; like theme apply, only admins change them.
-            if (empty($user['is_admin'])) {
-                json_response(['ok' => false, 'message' => 'Template sections are admin-only. Ask an administrator to change the site-wide header, footer, or layout.'], 400);
-            }
+        $backups->create('template-edit');
+        $templatePath = isset($data['tid']) && is_numeric($data['tid'])
+            ? $repository->updateActiveTemplateElementByTid($kind, (int) $data['tid'], $html, (string) ($data['templateHash'] ?? ''))
+            : $repository->updateSelectedElementInActiveTemplate($kind, $domPath, $html);
+        $updatedPages = $generator->rebuildPagesUsingTemplate($kind);
+        json_response([
+            'ok' => true,
+            'message' => 'The active template was saved and ' . $updatedPages . ' page(s) using it were rebuilt.',
+            'templatePath' => $templatePath,
+            'updatedPages' => $updatedPages,
+        ]);
+    }
 
-            $backups->create('template-edit');
-            $templatePath = $repository->updateSelectedElementInActiveTemplate($kind, $domPath, $html);
-            $updatedPages = $generator->rebuildPagesUsingTemplate($kind);
-            json_response([
-                'ok' => true,
-                'message' => 'The active template was saved and ' . $updatedPages . ' page(s) using it were rebuilt.',
-                'templatePath' => $templatePath,
-                'updatedPages' => $updatedPages,
-            ]);
+    if (in_array($action, ['save-component-css', 'component-save', 'component-delete'], true)) {
+        $data = request_data();
+        if (!is_post() || !Csrf::validate($data['csrfToken'] ?? null)) {
+            json_response(['ok' => false, 'message' => 'Invalid CSRF token.'], 419);
         }
+        if ($action === 'save-component-css') {
+            // EDT-C (editors too): only rules for this copied section's own classes pass.
+            $page = $repository->getPage((string) ($data['path'] ?? ''));
+            $app['componentStyles']->save((string) ($data['id'] ?? ''), (string) ($data['css'] ?? ''));
+            $app['componentStyles']->ensureLinked($repository->resolvePath($page['path']));
+            json_response(['ok' => true, 'message' => 'Saved the section\'s look.']);
+        }
+        if ($action === 'component-save') {
+            $saved = $app['components']->save((string) ($data['name'] ?? ''), (string) ($data['html'] ?? ''), is_array($data['styles'] ?? null) ? $data['styles'] : [], (string) $user['username'], (string) ($data['path'] ?? ''));
+            json_response(['ok' => true, 'id' => $saved['id'], 'message' => 'Saved.']);
+        }
+        $app['components']->delete((string) ($data['id'] ?? ''), (string) $user['username'], !empty($user['is_admin']));
+        json_response(['ok' => true, 'message' => 'Deleted.']);
+    }
 
-        assert_page_unchanged($repository, $path, $data);
-        $repository->updateSelectedElement($path, $domPath, $html);
-        json_response(['ok' => true, 'message' => 'The selected section was saved.', 'fileHash' => sha1($repository->getPage($path)['html'])]);
+    if ($action === 'components-list') {
+        json_response(['ok' => true] + $app['components']->all());
+    }
+
+    if ($action === 'section-styles-gc') {
+        require_admin($user);
+        if (!is_post() || !Csrf::validate($_POST['csrf_token'] ?? null)) {
+            throw new RuntimeException('The request was rejected.');
+        }
+        $pageFiles = [];
+        foreach (array_merge($repository->listPages(), $repository->listDrafts()) as $listed) {
+            $pageFiles[] = $repository->resolvePath((string) $listed['path']);
+        }
+        $removed = !empty($_POST['reset']) ? $app['componentStyles']->reset() : count($app['componentStyles']->garbageCollect($pageFiles, true));
+        Flash::push('success', !empty($_POST['reset'])
+            ? 'Copied sections now follow the current theme (' . $removed . ' saved look(s) removed).'
+            : 'Removed ' . $removed . ' unused section style group(s).');
+        redirect_to_view($appUrl, 'manager');
     }
 
     if ($action === 'create-page') {
@@ -777,6 +888,38 @@ try {
             ? 'Created a draft post. It stays off the blog and feeds until you publish it from Page details.'
             : 'Created ' . $path . ' and refreshed the hashtag landing pages.');
         redirect($appUrl . '/index.php?action=preview&path=' . rawurlencode($path));
+    }
+
+    if ($action === 'bulk-pages') {
+        if (!is_post() || !Csrf::validate($_POST['csrf_token'] ?? null)) {
+            throw new RuntimeException('The request was rejected.');
+        }
+        $bulk = (string) ($_POST['bulk'] ?? '');
+        $paths = array_values(array_filter((array) ($_POST['paths'] ?? []), 'is_string'));
+        if ($paths === [] || !in_array($bulk, ['rebuild', 'exclude', 'include', 'delete'], true)) {
+            throw new RuntimeException('Select at least one page and an action.');
+        }
+        $backups->create('bulk-' . $bulk);
+        $done = 0;
+        foreach ($paths as $bulkPath) {
+            $bulkPage = $repository->getPage($bulkPath);
+            if ($bulk === 'delete') {
+                if ($bulkPage['path'] === 'index.html') {
+                    continue;
+                }
+                $generator->deletePage($bulkPage['path']);
+            } elseif ($bulk === 'rebuild') {
+                $generator->rebuildPage($bulkPage['path']);
+            } else {
+                $repository->updateMetadata($bulkPage['path'], ['exclude_template' => $bulk === 'exclude' ? '1' : '']);
+            }
+            $done++;
+        }
+        if ($bulk === 'delete') {
+            $generator->rebuildTagPages();
+        }
+        Flash::push('success', ucfirst($bulk === 'rebuild' ? 'rebuilt' : ($bulk === 'delete' ? 'deleted' : ($bulk === 'exclude' ? 'excluded' : 'included'))) . ' ' . $done . ' page(s).');
+        redirect_to_view($appUrl, 'dashboard');
     }
 
     if ($action === 'dismiss-checklist') {
@@ -1001,6 +1144,7 @@ try {
                         <td><?= h(number_format($revision['bytes'] / 1024, 1)) ?> KB</td>
                         <td class="wysite-table__actions">
                           <a class="wysite-button wysite-button--ghost" href="<?= h($appUrl) ?>/index.php?action=revision-view&path=<?= rawurlencode($page['path']) ?>&id=<?= rawurlencode($revision['id']) ?>" target="_blank" rel="noreferrer">View</a>
+                          <a class="wysite-button wysite-button--ghost" href="<?= h($appUrl) ?>/index.php?action=revision-diff&path=<?= rawurlencode($page['path']) ?>&id=<?= rawurlencode($revision['id']) ?>">Compare</a>
                           <form method="post" action="<?= h($appUrl) ?>/index.php?action=restore-revision" data-wysite-confirm="Restore the version saved <?= h(gmdate('Y-m-d H:i', $revision['time'])) ?> UTC? The current version is kept in the history.">
                             <input type="hidden" name="csrf_token" value="<?= h(Csrf::token()) ?>">
                             <input type="hidden" name="path" value="<?= h($page['path']) ?>">
@@ -1167,6 +1311,10 @@ try {
             'embed_hosts' => (string) ($_POST['embed_hosts'] ?? ''),
             'import_byte_budget_mb' => (int) ($_POST['import_byte_budget_mb'] ?? 2048),
             'keep_imported_scripts' => !empty($_POST['keep_imported_scripts']),
+            'import_ignore_params' => (string) ($_POST['import_ignore_params'] ?? ''),
+            'import_prefer_originals' => !empty($_POST['import_prefer_originals']),
+            'public_csp' => !empty($_POST['public_csp']),
+            'stage_imports' => !empty($_POST['stage_imports']),
             'search_url' => (string) ($_POST['search_url'] ?? ''),
             'form_endpoint' => (string) ($_POST['form_endpoint'] ?? ''),
         ];
@@ -1506,11 +1654,13 @@ try {
         }
 
         $kind = (string) ($data['kind'] ?? 'page');
-        $templatePath = $externalImporter->promoteCachedTemplate(
-            (string) ($data['importId'] ?? ''),
+        // THM-1: build the template with its assets copied into the theme, and
+        // store the regions as selectors that work on every page.
+        $templatePath = $app['themeImporter']->addTemplateFromSelections(
+            $builderTheme,
             $kind,
-            is_array($data['selections'] ?? null) ? $data['selections'] : [],
-            $builderTheme
+            $externalImporter->getCachedTemplateSource((string) ($data['importId'] ?? '')),
+            is_array($data['selections'] ?? null) ? $data['selections'] : []
         );
 
         json_response([
@@ -1550,6 +1700,7 @@ try {
                 // until the crawl is complete (WP-7).
                 $jobId = trim((string) ($_POST['job_id'] ?? ''));
                 if ($jobId === '') {
+                    $backups->create('site-import');
                     $jobId = $externalImporter->startImportJob(
                         (string) ($_POST['url'] ?? ''),
                         (int) ($_POST['max_pages'] ?? 50),
@@ -1568,6 +1719,7 @@ try {
             return;
         }
 
+        $backups->create('site-import');
         $results = $externalImporter->importSite(
             (string) ($_POST['url'] ?? ''),
             (int) ($_POST['max_pages'] ?? 50),
@@ -1976,6 +2128,297 @@ try {
         redirect($appUrl . '/index.php?action=report');
     }
 
+    if ($action === 'import-analyze') {
+        require_admin($user);
+        if (!is_post() || !Csrf::validate($_POST['csrf_token'] ?? null)) {
+            throw new RuntimeException('The analysis request was rejected.');
+        }
+        @set_time_limit(300);
+        $importMap = new \WYSiteIWYG\ImportMap($rootPath, $app['editPath'], $repository, $generator, $externalImporter);
+        $map = $importMap->analyze();
+        $reviewed = 0;
+        // THM-F: AI only reviews regions the comparison was unsure about.
+        if ($ai->isConfigured('regions')) {
+            foreach ($map['clusters'] as $cluster) {
+                $kindRoles = $externalImporter->templateRoles($cluster['kind'] === 'home' ? 'home' : (string) $cluster['kind']);
+                $unsure = array_filter($kindRoles, static fn(array $role): bool => (float) ($cluster['roles'][$role['id']]['confidence'] ?? 0) < 0.75);
+                if ($unsure === []) {
+                    continue;
+                }
+                try {
+                    $html = (string) file_get_contents($rootPath . '/' . $cluster['representative']);
+                    $suggestions = $ai->suggestRoles($html, (string) $cluster['kind'], array_values($unsure));
+                    $dom = \WYSiteIWYG\HtmlDocument::parse($html);
+                    foreach ($suggestions as $roleId => $path) {
+                        $element = \WYSiteIWYG\HtmlDocument::elementAt($dom, $path);
+                        if ($element !== null) {
+                            $importMap->updateRole((string) $cluster['id'], (string) $roleId, \WYSiteIWYG\RegionSelector::generate($element), 'Suggested by AI because the page comparison was unsure.');
+                            $reviewed++;
+                        }
+                    }
+                } catch (Throwable $error) {
+                    Flash::push('error', 'AI review skipped for layout ' . strtoupper((string) $cluster['id']) . ': ' . $error->getMessage());
+                }
+            }
+        }
+        Flash::push('success', 'Analysed ' . $map['pages_total'] . ' page(s): found ' . count($map['clusters']) . ' layout(s).' . ($reviewed > 0 ? ' AI reviewed ' . $reviewed . ' uncertain region(s).' : ''));
+        redirect($appUrl . '/index.php?action=import-map');
+    }
+
+    if ($action === 'import-map-role') {
+        require_admin($user);
+        if (!is_post() || !Csrf::validate($_POST['csrf_token'] ?? null)) {
+            throw new RuntimeException('The request was rejected.');
+        }
+        $importMap = new \WYSiteIWYG\ImportMap($rootPath, $app['editPath'], $repository, $generator, $externalImporter);
+        $cluster = $importMap->updateRole((string) ($_POST['cluster'] ?? ''), (string) ($_POST['role'] ?? ''), (string) ($_POST['selector'] ?? ''));
+        $info = $cluster['roles'][(string) ($_POST['role'] ?? '')];
+        Flash::push('success', 'The selector matches exactly once on ' . (int) $info['matches']['1'] . ' of ' . count($cluster['pages']) . ' page(s).');
+        redirect($appUrl . '/index.php?action=import-map');
+    }
+
+    if ($action === 'import-map-apply') {
+        require_admin($user);
+        if (!is_post() || !Csrf::validate($_POST['csrf_token'] ?? null)) {
+            throw new RuntimeException('The request was rejected.');
+        }
+        @set_time_limit(900);
+        $importMap = new \WYSiteIWYG\ImportMap($rootPath, $app['editPath'], $repository, $generator, $externalImporter);
+        $backups->create('import-map');
+        $messages = [];
+        if (!empty($_POST['create_theme'])) {
+            $name = trim((string) ($_POST['theme_name'] ?? '')) ?: 'Imported site';
+            $newTheme = $app['themeImporter']->importFromPages($name, $importMap->themeSources(), [
+                'rights_confirmed' => !empty($_POST['rights_confirmed']),
+                'source_url' => implode(', ', $externalImporter->importedSourceHosts()),
+            ]);
+            $themes->setBuilderTheme($newTheme);
+            $messages[] = 'Created the theme "' . $themes->getTheme($newTheme)['name'] . '".';
+            if (!empty($_POST['apply_theme'])) {
+                $generator->applyTheme($newTheme);
+                $messages[] = 'Applied it to the site.';
+            }
+        }
+        if (!empty($_POST['use_menu']) && ($menu = $importMap->menuHtml()) !== null) {
+            $generator->syncMenu($generator->normalizeMenuHtml($menu));
+            $messages[] = 'Set the imported menu as the site menu.';
+        }
+        if (!empty($_POST['convert_pages'])) {
+            $converted = $importMap->convertPages(!empty($_POST['clean_markup']));
+            $messages[] = 'Converted ' . $converted['converted'] . ' page(s)' . ($converted['skipped'] !== [] ? ', skipped ' . count($converted['skipped']) . ' archive page(s)' : '') . '.';
+            foreach (array_slice($converted['failed'], 0, 5) as $failure) {
+                $messages[] = '- Failed: ' . $failure;
+            }
+        }
+        Flash::push('success', implode("\n", $messages) ?: 'Nothing was selected.');
+        redirect_to_view($appUrl, !empty($_POST['convert_pages']) ? 'dashboard' : 'themes');
+    }
+
+    if ($action === 'import-region-preview') {
+        require_admin($user);
+        $importMap = new \WYSiteIWYG\ImportMap($rootPath, $app['editPath'], $repository, $generator, $externalImporter);
+        $cluster = $importMap->cluster((string) ($_GET['cluster'] ?? ''));
+        $pagePath = (string) ($_GET['page'] ?? '');
+        if (!in_array($pagePath, $cluster['pages'], true)) {
+            throw new RuntimeException('That page is not in this layout group.');
+        }
+        \WYSiteIWYG\send_csp('preview');
+        $nonce = \WYSiteIWYG\csp_nonce();
+        $html = \WYSiteIWYG\strip_active_content($externalImporter->importedPageHtml($pagePath));
+        $html = preg_replace('#\s*<base\b[^>]*>#i', '', $html) ?? $html;
+        $roles = [];
+        foreach ($cluster['roles'] as $role => $info) {
+            $roles[$role] = (string) ($info['selector'] ?? '');
+        }
+        $inject = '<base href="' . h($siteBaseUrl) . '"><style>[data-wysite-role]{outline:3px solid #d9480f!important;outline-offset:2px;position:relative}[data-wysite-role]::before{content:attr(data-wysite-role);position:absolute;z-index:99999;top:-1.6em;left:0;background:#d9480f;color:#fff;font:600 12px/1.6 system-ui,sans-serif;padding:0 6px;border-radius:3px}</style>'
+            . '<script nonce="' . h($nonce) . '">document.addEventListener("DOMContentLoaded",function(){var r=' . json_encode($roles, JSON_UNESCAPED_SLASHES | JSON_HEX_TAG) . ';Object.keys(r).forEach(function(k){try{document.querySelectorAll(r[k]).forEach(function(e){e.setAttribute("data-wysite-role",k)})}catch(x){}})});</script>';
+        echo preg_match('#<head\b[^>]*>#i', $html) === 1 ? (preg_replace('#(<head\b[^>]*>)#i', '$1' . $inject, $html, 1) ?? $html) : $inject . $html;
+        return;
+    }
+
+    if ($action === 'import-publish-staged') {
+        require_admin($user);
+        if (!is_post() || !Csrf::validate($_POST['csrf_token'] ?? null)) {
+            throw new RuntimeException('The request was rejected.');
+        }
+        $backups->create('publish-staged');
+        $published = $externalImporter->publishStaged(null, true);
+        $externalImporter->relocalizeImportedOutput($published['published']);
+        Flash::push('success', 'Published ' . count($published['published']) . ' staged file(s) to the site as they were crawled.');
+        redirect_to_view($appUrl, 'manager');
+    }
+
+    if ($action === 'import-map') {
+        require_admin($user);
+        $map = (new \WYSiteIWYG\ImportMap($rootPath, $app['editPath'], $repository, $generator, $externalImporter))->load();
+        ob_start();
+        include __DIR__ . '/views/import-map.php';
+        layout('Import map', (string) ob_get_clean(), $appUrl, $siteTitle, $user);
+        return;
+    }
+
+    if ($action === 'import-dedupe-apply' || $action === 'import-dedupe-undo') {
+        require_admin($user);
+        if (!is_post() || !Csrf::validate($_POST['csrf_token'] ?? null)) {
+            throw new RuntimeException('The clean-up request was rejected.');
+        }
+
+        if ($action === 'import-dedupe-undo') {
+            $restored = $app['dedupe']->undo((string) ($_POST['run'] ?? ''));
+            Flash::push('success', 'Undid the clean-up: restored ' . $restored . ' file(s).');
+            redirect($appUrl . '/index.php?action=import-dedupe');
+        }
+
+        $backups->create('dedupe');
+        $done = $app['dedupe']->apply($app['dedupe']->scan());
+        Flash::push('success', 'Removed ' . $done['files_moved'] . ' duplicate file(s), updated ' . $done['files_rewritten'] . ' page(s) or stylesheet(s), and turned ' . $done['pages_redirected'] . ' duplicate page(s) into redirects. You can undo this below.');
+        redirect($appUrl . '/index.php?action=import-dedupe');
+    }
+
+    if ($action === 'import-dedupe') {
+        require_admin($user);
+        $scan = $app['dedupe']->scan();
+        $lastRun = $app['dedupe']->lastRun();
+        $duplicateCount = array_sum(array_map(static fn(array $g): int => count($g['duplicates']), $scan['groups']));
+        ob_start();
+        ?>
+        <main class="wysite-dashboard">
+          <section class="wysite-panel">
+            <div class="wysite-panel__heading">
+              <div>
+                <p class="wysite-kicker">Imported files</p>
+                <h2><?= $duplicateCount + count($scan['pages']) === 0 ? 'No duplicates found' : h((string) $duplicateCount) . ' duplicate file(s), ' . count($scan['pages']) . ' duplicate page(s)' ?></h2>
+              </div>
+              <a class="wysite-button wysite-button--ghost" href="<?= h($appUrl) ?>/index.php?action=manager">Back to Manager</a>
+            </div>
+            <p class="wysite-muted">Files under <code>assets/imported/</code> with identical contents are merged into one, and every page and stylesheet that used a copy is pointed at the kept file. Pages that only exist because of tracking, reply or share links become redirects. Removed files go to a trash folder, so you can undo the clean-up.</p>
+            <?php if ($duplicateCount + count($scan['pages']) > 0): ?>
+              <p><strong><?= h(number_format($scan['reclaimable'] / 1048576, 1)) ?> MB</strong> can be reclaimed.</p>
+              <form method="post" action="<?= h($appUrl) ?>/index.php?action=import-dedupe-apply" data-wysite-confirm="Merge the duplicates listed below? A backup of the pages is taken first, and you can undo the clean-up from this page.">
+                <input type="hidden" name="csrf_token" value="<?= h(Csrf::token()) ?>">
+                <button class="wysite-button" type="submit">Merge duplicates</button>
+              </form>
+              <div class="wysite-table-wrap">
+                <table class="wysite-table">
+                  <thead><tr><th>Kept file</th><th>Duplicates removed</th></tr></thead>
+                  <tbody>
+                    <?php foreach (array_slice($scan['groups'], 0, 200) as $group): ?>
+                      <tr><td><code><?= h($group['keeper']) ?></code></td><td><?php foreach ($group['duplicates'] as $duplicate): ?><code><?= h($duplicate) ?></code><br><?php endforeach; ?></td></tr>
+                    <?php endforeach; ?>
+                    <?php foreach ($scan['pages'] as $page): ?>
+                      <tr><td><code><?= h($page['target']) ?></code></td><td><code><?= h($page['path']) ?></code> (page, becomes a redirect)</td></tr>
+                    <?php endforeach; ?>
+                  </tbody>
+                </table>
+              </div>
+            <?php endif; ?>
+            <?php if ($lastRun !== null): ?>
+              <form method="post" action="<?= h($appUrl) ?>/index.php?action=import-dedupe-undo" data-wysite-confirm="Put back every file the last clean-up removed or changed?">
+                <input type="hidden" name="csrf_token" value="<?= h(Csrf::token()) ?>">
+                <input type="hidden" name="run" value="<?= h($lastRun) ?>">
+                <button class="wysite-button wysite-button--ghost" type="submit">Undo the last clean-up (<?= h($lastRun) ?>)</button>
+              </form>
+            <?php endif; ?>
+          </section>
+        </main>
+        <?php
+        layout('Duplicate files', (string) ob_get_clean(), $appUrl, $siteTitle, $user);
+        return;
+    }
+
+    if ($action === 'rescan-apply') {
+        require_admin($user);
+        if (!is_post() || !Csrf::validate($_POST['csrf_token'] ?? null)) {
+            throw new RuntimeException('The re-scan request was rejected.');
+        }
+
+        $backups->create('rescan');
+        $result = $app['rescan']->run($externalImporter->importedFiles(), true);
+        // Rebuilding also gives every page the public Content-Security-Policy.
+        $generator->rebuildAllPages();
+        Flash::push('success', 'Security re-scan cleaned ' . \WYSiteIWYG\SecurityRescan::count($result) . ' item(s). Earlier versions are in each page\'s history and in Manager → Backups.');
+        redirect($appUrl . '/index.php?action=rescan');
+    }
+
+    if ($action === 'rescan') {
+        require_admin($user);
+        $result = $app['rescan']->run($externalImporter->importedFiles(), false);
+        $total = \WYSiteIWYG\SecurityRescan::count($result);
+        ob_start();
+        ?>
+        <main class="wysite-dashboard">
+          <section class="wysite-panel">
+            <div class="wysite-panel__heading">
+              <div>
+                <p class="wysite-kicker">Security re-scan</p>
+                <h2><?= $total === 0 ? 'Nothing unsafe found' : $total . ' item(s) contain unsafe markup' ?></h2>
+              </div>
+              <a class="wysite-button wysite-button--ghost" href="<?= h($appUrl) ?>/index.php?action=manager">Back to Manager</a>
+            </div>
+            <p class="wysite-muted">Runs the current sanitizer over every page block (except raw-HTML blocks), imported HTML files, active templates, and the footer. Only items where scripts, event handlers, unsafe links, or markup browsers read differently would be removed are listed. Sanitizer: <?= h(\WYSiteIWYG\Sanitizer::backend() === 'lexbor' ? 'HTML5 (PHP 8.4+)' : 'compatibility mode (upgrade to PHP 8.4 for exact formatting preservation)') ?>.</p>
+            <?php if ($total > 0): ?>
+              <div class="wysite-table-wrap">
+                <table class="wysite-table">
+                  <thead><tr><th>Where</th><th>What would be removed</th></tr></thead>
+                  <tbody>
+                    <?php foreach ($result['blocks'] as $row): ?>
+                      <tr><td><a href="<?= h($appUrl) ?>/index.php?action=preview&path=<?= rawurlencode($row['path']) ?>"><code><?= h($row['path']) ?></code></a> · block <code><?= h($row['block']) ?></code></td><td><?= h(implode(', ', $row['removed'])) ?></td></tr>
+                    <?php endforeach; ?>
+                    <?php foreach ($result['files'] as $row): ?>
+                      <tr><td><code><?= h($row['path']) ?></code> (imported file)</td><td><?= h(implode(', ', $row['removed'])) ?></td></tr>
+                    <?php endforeach; ?>
+                    <?php foreach ($result['templates'] as $row): ?>
+                      <tr><td><code><?= h($row['path']) ?></code> (template)</td><td><?= h(implode(', ', $row['removed'])) ?></td></tr>
+                    <?php endforeach; ?>
+                    <?php if ($result['footer'] !== []): ?>
+                      <tr><td>Site footer (Settings)</td><td><?= h(implode(', ', $result['footer'])) ?></td></tr>
+                    <?php endif; ?>
+                  </tbody>
+                </table>
+              </div>
+              <form method="post" action="<?= h($appUrl) ?>/index.php?action=rescan-apply" data-wysite-confirm="Remove the unsafe markup listed here? A backup is taken first, and every page keeps its previous version in its history.">
+                <input type="hidden" name="csrf_token" value="<?= h(Csrf::token()) ?>">
+                <button class="wysite-button" type="submit">Clean <?= (int) $total ?> item(s)</button>
+              </form>
+            <?php endif; ?>
+            <?php if ($result['skipped'] !== []): ?>
+              <p class="wysite-muted">Skipped <?= count($result['skipped']) ?> imported file(s) because "Keep the original site's scripts" is on in Settings.</p>
+            <?php endif; ?>
+          </section>
+        </main>
+        <?php
+        layout('Security re-scan', (string) ob_get_clean(), $appUrl, $siteTitle, $user);
+        return;
+    }
+
+    if (in_array($action, ['theme-export', 'site-export'], true)) {
+        require_admin($user);
+        $zipFile = $action === 'theme-export'
+            ? $app['packages']->export((string) ($_GET['theme'] ?? ''))
+            : $app['packages']->exportSite();
+        $downloadName = $action === 'theme-export' ? 'theme-' . preg_replace('/[^a-z0-9-]/', '', (string) ($_GET['theme'] ?? '')) . '.zip' : 'site-' . gmdate('Ymd') . '.zip';
+        header('Content-Type: application/zip');
+        header('Content-Disposition: attachment; filename="' . $downloadName . '"');
+        header('Content-Length: ' . (string) filesize($zipFile));
+        readfile($zipFile);
+        @unlink($zipFile);
+        return;
+    }
+
+    if ($action === 'theme-import') {
+        require_admin($user);
+        if (!is_post() || !Csrf::validate($_POST['csrf_token'] ?? null)) {
+            throw new RuntimeException('The theme import request was rejected.');
+        }
+        $upload = $_FILES['theme_zip'] ?? null;
+        if (!is_array($upload) || ($upload['error'] ?? UPLOAD_ERR_NO_FILE) !== UPLOAD_ERR_OK || !is_uploaded_file((string) $upload['tmp_name'])) {
+            throw new RuntimeException('Choose a theme .zip file exported from WYSiteIWYG.');
+        }
+        $installed = $app['packages']->import((string) $upload['tmp_name']);
+        Flash::push('success', 'Installed the "' . $themes->getTheme($installed)['name'] . '" theme. Preview it below, then apply it.');
+        redirect_to_view($appUrl, 'themes');
+    }
+
     if ($action === 'redirects-download') {
         require_admin($user);
         $file = __DIR__ . '/storage/redirects.txt';
@@ -2040,6 +2483,34 @@ try {
                   <tbody>
                     <?php foreach ($migration as $reportPath => $findings): ?>
                       <?php foreach ($findings as $index => $finding): ?>
+                        <tr>
+                          <td><?php if ($index === 0): ?><a href="<?= h($appUrl) ?>/index.php?action=preview&path=<?= rawurlencode($reportPath) ?>"><code><?= h($reportPath) ?></code></a><?php endif; ?></td>
+                          <td><?= h($finding['type']) ?></td>
+                          <td><?= h($finding['detail']) ?></td>
+                        </tr>
+                      <?php endforeach; ?>
+                    <?php endforeach; ?>
+                  </tbody>
+                </table>
+              </div>
+            <?php endif; ?>
+          </section>
+          <?php $accessibility = $siteReport->accessibilityReport(); ?>
+          <section class="wysite-panel">
+            <div class="wysite-panel__heading">
+              <div>
+                <p class="wysite-kicker">Accessibility</p>
+                <h3><?= $accessibility === [] ? 'No common problems found' : count($accessibility) . ' page(s) with accessibility problems' ?></h3>
+              </div>
+            </div>
+            <p class="wysite-muted">Images need alt text (use an empty alt for decorative images), links and buttons need words, headings shouldn't skip levels, and form fields need labels.</p>
+            <?php if ($accessibility !== []): ?>
+              <div class="wysite-table-wrap">
+                <table class="wysite-table">
+                  <thead><tr><th>Page</th><th>Problem</th><th>Where</th></tr></thead>
+                  <tbody>
+                    <?php foreach ($accessibility as $reportPath => $findings): ?>
+                      <?php foreach (array_slice($findings, 0, 30) as $index => $finding): ?>
                         <tr>
                           <td><?php if ($index === 0): ?><a href="<?= h($appUrl) ?>/index.php?action=preview&path=<?= rawurlencode($reportPath) ?>"><code><?= h($reportPath) ?></code></a><?php endif; ?></td>
                           <td><?= h($finding['type']) ?></td>
@@ -2125,6 +2596,219 @@ try {
         redirect_to_view($appUrl, 'manager');
     }
 
+    if ($action === 'search-replace') {
+        require_admin($user);
+        $query = [
+            'find' => (string) ($_POST['find'] ?? ($_GET['find'] ?? '')),
+            'replace' => (string) ($_POST['replace'] ?? ''),
+            'regex' => !empty($_POST['regex']),
+            'case' => !empty($_POST['case']),
+            'text' => is_post() ? !empty($_POST['text']) : true,
+            'links' => is_post() ? !empty($_POST['links']) : true,
+        ];
+        $results = null;
+        if (is_post()) {
+            if (!Csrf::validate($_POST['csrf_token'] ?? null)) {
+                throw new RuntimeException('The request was rejected.');
+            }
+            $searchReplace = new \WYSiteIWYG\SearchReplace($repository, $generator);
+            if (!empty($_POST['apply'])) {
+                $backups->create('search-replace');
+                $done = $searchReplace->run($query, true);
+                Flash::push('success', 'Replaced ' . array_sum(array_column($done, 'count')) . ' occurrence(s) in ' . count($done) . ' block(s). Earlier versions are in each page\'s history.');
+                redirect($appUrl . '/index.php?action=search-replace');
+            }
+            $results = $searchReplace->run($query, false);
+        }
+        $oldHosts = $externalImporter->importedSourceHosts();
+        ob_start();
+        ?>
+        <main class="wysite-dashboard">
+          <section class="wysite-panel">
+            <div class="wysite-panel__heading">
+              <div>
+                <p class="wysite-kicker">Search &amp; replace</p>
+                <h2>Change text or links on every page</h2>
+              </div>
+              <a class="wysite-button wysite-button--ghost" href="<?= h($appUrl) ?>/index.php?action=manager">Back to Manager</a>
+            </div>
+            <p class="wysite-muted">Searches the editable blocks of every page and draft (raw-HTML blocks are skipped). Only visible text, alt/title text, and link and image addresses change; markup stays as it is. Preview first, then replace.</p>
+            <?php if ($oldHosts !== []): ?>
+              <p class="wysite-muted">Links to the old site? Search for <code>https://<?= h($oldHosts[0]) ?>/</code> with "Links" ticked and replace it with your new address (or nothing, to make them relative).</p>
+            <?php endif; ?>
+            <form method="post" class="wysite-form">
+              <input type="hidden" name="csrf_token" value="<?= h(Csrf::token()) ?>">
+              <div class="wysite-grid">
+                <label><span>Find</span><input type="text" name="find" required value="<?= h($query['find']) ?>"></label>
+                <label><span>Replace with</span><input type="text" name="replace" value="<?= h($query['replace']) ?>"></label>
+              </div>
+              <label class="wysite-checkbox"><input type="checkbox" name="text" value="1"<?= $query['text'] ? ' checked' : '' ?>><span>Text (including image alt text and titles)</span></label>
+              <label class="wysite-checkbox"><input type="checkbox" name="links" value="1"<?= $query['links'] ? ' checked' : '' ?>><span>Links and image addresses</span></label>
+              <label class="wysite-checkbox"><input type="checkbox" name="case" value="1"<?= $query['case'] ? ' checked' : '' ?>><span>Match case</span></label>
+              <label class="wysite-checkbox"><input type="checkbox" name="regex" value="1"<?= $query['regex'] ? ' checked' : '' ?>><span>Regular expression (use $1 for groups)</span></label>
+              <div class="wysite-hero-actions">
+                <button class="wysite-button wysite-button--ghost" type="submit">Preview</button>
+                <?php if ($results !== null && $results !== []): ?>
+                  <button class="wysite-button" type="submit" name="apply" value="1">Replace <?= (int) array_sum(array_column($results, 'count')) ?> occurrence(s)</button>
+                <?php endif; ?>
+              </div>
+            </form>
+            <?php if ($results !== null): ?>
+              <?php if ($results === []): ?>
+                <p>No matches.</p>
+              <?php else: ?>
+                <div class="wysite-table-wrap">
+                  <table class="wysite-table">
+                    <thead><tr><th>Page</th><th>Matches</th><th>Examples</th></tr></thead>
+                    <tbody>
+                      <?php foreach ($results as $row): ?>
+                        <tr><td><code><?= h($row['path']) ?></code> · <?= h($row['block']) ?></td><td><?= (int) $row['count'] ?></td><td><?= h(implode(' · ', $row['samples'])) ?></td></tr>
+                      <?php endforeach; ?>
+                    </tbody>
+                  </table>
+                </div>
+              <?php endif; ?>
+            <?php endif; ?>
+          </section>
+        </main>
+        <?php
+        layout('Search & replace', (string) ob_get_clean(), $appUrl, $siteTitle, $user);
+        return;
+    }
+
+    if ($action === 'media-trash') {
+        require_admin($user);
+        if (!is_post() || !Csrf::validate($_POST['csrf_token'] ?? null)) {
+            throw new RuntimeException('The request was rejected.');
+        }
+        $moved = $app['media']->trashUnused(array_values(array_filter((array) ($_POST['files'] ?? []), 'is_string')));
+        Flash::push('success', 'Moved ' . $moved . ' unused file(s) to edit/storage/trash/. Files still in use were left alone.');
+        redirect($appUrl . '/index.php?action=media&unused=1');
+    }
+
+    if ($action === 'media') {
+        $mediaType = in_array($_GET['type'] ?? '', ['image', 'document', 'media', 'code', 'other'], true) ? (string) $_GET['type'] : '';
+        $unusedOnly = !empty($_GET['unused']);
+        $search = trim((string) ($_GET['q'] ?? ''));
+        $media = $app['media']->list($mediaType, $unusedOnly, $search);
+        ob_start();
+        ?>
+        <main class="wysite-dashboard">
+          <section class="wysite-panel">
+            <div class="wysite-panel__heading">
+              <div>
+                <p class="wysite-kicker">Media</p>
+                <h2><?= (int) $media['total'] ?> file(s)<?= $unusedOnly ? ' not used anywhere' : '' ?></h2>
+              </div>
+            </div>
+            <form method="get" class="wysite-form wysite-grid">
+              <input type="hidden" name="action" value="media">
+              <label><span>Name contains</span><input type="search" name="q" value="<?= h($search) ?>"></label>
+              <label><span>Type</span><select name="type" class="wysite-theme-select"><option value="">All</option><?php foreach (['image' => 'Images', 'document' => 'Documents', 'media' => 'Audio and video', 'code' => 'Styles, scripts and fonts', 'other' => 'Other'] as $value => $label): ?><option value="<?= h($value) ?>"<?= $mediaType === $value ? ' selected' : '' ?>><?= h($label) ?></option><?php endforeach; ?></select></label>
+              <label class="wysite-checkbox"><input type="checkbox" name="unused" value="1"<?= $unusedOnly ? ' checked' : '' ?>><span>Only files no page uses</span></label>
+              <div><button class="wysite-button wysite-button--ghost" type="submit">Show</button> <a class="wysite-button wysite-button--ghost" href="<?= h($appUrl) ?>/index.php?action=import-dedupe">Find duplicates</a></div>
+            </form>
+            <form method="post" action="<?= h($appUrl) ?>/index.php?action=media-trash" data-wysite-confirm="Move the selected unused files out of the site (to edit/storage/trash/)?">
+              <input type="hidden" name="csrf_token" value="<?= h(Csrf::token()) ?>">
+              <div class="wysite-media-grid">
+                <?php foreach ($media['items'] as $item): ?>
+                  <figure class="wysite-media-item">
+                    <?php if ($item['type'] === 'image'): ?><img src="<?= h($siteBaseUrl . $item['path']) ?>" alt="" loading="lazy"><?php else: ?><div class="wysite-media-item__type"><?= h(strtoupper((string) pathinfo($item['path'], PATHINFO_EXTENSION))) ?></div><?php endif; ?>
+                    <figcaption>
+                      <a href="<?= h($siteBaseUrl . $item['path']) ?>" target="_blank" rel="noreferrer"><?= h(basename($item['path'])) ?></a>
+                      <span class="wysite-muted"><?= h(number_format($item['bytes'] / 1024, 0)) ?> KB · <?= $item['uses'] > 0 ? 'used ' . (int) $item['uses'] . '×' : ($item['type'] === 'code' ? 'theme file' : 'unused') ?></span>
+                      <span class="wysite-media-item__actions">
+                        <a href="<?= h($appUrl) ?>/index.php?action=search-replace&find=<?= rawurlencode($item['path']) ?>">Replace everywhere</a>
+                        <?php if ($item['uses'] === 0 && $item['type'] !== 'code' && !empty($user['is_admin'])): ?><label class="wysite-checkbox"><input type="checkbox" name="files[]" value="<?= h($item['path']) ?>"><span>Select</span></label><?php endif; ?>
+                      </span>
+                    </figcaption>
+                  </figure>
+                <?php endforeach; ?>
+              </div>
+              <?php if (!empty($user['is_admin'])): ?><button class="wysite-button wysite-button--ghost" type="submit">Move selected unused files out of the site</button><?php endif; ?>
+            </form>
+          </section>
+        </main>
+        <?php
+        layout('Media', (string) ob_get_clean(), $appUrl, $siteTitle, $user, 'media');
+        return;
+    }
+
+    if ($action === 'revision-diff') {
+        $diffPath = $repository->sitePath()->normalize((string) ($_GET['path'] ?? ''));
+        $rows = \WYSiteIWYG\MediaLibrary::diff($revisions->read($diffPath, (string) ($_GET['id'] ?? '')), $repository->getPage($diffPath)['html']);
+        ob_start();
+        ?>
+        <main class="wysite-dashboard">
+          <section class="wysite-panel">
+            <div class="wysite-panel__heading">
+              <div>
+                <p class="wysite-kicker">Compare versions</p>
+                <h2><?= h($diffPath) ?></h2>
+              </div>
+              <a class="wysite-button wysite-button--ghost" href="<?= h($appUrl) ?>/index.php?action=metadata&path=<?= rawurlencode($diffPath) ?>">Back to page details</a>
+            </div>
+            <p class="wysite-muted"><span class="wysite-diff-del">Removed</span> lines were in the earlier version; <span class="wysite-diff-add">added</span> lines are in the current page.</p>
+            <?php if ($rows === []): ?>
+              <p>The versions are identical.</p>
+            <?php else: ?>
+              <pre class="wysite-diff"><?php foreach ($rows as [$kind, $line]): ?><span class="wysite-diff-<?= h($kind) ?>"><?= h(($kind === 'add' ? '+ ' : ($kind === 'del' ? '- ' : ($kind === 'skip' ? '… ' : '  '))) . $line) ?></span>
+<?php endforeach; ?></pre>
+            <?php endif; ?>
+          </section>
+        </main>
+        <?php
+        layout('Compare versions', (string) ob_get_clean(), $appUrl, $siteTitle, $user);
+        return;
+    }
+
+    if ($action === 'activity') {
+        require_admin($user);
+        $filters = ['user' => trim((string) ($_GET['user'] ?? '')), 'action' => trim((string) ($_GET['what'] ?? '')), 'path' => trim((string) ($_GET['page'] ?? ''))];
+        $entries = $app['audit']->recent(300, $filters['user'], $filters['action'], $filters['path']);
+        ob_start();
+        ?>
+        <main class="wysite-dashboard">
+          <section class="wysite-panel">
+            <div class="wysite-panel__heading">
+              <div>
+                <p class="wysite-kicker">Activity</p>
+                <h2>Who changed what</h2>
+              </div>
+            </div>
+            <form method="get" class="wysite-form wysite-grid">
+              <input type="hidden" name="action" value="activity">
+              <label><span>User</span><input type="text" name="user" value="<?= h($filters['user']) ?>"></label>
+              <label><span>Action</span><input type="text" name="what" value="<?= h($filters['action']) ?>" placeholder="save-block"></label>
+              <label><span>Page contains</span><input type="text" name="page" value="<?= h($filters['path']) ?>"></label>
+              <div><button class="wysite-button wysite-button--ghost" type="submit">Filter</button></div>
+            </form>
+            <?php if ($entries === []): ?>
+              <p class="wysite-muted">Nothing recorded yet.</p>
+            <?php else: ?>
+              <div class="wysite-table-wrap">
+                <table class="wysite-table">
+                  <thead><tr><th>When (UTC)</th><th>User</th><th>Action</th><th>Details</th></tr></thead>
+                  <tbody>
+                    <?php foreach ($entries as $entry): ?>
+                      <tr>
+                        <td><?= h(str_replace(['T', '+00:00'], [' ', ''], (string) $entry['t'])) ?></td>
+                        <td><?= h((string) $entry['user']) ?></td>
+                        <td><code><?= h((string) $entry['action']) ?></code></td>
+                        <td><?php foreach ((array) $entry['detail'] as $key => $value): ?><span class="wysite-muted"><?= h((string) $key) ?>:</span> <?= h((string) $value) ?> <?php endforeach; ?></td>
+                      </tr>
+                    <?php endforeach; ?>
+                  </tbody>
+                </table>
+              </div>
+            <?php endif; ?>
+          </section>
+        </main>
+        <?php
+        layout('Activity', (string) ob_get_clean(), $appUrl, $siteTitle, $user, 'activity');
+        return;
+    }
+
     // ---- Multi-page dashboard router ----
     $view = in_array($action, ['themes', 'manager', 'ai', 'users', 'account', 'settings'], true) ? $action : 'dashboard';
     if (in_array($view, ['manager', 'ai', 'users', 'settings'], true) && !$user['is_admin']) {
@@ -2139,6 +2823,7 @@ try {
     $viewTitles = ['dashboard' => 'Dashboard', 'themes' => 'Theme', 'manager' => 'Manager', 'ai' => 'AI', 'users' => 'Users', 'account' => 'Account', 'settings' => 'Settings'];
     layout($viewTitles[$view], (string) ob_get_clean(), $appUrl, $siteTitle, $user, $view);
 } catch (Throwable $error) {
+    $GLOBALS['WYSITE_ACTION_FAILED'] = true;
     $accept = (string) ($_SERVER['HTTP_ACCEPT'] ?? '');
     if ($accept !== '' && str_contains($accept, 'application/x-ndjson')) {
         header('Content-Type: application/x-ndjson; charset=utf-8');

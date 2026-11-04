@@ -75,6 +75,7 @@ use function WYSiteIWYG\h;
                     <input type="hidden" name="theme" value="<?= h($theme['id']) ?>">
                     <button class="wysite-button" type="submit">Apply Theme</button>
                   </form>
+                  <a class="wysite-button wysite-button--ghost" href="<?= h($appUrl) ?>/index.php?action=theme-export&theme=<?= rawurlencode($theme['id']) ?>">Export</a>
                   <?php if ($theme['id'] !== $currentTheme['id'] && $theme['id'] !== $themes->defaultThemeId()): ?>
                   <form method="post" action="<?= h($appUrl) ?>/index.php?action=delete-theme" data-wysite-confirm="Delete the &quot;<?= h($theme['name']) ?>&quot; theme? This permanently removes its files and cannot be undone.">
                     <input type="hidden" name="csrf_token" value="<?= h(Csrf::token()) ?>">
@@ -87,6 +88,13 @@ use function WYSiteIWYG\h;
             </article>
           <?php endforeach; ?>
         </div>
+        <?php if ($user['is_admin']): ?>
+          <form method="post" action="<?= h($appUrl) ?>/index.php?action=theme-import" enctype="multipart/form-data" class="wysite-form wysite-inline-form">
+            <input type="hidden" name="csrf_token" value="<?= h(Csrf::token()) ?>">
+            <label><span>Install a theme exported from another WYSiteIWYG site (.zip)</span><input type="file" name="theme_zip" accept=".zip,application/zip" required></label>
+            <button class="wysite-button wysite-button--ghost" type="submit">Install theme</button>
+          </form>
+        <?php endif; ?>
       </section>
 
       <?php if ($user['is_admin'] && $currentVariables !== []): ?>

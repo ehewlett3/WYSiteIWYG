@@ -4,7 +4,7 @@ WYSiteIWYG is one folder, `/edit/`. Put it in your site's web root, open `/edit/
 
 ## 1. Check the server
 
-- PHP 8.1 or newer with `ext-dom`.
+- PHP 8.2 or newer with `ext-dom`. PHP 8.4 is recommended: its HTML5 parser lets the sanitizer keep untouched markup byte-for-byte.
 - Recommended: `ext-curl`, `ext-openssl`, `ext-fileinfo`, `ext-zip`, and `ext-mbstring`.
 - The web server's PHP user must be able to write to the web root, `/assets/`, and `/edit/storage/`, `/edit/templates/`, and `/edit/themes/`.
 
@@ -75,6 +75,33 @@ Afterwards, **Manager → System status → Run HTTP checks** confirms that `edi
 Moving from WordPress? Use **Manager → Import a WordPress export** instead.
 
 Take a snapshot first (**Manager → Site snapshots**). Every bulk operation also makes its own backup.
+
+## Optional: scheduled publishing and long imports
+
+Drafts scheduled for a date are published when someone opens the dashboard. To publish them on time, add a cron job:
+
+```sh
+17 * * * * php /path/to/webroot/edit/cli.php publish-due
+```
+
+Large sites import more reliably from the command line than through the browser, with no request time limits:
+
+```sh
+php /path/to/webroot/edit/cli.php import https://old-site.example/ --max-pages=2000
+```
+
+Run `php edit/cli.php` for every command. Crawled pages are staged; review them in **Manager → Import map**.
+
+## Optional: run the editor on its own origin
+
+Public pages and `/edit/` normally share an origin. For sites with several editors, or that keep third-party scripts, serve the same `edit/` folder from its own host (for example `https://edit.example.com/edit/`) and set:
+
+```sh
+WYSITE_EDITOR_ORIGIN=https://edit.example.com
+WYSITE_COOKIE_DOMAIN=.example.com   # lets public pages see the "signed in" hint
+```
+
+Set **Settings → Public URL** to the public site's address. The editor's session cookie then never reaches the public site; public pages load the live-edit banner from the editor origin and ask it for the session status with CORS.
 
 ## Optional: AI assistance
 

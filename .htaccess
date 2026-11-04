@@ -1,6 +1,14 @@
 Options -Indexes
 DirectoryIndex index.php index.html index.xml
 
+# SVG and XML documents can run script when opened directly from this origin.
+# Imported copies are sanitized, but never let them execute anything.
+<IfModule mod_headers.c>
+  <FilesMatch "\.(?i:svg|xml)$">
+    Header set Content-Security-Policy "script-src 'none'; object-src 'none'"
+  </FilesMatch>
+</IfModule>
+
 <IfModule mod_rewrite.c>
 RewriteEngine On
 

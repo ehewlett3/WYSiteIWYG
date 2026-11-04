@@ -874,6 +874,38 @@ try {
         redirect($appUrl . '/index.php?action=preview&path=' . rawurlencode($path));
     }
 
+    if ($action === 'bulk-pages') {
+        if (!is_post() || !Csrf::validate($_POST['csrf_token'] ?? null)) {
+            throw new RuntimeException('The request was rejected.');
+        }
+        $bulk = (string) ($_POST['bulk'] ?? '');
+        $paths = array_values(array_filter((array) ($_POST['paths'] ?? []), 'is_string'));
+        if ($paths === [] || !in_array($bulk, ['rebuild', 'exclude', 'include', 'delete'], true)) {
+            throw new RuntimeException('Select at least one page and an action.');
+        }
+        $backups->create('bulk-' . $bulk);
+        $done = 0;
+        foreach ($paths as $bulkPath) {
+            $bulkPage = $repository->getPage($bulkPath);
+            if ($bulk === 'delete') {
+                if ($bulkPage['path'] === 'index.html') {
+                    continue;
+                }
+                $generator->deletePage($bulkPage['path']);
+            } elseif ($bulk === 'rebuild') {
+                $generator->rebuildPage($bulkPage['path']);
+            } else {
+                $repository->updateMetadata($bulkPage['path'], ['exclude_template' => $bulk === 'exclude' ? '1' : '']);
+            }
+            $done++;
+        }
+        if ($bulk === 'delete') {
+            $generator->rebuildTagPages();
+        }
+        Flash::push('success', ucfirst($bulk === 'rebuild' ? 'rebuilt' : ($bulk === 'delete' ? 'deleted' : ($bulk === 'exclude' ? 'excluded' : 'included'))) . ' ' . $done . ' page(s).');
+        redirect_to_view($appUrl, 'dashboard');
+    }
+
     if ($action === 'dismiss-checklist') {
         require_admin($user);
         if (!is_post() || !Csrf::validate($_POST['csrf_token'] ?? null)) {

@@ -35,8 +35,40 @@ use function WYSiteIWYG\h;
             }
         }
     ?>
+    <?php
+      // UX-1: where a migration stands, as steps with their state.
+      $importedHosts = $externalImporter->importedSourceHosts();
+      $stagedPageCount = count($externalImporter->stagedPages());
+      $importMapFile = $rootPath . '/edit/storage/import-map.local.json';
+      $migrationSteps = [
+          ['done' => $importedHosts !== [], 'label' => 'Crawl the old site', 'href' => '#manager-import', 'hint' => 'or import a WordPress export'],
+          ['done' => is_file($importMapFile), 'label' => 'Review the menu and content regions', 'href' => $appUrl . '/index.php?action=import-map', 'hint' => 'Import map'],
+          ['done' => $importedHosts !== [] && $stagedPageCount === 0 && $importCandidates === [], 'label' => 'Create the theme and convert the pages', 'href' => $appUrl . '/index.php?action=import-map', 'hint' => $stagedPageCount > 0 ? $stagedPageCount . ' page(s) still staged' : ''],
+          ['done' => false, 'label' => 'Merge duplicate files', 'href' => $appUrl . '/index.php?action=import-dedupe', 'hint' => ''],
+          ['done' => false, 'label' => 'Fix broken links and forms', 'href' => $appUrl . '/index.php?action=report', 'hint' => 'Site report'],
+          ['done' => false, 'label' => 'Point links at the new domain', 'href' => $appUrl . '/index.php?action=search-replace', 'hint' => $importedHosts !== [] ? 'replace ' . $importedHosts[0] : ''],
+      ];
+    ?>
     <main class="wysite-dashboard">
-      <section class="wysite-panel">
+      <nav class="wysite-page-nav" aria-label="Manager sections">
+        <a href="#manager-migration">Migration</a> · <a href="#manager-maintenance">Maintenance</a> · <a href="#manager-system">System</a> · <a href="#manager-backups">Backups</a> · <a href="#manager-templates">Themes &amp; templates</a> · <a href="#manager-import">Import</a> · <a href="#manager-unmanaged">Unmanaged pages</a>
+      </nav>
+      <?php if ($importedHosts !== [] || $stagedPageCount > 0): ?>
+      <section class="wysite-panel" id="manager-migration">
+        <div class="wysite-panel__heading">
+          <div>
+            <p class="wysite-kicker">Migration</p>
+            <h3>Moving <?= h($importedHosts[0] ?? 'your old site') ?> over</h3>
+          </div>
+        </div>
+        <ol class="wysite-checklist">
+          <?php foreach ($migrationSteps as $step): ?>
+            <li class="<?= $step['done'] ? 'is-done' : '' ?>"><a href="<?= h($step['href']) ?>"><?= h($step['label']) ?></a><?= $step['hint'] !== '' ? ' <span class="wysite-muted">(' . h($step['hint']) . ')</span>' : '' ?></li>
+          <?php endforeach; ?>
+        </ol>
+      </section>
+      <?php endif; ?>
+      <section class="wysite-panel" id="manager-maintenance">
         <div class="wysite-panel__heading">
           <div>
             <p class="wysite-kicker">Site content</p>
@@ -85,7 +117,7 @@ use function WYSiteIWYG\h;
             $systemRows = array_merge($systemRows, $systemCheck->probe($app['siteOrigin'] . $siteBaseUrl, $flat));
         }
       ?>
-      <section class="wysite-panel">
+      <section class="wysite-panel" id="manager-system">
         <div class="wysite-panel__heading">
           <div>
             <p class="wysite-kicker">System status</p>
@@ -100,7 +132,7 @@ use function WYSiteIWYG\h;
       </section>
 
       <?php $backupList = $backups->list(); ?>
-      <section class="wysite-panel">
+      <section class="wysite-panel" id="manager-backups">
         <div class="wysite-panel__heading">
           <div>
             <p class="wysite-kicker">Backups</p>
@@ -138,7 +170,7 @@ use function WYSiteIWYG\h;
         <?php endif; ?>
       </section>
 
-      <section class="wysite-panel">
+      <section class="wysite-panel" id="manager-templates">
         <div class="wysite-panel__heading">
           <div>
             <p class="wysite-kicker">Template manager</p>
@@ -240,7 +272,7 @@ use function WYSiteIWYG\h;
         <?php endif; ?>
       </section>
 
-      <section class="wysite-panel">
+      <section class="wysite-panel" id="manager-import">
         <div class="wysite-panel__heading">
           <div>
             <p class="wysite-kicker">External migration tools</p>
@@ -361,7 +393,7 @@ use function WYSiteIWYG\h;
         </div>
       </section>
 
-      <section class="wysite-panel">
+      <section class="wysite-panel" id="manager-unmanaged">
         <div class="wysite-panel__heading">
           <div>
             <p class="wysite-kicker">Unmanaged pages</p>

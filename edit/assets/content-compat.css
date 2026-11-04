@@ -1,0 +1,26 @@
+/* WYSiteIWYG content compatibility (published as /assets/wysite-content.css).
+   Gives common CMS/page-builder markup sensible defaults inside page content.
+   Every rule is wrapped in :where() so it has zero specificity: the theme's own
+   styles always win. %SCOPE% is the theme's content scope. */
+:where(%SCOPE%) :where(img, video, iframe, embed, object) { max-width: 100%; height: auto; }
+:where(%SCOPE%) :where(iframe) { aspect-ratio: 16 / 9; height: auto; }
+:where(%SCOPE%) :where(.alignleft) { float: left; margin: 0.3em 1.5em 1em 0; }
+:where(%SCOPE%) :where(.alignright) { float: right; margin: 0.3em 0 1em 1.5em; }
+:where(%SCOPE%) :where(.aligncenter) { display: block; margin-left: auto; margin-right: auto; text-align: center; }
+:where(%SCOPE%) :where(.alignwide, .alignfull) { margin-left: 0; margin-right: 0; max-width: 100%; }
+:where(%SCOPE%) :where(.wp-caption, figure) { max-width: 100%; margin: 1.5em 0; }
+:where(%SCOPE%) :where(.wp-caption-text, figcaption) { font-size: 0.875em; opacity: 0.8; margin-top: 0.4em; }
+:where(%SCOPE%) :where(.wp-block-image img) { display: block; }
+:where(%SCOPE%) :where(.wp-block-columns) { display: flex; flex-wrap: wrap; gap: 1.5em; }
+:where(%SCOPE%) :where(.wp-block-column) { flex: 1 1 14em; min-width: 0; }
+:where(%SCOPE%) :where(.wp-block-gallery, .gallery) { display: grid; grid-template-columns: repeat(auto-fill, minmax(10em, 1fr)); gap: 0.75em; padding: 0; list-style: none; }
+:where(%SCOPE%) :where(.wp-block-buttons) { display: flex; flex-wrap: wrap; gap: 0.75em; margin: 1em 0; }
+:where(%SCOPE%) :where(.wp-block-button__link, .wp-element-button) { display: inline-block; padding: 0.6em 1.2em; border-radius: 0.35em; background: currentColor; text-decoration: none; }
+:where(%SCOPE%) :where(.wp-block-button__link, .wp-element-button) > * , :where(%SCOPE%) :where(.wp-block-button__link) { color: inherit; }
+:where(%SCOPE%) :where(.wp-block-quote, .wp-block-pullquote) { margin: 1.5em 0; padding-left: 1em; border-left: 3px solid currentColor; }
+:where(%SCOPE%) :where(.wp-block-table table, table) { border-collapse: collapse; width: 100%; }
+:where(%SCOPE%) :where(.wp-block-table td, .wp-block-table th) { border: 1px solid rgba(127, 127, 127, 0.35); padding: 0.4em 0.6em; }
+:where(%SCOPE%) :where(.has-text-align-center) { text-align: center; }
+:where(%SCOPE%) :where(.has-text-align-right) { text-align: right; }
+:where(%SCOPE%) :where(.wp-block-embed__wrapper) { position: relative; }
+:where(%SCOPE%)::after { content: ""; display: table; clear: both; }

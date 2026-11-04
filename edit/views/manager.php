@@ -62,6 +62,7 @@ use function WYSiteIWYG\h;
           <a class="wysite-button wysite-button--ghost" href="<?= h($appUrl) ?>/index.php?action=report">Site report (broken links &amp; migration)</a>
           <a class="wysite-button wysite-button--ghost" href="<?= h($appUrl) ?>/index.php?action=rescan">Security re-scan</a>
           <a class="wysite-button wysite-button--ghost" href="<?= h($appUrl) ?>/index.php?action=import-dedupe">Find duplicate imported files</a>
+          <a class="wysite-button" href="<?= h($appUrl) ?>/index.php?action=import-map">Import map: find menu and content on every page</a>
           <a class="wysite-button wysite-button--ghost" href="<?= h($appUrl) ?>/index.php?action=purge-preview">Delete all pages…</a>
         </div>
       </section>

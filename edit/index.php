@@ -1990,6 +1990,123 @@ try {
         redirect($appUrl . '/index.php?action=report');
     }
 
+    if ($action === 'import-analyze') {
+        require_admin($user);
+        if (!is_post() || !Csrf::validate($_POST['csrf_token'] ?? null)) {
+            throw new RuntimeException('The analysis request was rejected.');
+        }
+        @set_time_limit(300);
+        $importMap = new \WYSiteIWYG\ImportMap($rootPath, $app['editPath'], $repository, $generator);
+        $map = $importMap->analyze();
+        $reviewed = 0;
+        // THM-F: AI only reviews regions the comparison was unsure about.
+        if ($ai->isConfigured('regions')) {
+            foreach ($map['clusters'] as $cluster) {
+                $kindRoles = $externalImporter->templateRoles($cluster['kind'] === 'home' ? 'home' : (string) $cluster['kind']);
+                $unsure = array_filter($kindRoles, static fn(array $role): bool => (float) ($cluster['roles'][$role['id']]['confidence'] ?? 0) < 0.75);
+                if ($unsure === []) {
+                    continue;
+                }
+                try {
+                    $html = (string) file_get_contents($rootPath . '/' . $cluster['representative']);
+                    $suggestions = $ai->suggestRoles($html, (string) $cluster['kind'], array_values($unsure));
+                    $dom = \WYSiteIWYG\HtmlDocument::parse($html);
+                    foreach ($suggestions as $roleId => $path) {
+                        $element = \WYSiteIWYG\HtmlDocument::elementAt($dom, $path);
+                        if ($element !== null) {
+                            $importMap->updateRole((string) $cluster['id'], (string) $roleId, \WYSiteIWYG\RegionSelector::generate($element), 'Suggested by AI because the page comparison was unsure.');
+                            $reviewed++;
+                        }
+                    }
+                } catch (Throwable $error) {
+                    Flash::push('error', 'AI review skipped for layout ' . strtoupper((string) $cluster['id']) . ': ' . $error->getMessage());
+                }
+            }
+        }
+        Flash::push('success', 'Analysed ' . $map['pages_total'] . ' page(s): found ' . count($map['clusters']) . ' layout(s).' . ($reviewed > 0 ? ' AI reviewed ' . $reviewed . ' uncertain region(s).' : ''));
+        redirect($appUrl . '/index.php?action=import-map');
+    }
+
+    if ($action === 'import-map-role') {
+        require_admin($user);
+        if (!is_post() || !Csrf::validate($_POST['csrf_token'] ?? null)) {
+            throw new RuntimeException('The request was rejected.');
+        }
+        $importMap = new \WYSiteIWYG\ImportMap($rootPath, $app['editPath'], $repository, $generator);
+        $cluster = $importMap->updateRole((string) ($_POST['cluster'] ?? ''), (string) ($_POST['role'] ?? ''), (string) ($_POST['selector'] ?? ''));
+        $info = $cluster['roles'][(string) ($_POST['role'] ?? '')];
+        Flash::push('success', 'The selector matches exactly once on ' . (int) $info['matches']['1'] . ' of ' . count($cluster['pages']) . ' page(s).');
+        redirect($appUrl . '/index.php?action=import-map');
+    }
+
+    if ($action === 'import-map-apply') {
+        require_admin($user);
+        if (!is_post() || !Csrf::validate($_POST['csrf_token'] ?? null)) {
+            throw new RuntimeException('The request was rejected.');
+        }
+        @set_time_limit(900);
+        $importMap = new \WYSiteIWYG\ImportMap($rootPath, $app['editPath'], $repository, $generator);
+        $backups->create('import-map');
+        $messages = [];
+        if (!empty($_POST['create_theme'])) {
+            $name = trim((string) ($_POST['theme_name'] ?? '')) ?: 'Imported site';
+            $newTheme = $app['themeImporter']->importFromPages($name, $importMap->themeSources(), [
+                'rights_confirmed' => !empty($_POST['rights_confirmed']),
+                'source_url' => implode(', ', $externalImporter->importedSourceHosts()),
+            ]);
+            $themes->setBuilderTheme($newTheme);
+            $messages[] = 'Created the theme "' . $themes->getTheme($newTheme)['name'] . '".';
+            if (!empty($_POST['apply_theme'])) {
+                $generator->applyTheme($newTheme);
+                $messages[] = 'Applied it to the site.';
+            }
+        }
+        if (!empty($_POST['use_menu']) && ($menu = $importMap->menuHtml()) !== null) {
+            $generator->syncMenu($generator->normalizeMenuHtml($menu));
+            $messages[] = 'Set the imported menu as the site menu.';
+        }
+        if (!empty($_POST['convert_pages'])) {
+            $converted = $importMap->convertPages(!empty($_POST['clean_markup']));
+            $messages[] = 'Converted ' . $converted['converted'] . ' page(s)' . ($converted['skipped'] !== [] ? ', skipped ' . count($converted['skipped']) . ' archive page(s)' : '') . '.';
+            foreach (array_slice($converted['failed'], 0, 5) as $failure) {
+                $messages[] = '- Failed: ' . $failure;
+            }
+        }
+        Flash::push('success', implode("\n", $messages) ?: 'Nothing was selected.');
+        redirect_to_view($appUrl, !empty($_POST['convert_pages']) ? 'dashboard' : 'themes');
+    }
+
+    if ($action === 'import-region-preview') {
+        require_admin($user);
+        $importMap = new \WYSiteIWYG\ImportMap($rootPath, $app['editPath'], $repository, $generator);
+        $cluster = $importMap->cluster((string) ($_GET['cluster'] ?? ''));
+        $pagePath = (string) ($_GET['page'] ?? '');
+        if (!in_array($pagePath, $cluster['pages'], true)) {
+            throw new RuntimeException('That page is not in this layout group.');
+        }
+        \WYSiteIWYG\send_csp('preview');
+        $nonce = \WYSiteIWYG\csp_nonce();
+        $html = \WYSiteIWYG\strip_active_content((string) file_get_contents($repository->resolvePath($pagePath)));
+        $html = preg_replace('#\s*<base\b[^>]*>#i', '', $html) ?? $html;
+        $roles = [];
+        foreach ($cluster['roles'] as $role => $info) {
+            $roles[$role] = (string) ($info['selector'] ?? '');
+        }
+        $inject = '<base href="' . h($siteBaseUrl) . '"><style>[data-wysite-role]{outline:3px solid #d9480f!important;outline-offset:2px;position:relative}[data-wysite-role]::before{content:attr(data-wysite-role);position:absolute;z-index:99999;top:-1.6em;left:0;background:#d9480f;color:#fff;font:600 12px/1.6 system-ui,sans-serif;padding:0 6px;border-radius:3px}</style>'
+            . '<script nonce="' . h($nonce) . '">document.addEventListener("DOMContentLoaded",function(){var r=' . json_encode($roles, JSON_UNESCAPED_SLASHES | JSON_HEX_TAG) . ';Object.keys(r).forEach(function(k){try{document.querySelectorAll(r[k]).forEach(function(e){e.setAttribute("data-wysite-role",k)})}catch(x){}})});</script>';
+        echo preg_match('#<head\b[^>]*>#i', $html) === 1 ? (preg_replace('#(<head\b[^>]*>)#i', '$1' . $inject, $html, 1) ?? $html) : $inject . $html;
+        return;
+    }
+
+    if ($action === 'import-map') {
+        require_admin($user);
+        $map = (new \WYSiteIWYG\ImportMap($rootPath, $app['editPath'], $repository, $generator))->load();
+        ob_start();
+        include __DIR__ . '/views/import-map.php';
+        layout('Import map', (string) ob_get_clean(), $appUrl, $siteTitle, $user);
+        return;
+    }
+
     if ($action === 'import-dedupe-apply' || $action === 'import-dedupe-undo') {
         require_admin($user);
         if (!is_post() || !Csrf::validate($_POST['csrf_token'] ?? null)) {

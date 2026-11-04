@@ -29,6 +29,8 @@ require_once __DIR__ . '/src/ExternalSiteImporter.php';
 require_once __DIR__ . '/src/SiteGenerator.php';
 require_once __DIR__ . '/src/ThemeManager.php';
 require_once __DIR__ . '/src/ThemeImporter.php';
+require_once __DIR__ . '/src/ContentCleaner.php';
+require_once __DIR__ . '/src/ImportMap.php';
 require_once __DIR__ . '/src/AiAssistant.php';
 require_once __DIR__ . '/src/SecurityRescan.php';
 require_once __DIR__ . '/src/ImportDedupe.php';

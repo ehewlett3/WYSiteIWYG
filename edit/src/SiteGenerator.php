@@ -100,6 +100,11 @@ final class SiteGenerator
         $title = trim((string) ($options['title'] ?? ($post['title'] ?? $meta['title'] ?? $candidate['title'] ?? basename($relativePath))));
         $excerpt = trim((string) ($options['excerpt'] ?? ($post['excerpt'] ?? $meta['excerpt'] ?? $candidate['excerpt'] ?? '')));
         $containerXPath = trim((string) ($options['container_xpath'] ?? ''));
+        if ($containerXPath === '') {
+            // IMP-5: a theme imported from this site knows where content lives.
+            $containerXPath = $this->themeContentXPath($kind === 'blog-post' ? 'blog-post' : 'page', $candidate['html']);
+        }
+        $clean = !empty($options['clean_markup']);
         $blockXpaths = array_values(
             array_filter(
                 array_map(
@@ -116,6 +121,9 @@ final class SiteGenerator
                 : implode("\n", $this->extractImportedPageBlocks($candidate['html'], $containerXPath, $blockXpaths));
             $tags = $this->usableImportTags($post['tags'] ?? []);
             $content = $this->stripDuplicateTitle($content, $title, 'blog-post');
+            if ($clean) {
+                $content = Sanitizer::html(ContentCleaner::clean($content), 'import');
+            }
             $html = $this->renderKind(
                 'blog-post',
                 $this->themes->currentThemeId(),
@@ -147,6 +155,9 @@ final class SiteGenerator
             $blocks = [$this->defaultPageContent()];
         }
         $blocks[0] = $this->stripDuplicateTitle($blocks[0], $title, $candidate['path'] === 'index.html' ? 'home' : 'page');
+        if ($clean) {
+            $blocks = array_map(static fn(string $block): string => Sanitizer::html(ContentCleaner::clean($block), 'import'), $blocks);
+        }
 
         $html = $this->renderKind(
             $candidate['path'] === 'index.html' ? 'home' : 'page',
@@ -1658,6 +1669,7 @@ final class SiteGenerator
             $this->rootPath . '/assets/site.css',
             $this->localizeStylesheet($css) . $this->themes->variableCss($themeId, $values)
         );
+        $this->publishContentCompat($themeId);
         AssetPolicy::ensureAssetsHtaccess($this->rootPath);
     }
 
@@ -1666,6 +1678,23 @@ final class SiteGenerator
      * references (theme-relative "assets/x.png" or "/edit/themes/<id>/assets/x.png")
      * at the published copies, so the public site never loads files from /edit/.
      */
+    /** THM-E: /assets/wysite-content.css, scoped to the theme's content wrapper. */
+    private function publishContentCompat(string $themeId): void
+    {
+        $template = $this->rootPath . '/edit/assets/content-compat.css';
+        if (!is_file($template)) {
+            return;
+        }
+        try {
+            $scope = (string) ($this->themes->meta($themeId)['content_scope'] ?? '');
+            RegionSelector::assertValid($scope);
+        } catch (RuntimeException) {
+            $scope = '';
+        }
+        $scope = $scope !== '' ? $scope : 'main, article, .entry-content, .content-stack, .post-body';
+        Filesystem::atomicWrite($this->rootPath . '/assets/wysite-content.css', str_replace('%SCOPE%', $scope, (string) file_get_contents($template)));
+    }
+
     private function publishThemeAssets(string $themeId, string $css): string
     {
         $source = $this->rootPath . '/edit/themes/' . $themeId . '/assets';
@@ -1915,6 +1944,10 @@ final class SiteGenerator
         $tag = (string) ($data['tag'] ?? '');
         if ($kind === 'blog' && $tag !== '' && $tag !== 'blog') {
             $tags[] = '<link rel="alternate" type="application/rss+xml" title="' . h($siteName . ' — #' . $tag) . '" href="/' . h($tag) . '/feed.xml">';
+        }
+
+        if (is_file($this->rootPath . '/assets/wysite-content.css')) {
+            $tags[] = '<link rel="stylesheet" href="/assets/wysite-content.css">';
         }
 
         $favicon = (string) $this->settings->get('favicon');
@@ -2595,6 +2628,26 @@ final class SiteGenerator
             if ($element->parentNode instanceof \DOMNode) {
                 $element->parentNode->removeChild($element);
             }
+        }
+    }
+
+    /** XPath of the active theme's content region for $kind when it exists on this page. */
+    private function themeContentXPath(string $kind, string $html): string
+    {
+        try {
+            $meta = $this->themes->meta($this->themes->currentThemeId());
+        } catch (RuntimeException) {
+            return '';
+        }
+        $role = $kind === 'blog-post' ? 'blog-post-content' : 'page-content';
+        $selector = (string) ($meta['regions'][$kind][$role] ?? $meta['regions']['page']['page-content'] ?? '');
+        if ($selector === '') {
+            return '';
+        }
+        try {
+            return RegionSelector::match($selector, HtmlDocument::parse($html)) !== [] ? RegionSelector::toXPath($selector) : '';
+        } catch (RuntimeException) {
+            return '';
         }
     }
 

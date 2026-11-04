@@ -85,7 +85,7 @@ if (session_status() !== PHP_SESSION_ACTIVE) {
 // Sessions are started lazily: the only request public pages make here is
 // session-status, and it must not hand every visitor a session cookie. Anything
 // else (login, install, dashboard) needs one for CSRF tokens and flashes.
-$needsSession = isset($_COOKIE[$sessionName]) || (($_GET['action'] ?? '') !== 'session-status');
+$needsSession = PHP_SAPI !== 'cli' && (isset($_COOKIE[$sessionName]) || (($_GET['action'] ?? '') !== 'session-status'));
 if (session_status() !== PHP_SESSION_ACTIVE) {
     session_name($sessionName);
     ini_set('session.use_strict_mode', '1');

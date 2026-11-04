@@ -1976,6 +1976,69 @@ try {
         redirect($appUrl . '/index.php?action=report');
     }
 
+    if ($action === 'rescan-apply') {
+        require_admin($user);
+        if (!is_post() || !Csrf::validate($_POST['csrf_token'] ?? null)) {
+            throw new RuntimeException('The re-scan request was rejected.');
+        }
+
+        $backups->create('rescan');
+        $result = $app['rescan']->run($externalImporter->importedFiles(), true);
+        Flash::push('success', 'Security re-scan cleaned ' . \WYSiteIWYG\SecurityRescan::count($result) . ' item(s). Earlier versions are in each page\'s history and in Manager → Backups.');
+        redirect($appUrl . '/index.php?action=rescan');
+    }
+
+    if ($action === 'rescan') {
+        require_admin($user);
+        $result = $app['rescan']->run($externalImporter->importedFiles(), false);
+        $total = \WYSiteIWYG\SecurityRescan::count($result);
+        ob_start();
+        ?>
+        <main class="wysite-dashboard">
+          <section class="wysite-panel">
+            <div class="wysite-panel__heading">
+              <div>
+                <p class="wysite-kicker">Security re-scan</p>
+                <h2><?= $total === 0 ? 'Nothing unsafe found' : $total . ' item(s) contain unsafe markup' ?></h2>
+              </div>
+              <a class="wysite-button wysite-button--ghost" href="<?= h($appUrl) ?>/index.php?action=manager">Back to Manager</a>
+            </div>
+            <p class="wysite-muted">Runs the current sanitizer over every page block (except raw-HTML blocks), imported HTML files, active templates, and the footer. Only items where scripts, event handlers, unsafe links, or markup browsers read differently would be removed are listed. Sanitizer: <?= h(\WYSiteIWYG\Sanitizer::backend() === 'lexbor' ? 'HTML5 (PHP 8.4+)' : 'compatibility mode (upgrade to PHP 8.4 for exact formatting preservation)') ?>.</p>
+            <?php if ($total > 0): ?>
+              <div class="wysite-table-wrap">
+                <table class="wysite-table">
+                  <thead><tr><th>Where</th><th>What would be removed</th></tr></thead>
+                  <tbody>
+                    <?php foreach ($result['blocks'] as $row): ?>
+                      <tr><td><a href="<?= h($appUrl) ?>/index.php?action=preview&path=<?= rawurlencode($row['path']) ?>"><code><?= h($row['path']) ?></code></a> · block <code><?= h($row['block']) ?></code></td><td><?= h(implode(', ', $row['removed'])) ?></td></tr>
+                    <?php endforeach; ?>
+                    <?php foreach ($result['files'] as $row): ?>
+                      <tr><td><code><?= h($row['path']) ?></code> (imported file)</td><td><?= h(implode(', ', $row['removed'])) ?></td></tr>
+                    <?php endforeach; ?>
+                    <?php foreach ($result['templates'] as $row): ?>
+                      <tr><td><code><?= h($row['path']) ?></code> (template)</td><td><?= h(implode(', ', $row['removed'])) ?></td></tr>
+                    <?php endforeach; ?>
+                    <?php if ($result['footer'] !== []): ?>
+                      <tr><td>Site footer (Settings)</td><td><?= h(implode(', ', $result['footer'])) ?></td></tr>
+                    <?php endif; ?>
+                  </tbody>
+                </table>
+              </div>
+              <form method="post" action="<?= h($appUrl) ?>/index.php?action=rescan-apply" data-wysite-confirm="Remove the unsafe markup listed here? A backup is taken first, and every page keeps its previous version in its history.">
+                <input type="hidden" name="csrf_token" value="<?= h(Csrf::token()) ?>">
+                <button class="wysite-button" type="submit">Clean <?= (int) $total ?> item(s)</button>
+              </form>
+            <?php endif; ?>
+            <?php if ($result['skipped'] !== []): ?>
+              <p class="wysite-muted">Skipped <?= count($result['skipped']) ?> imported file(s) because "Keep the original site's scripts" is on in Settings.</p>
+            <?php endif; ?>
+          </section>
+        </main>
+        <?php
+        layout('Security re-scan', (string) ob_get_clean(), $appUrl, $siteTitle, $user);
+        return;
+    }
+
     if ($action === 'redirects-download') {
         require_admin($user);
         $file = __DIR__ . '/storage/redirects.txt';

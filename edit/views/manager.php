@@ -60,6 +60,7 @@ use function WYSiteIWYG\h;
             <button class="wysite-button wysite-button--ghost" type="submit">Convert to folder URLs</button>
           </form>
           <a class="wysite-button wysite-button--ghost" href="<?= h($appUrl) ?>/index.php?action=report">Site report (broken links &amp; migration)</a>
+          <a class="wysite-button wysite-button--ghost" href="<?= h($appUrl) ?>/index.php?action=rescan">Security re-scan</a>
           <a class="wysite-button wysite-button--ghost" href="<?= h($appUrl) ?>/index.php?action=purge-preview">Delete all pages…</a>
         </div>
       </section>

@@ -23,6 +23,7 @@ require_once __DIR__ . '/src/ExternalSiteImporter.php';
 require_once __DIR__ . '/src/SiteGenerator.php';
 require_once __DIR__ . '/src/ThemeManager.php';
 require_once __DIR__ . '/src/AiAssistant.php';
+require_once __DIR__ . '/src/SecurityRescan.php';
 
 WYSiteIWYG\apply_security_headers();
 
@@ -106,6 +107,11 @@ $externalImporter->setKeepScripts((bool) $settings->get('keep_imported_scripts')
 if ($settings->embedHosts() !== []) {
     WYSiteIWYG\Sanitizer::setEmbedHosts($settings->embedHosts());
 }
+// Absolute URLs to these hosts count as same-origin for the frame rules.
+WYSiteIWYG\Sanitizer::setSiteHosts(array_filter([
+    (string) parse_url($siteOrigin, PHP_URL_HOST),
+    (string) parse_url((string) $settings->get('canonical_base_url'), PHP_URL_HOST),
+]));
 $ai = new AiAssistant(__DIR__ . '/storage/ai.local.php');
 
 return [
@@ -125,6 +131,7 @@ return [
     'settings' => $settings,
     'report' => new WYSiteIWYG\SiteReport($rootPath, $repository),
     'systemCheck' => new WYSiteIWYG\SystemCheck($rootPath, $editPath),
+    'rescan' => new WYSiteIWYG\SecurityRescan($rootPath, $editPath, $repository, $settings),
     'siteOrigin' => $siteOrigin,
     'siteTitle' => (string) $settings->get('site_name'),
 ];

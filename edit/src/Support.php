@@ -1103,9 +1103,8 @@ function resolve_host_ips(string $host): array
 
 /**
  * Neutralize active content in an untrusted HTML document before it is rendered
- * in the app origin: remove <script> elements, strip on* event-handler attributes,
- * drop javascript: URLs, and remove iframe srcdoc. Used as defense-in-depth for the
- * template designer, alongside the strict preview CSP.
+ * in the app origin (template designer). Delegates to the shared document
+ * sanitizer, so the same parser-differential rules apply everywhere.
  */
 function strip_active_content(string $html): string
 {
@@ -1113,50 +1112,9 @@ function strip_active_content(string $html): string
         return $html;
     }
 
-    if (!class_exists(\DOMDocument::class)) {
-        return preg_replace('#<script\b[^>]*>.*?</script>#is', '', $html) ?? $html;
+    try {
+        return Sanitizer::document($html);
+    } catch (RuntimeException) {
+        return h(strip_tags($html));
     }
-
-    $dom = new \DOMDocument('1.0', 'UTF-8');
-    libxml_use_internal_errors(true);
-    $loaded = $dom->loadHTML('<?xml encoding="UTF-8">' . $html);
-    libxml_clear_errors();
-
-    if (!$loaded) {
-        return preg_replace('#<script\b[^>]*>.*?</script>#is', '', $html) ?? $html;
-    }
-
-    foreach (iterator_to_array($dom->getElementsByTagName('script')) as $script) {
-        $script->parentNode?->removeChild($script);
-    }
-
-    $urlAttrs = ['href', 'src', 'action', 'formaction', 'poster', 'data', 'background', 'xlink:href'];
-    $xpath = new \DOMXPath($dom);
-    foreach ($xpath->query('//*') as $element) {
-        if (!$element instanceof \DOMElement || !$element->hasAttributes()) {
-            continue;
-        }
-
-        $remove = [];
-        foreach ($element->attributes as $attribute) {
-            $name = strtolower($attribute->nodeName);
-            $value = html_entity_decode((string) $attribute->nodeValue, ENT_QUOTES | ENT_HTML5, 'UTF-8');
-
-            if (str_starts_with($name, 'on') || $name === 'srcdoc') {
-                $remove[] = $attribute->nodeName;
-                continue;
-            }
-
-            if (in_array($name, $urlAttrs, true) && preg_match('#^\s*javascript:#i', $value) === 1) {
-                $remove[] = $attribute->nodeName;
-            }
-        }
-
-        foreach ($remove as $name) {
-            $element->removeAttribute($name);
-        }
-    }
-
-    $out = $dom->saveHTML() ?: $html;
-    return preg_replace('/<\?xml\s+encoding=["\']UTF-8["\']\??>\s*/i', '', $out) ?? $out;
 }

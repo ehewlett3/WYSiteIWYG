@@ -14,7 +14,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        php: ['8.1', '8.3']
+        php: ['8.2', '8.3', '8.4']
     steps:
       - uses: actions/checkout@v4
 
@@ -44,3 +44,25 @@ jobs:
         run: |
           npm install --no-save jsdom@24
           node run-node.mjs
+
+  browser:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.3'
+          extensions: dom, fileinfo, curl, zip
+          coverage: none
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Browser checks (Chromium)
+        working-directory: edit/tests/browser
+        run: |
+          npm install --no-save playwright@1
+          npx playwright install --with-deps chromium
+          node run.mjs

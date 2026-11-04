@@ -8,7 +8,11 @@ use WYSiteIWYG\ExternalSiteImporter;
 use WYSiteIWYG\SiteGenerator;
 use WYSiteIWYG\ThemeManager;
 
+require_once __DIR__ . '/src/vendor/autoload.php';
 require_once __DIR__ . '/src/Support.php';
+require_once __DIR__ . '/src/HtmlDocument.php';
+require_once __DIR__ . '/src/RegionSelector.php';
+require_once __DIR__ . '/src/SiteStructureAnalyzer.php';
 require_once __DIR__ . '/src/SitePath.php';
 require_once __DIR__ . '/src/Sanitizer.php';
 require_once __DIR__ . '/src/Revisions.php';

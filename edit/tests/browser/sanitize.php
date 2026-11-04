@@ -9,6 +9,7 @@ if (PHP_SAPI !== 'cli') {
 }
 
 $editPath = dirname(__DIR__, 2);
+require_once $editPath . '/src/vendor/autoload.php';
 foreach (glob($editPath . '/src/*.php') ?: [] as $file) {
     require_once $file;
 }

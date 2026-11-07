@@ -2628,7 +2628,7 @@ final class SiteGenerator
 
         $insideContent = static function (\DOMElement $element) use ($xpath, $contentAncestors, $container): bool {
             foreach ($xpath->query($contentAncestors, $element) ?: [] as $ancestor) {
-                if ($ancestor !== $container && $ancestor instanceof \DOMElement && $container->contains($ancestor)) {
+                if ($ancestor !== $container && $ancestor instanceof \DOMElement && HtmlDocument::contains($container, $ancestor)) {
                     return true;
                 }
             }

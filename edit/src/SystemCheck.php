@@ -29,8 +29,8 @@ final class SystemCheck
             : $this->row(version_compare(PHP_VERSION, '8.1.0', '>=') ? 'warn' : 'fail', 'PHP version', PHP_VERSION . ' — PHP 8.2 or newer is required (8.1 no longer gets security fixes).');
 
         $rows[] = class_exists(\Dom\HTMLDocument::class)
-            ? $this->row('pass', 'HTML sanitizer', 'HTML5 parser (PHP 8.4+): untouched markup is kept byte-for-byte.')
-            : $this->row('warn', 'HTML sanitizer', 'Compatibility mode: saved blocks are safe but may be reformatted. Upgrade to PHP 8.4 for exact formatting preservation.');
+            ? $this->row('pass', 'HTML sanitizer', 'HTML5 parser (PHP 8.4+): saved content is serialized from the cleaned browser-compatible tree.')
+            : $this->row('warn', 'HTML sanitizer', 'Compatibility mode: saved blocks are sanitized and serialized. PHP 8.4 provides the browser-compatible HTML5 parser.');
 
         $rows[] = class_exists(\Masterminds\HTML5::class)
             ? $this->row('pass', 'HTML5 parser', 'Bundled parser loaded (region detection and section paths match the browser).')

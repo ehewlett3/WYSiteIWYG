@@ -496,7 +496,7 @@ final class SiteStructureAnalyzer
     {
         $xpath = new \DOMXPath($content->ownerDocument);
         foreach ($xpath->query('.//header | .//*[contains(concat(" ", normalize-space(@class), " "), " page-header ")] | .//*[contains(concat(" ", normalize-space(@class), " "), " archive-header ")]', $content) ?: [] as $node) {
-            if ($node instanceof \DOMElement && !$node->contains($items) && !$items->contains($node)) {
+            if ($node instanceof \DOMElement && !HtmlDocument::contains($node, $items) && !HtmlDocument::contains($items, $node)) {
                 return $node;
             }
         }
@@ -514,7 +514,7 @@ final class SiteStructureAnalyzer
         foreach ($page['dom']->getElementsByTagName('h1') as $h1) {
             $text = $this->normalize($h1->textContent);
             if ($text !== '' && ($text === $title || str_starts_with($title, $text))) {
-                return ['selector' => RegionSelector::generate($h1), 'inside' => $content->contains($h1)];
+                return ['selector' => RegionSelector::generate($h1), 'inside' => HtmlDocument::contains($content, $h1)];
             }
         }
 

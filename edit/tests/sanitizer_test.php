@@ -87,14 +87,9 @@ test('SEC-4: document mode keeps head assets, markers and tokens', function (): 
     assert_not_contains('onload', $out);
 });
 
-test('SEC-1: clean input keeps its meaning; byte-for-byte on the HTML5 (PHP 8.4) backend', function (): void {
+test('SEC-1: clean input keeps its meaning on both sanitizer backends', function (): void {
     $html = "<figure class=\"wp-block-embed\">\n  <iframe allowfullscreen src=\"https://www.youtube.com/embed/x\"></iframe>\n</figure>\n<svg viewBox=\"0 0 10 10\"><circle r=\"1\"/></svg>\n<p>caf&eacute; &nbsp; <br/></p>";
     $doc = "<!DOCTYPE html>\n<html lang=\"en\"><head><title>{{TITLE}}</title></head><body class=\"{{BODY_CLASS}}\">{{MAIN_MENU}}</body></html>\n";
-    if (Sanitizer::backend() === 'lexbor') {
-        assert_same($html, Sanitizer::html($html));
-        assert_same($doc, Sanitizer::document($doc));
-        return;
-    }
     $out = Sanitizer::html($html);
     assert_contains('<iframe allowfullscreen src="https://www.youtube.com/embed/x"></iframe>', $out);
     assert_contains('<circle r="1"', $out);
@@ -167,4 +162,15 @@ test('SEC-6: CSS sanitizer resists nesting and escapes', function (): void {
     assert_contains('@import url(https://fonts.googleapis.com/', $ok);
     assert_contains('url(assets/uploads/a.png)', Sanitizer::css('a{background:url(assets/uploads/a.png)}', ['assets/']));
     assert_not_contains('evil', Sanitizer::css('a{background:url(https://evil.example/x.png)}', ['assets/']));
+});
+
+test('Sanitizer serializes ignored fragment tokens and cleans document root attributes', function (): void {
+    foreach (['<img src=x onerror=alert(1)//', '<body onload=alert(1)>', '<html onmouseover=alert(1)>'] as $input) {
+        assert_not_contains('onerror', Sanitizer::html($input));
+        assert_not_contains('onload', Sanitizer::html($input));
+        assert_not_contains('onmouseover', Sanitizer::html($input));
+    }
+    $out = Sanitizer::document('<!doctype html><html onmouseover="alert(1)"><head><title>Test</title></head><body><p>Kept</p></body></html>');
+    assert_not_contains('onmouseover', $out);
+    assert_contains('<p>Kept</p>', $out);
 });

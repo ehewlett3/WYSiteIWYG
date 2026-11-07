@@ -25,8 +25,9 @@ namespace WYSiteIWYG;
  * attributes, raw-text elements, foreign content, comments). So output is always
  * re-serialized from the cleaned tree, the contexts where the parsers disagree are
  * removed, and a second pass must find nothing left to remove. On PHP 8.4+ the
- * lexbor HTML5 parser builds the same tree as browsers, and clean input is
- * returned byte-for-byte.
+ * lexbor HTML5 parser builds the same tree as browsers. All backends serialize
+ * the cleaned tree: fragment parsing can ignore malformed tags and document
+ * wrappers without reporting any removed nodes.
  */
 final class Sanitizer
 {
@@ -193,12 +194,6 @@ final class Sanitizer
             self::$lastFindings[] = 'markup browsers read differently';
         }
 
-        // PHP 8.4+: the parser is the browser's, so clean input can be returned
-        // byte-for-byte (no reformatting of markup nobody touched).
-        if ($removed === 0 && self::backend() === 'lexbor' && !str_contains($html, '<?')) {
-            return $html;
-        }
-
         for ($i = 0; $i < 3; $i++) {
             [$next, $removedAgain] = $pass($out);
             if ($removedAgain === 0) {
@@ -282,6 +277,7 @@ final class Sanitizer
             if ($root === null) {
                 return ['', self::$removed];
             }
+            self::cleanAttributes($root, self::tagOf($root));
             self::clean($root, 'document', true, null);
             $out = $doc->saveHtml($root);
             return [($doctype !== '' ? $doctype . "\n" : '') . self::finish((string) $out), self::$removed];
@@ -293,6 +289,7 @@ final class Sanitizer
             return ['', self::$removed];
         }
 
+        self::cleanAttributes($root, self::tagOf($root));
         self::clean($root, 'document', true, null);
         $out = $dom->saveHTML($root);
         return [($doctype !== '' ? $doctype . "\n" : '') . self::finish((string) $out), self::$removed];

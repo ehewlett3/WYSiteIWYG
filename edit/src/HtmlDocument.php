@@ -108,6 +108,18 @@ final class HtmlDocument
         }
     }
 
+    /** DOMNode::contains() is only available from PHP 8.3 onward. */
+    public static function contains(\DOMNode $ancestor, \DOMNode $node): bool
+    {
+        for ($current = $node; $current !== null; $current = $current->parentNode) {
+            if ($ancestor->isSameNode($current)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
     /** Serialize a document or node the way it was parsed. */
     public static function serialize(\DOMNode $node): string
     {

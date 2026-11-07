@@ -43,7 +43,7 @@ WYSiteIWYG is a PHP-powered static site editor that lives entirely inside the si
 
 **Security**
 - First-run install requires a setup token from the server's filesystem.
-- A server-side sanitizer removes scripts, event handlers and `javascript:` URLs from everything saved or imported; admins can mark specific blocks as raw HTML. It is tested against parser-differential (mXSS) payloads in a real browser. On PHP 8.4 it uses the HTML5 parser browsers use; on 8.2–8.3 it re-serializes everything it keeps. **Manager → Security re-scan** cleans content saved earlier.
+- A server-side sanitizer removes scripts, event handlers and `javascript:` URLs from everything saved or imported; admins can mark specific blocks as raw HTML. It is tested against parser-differential (mXSS) payloads in a real browser. On PHP 8.4 it uses the HTML5 parser browsers use; on 8.2–8.3 it uses a compatibility parser. Every version serializes the cleaned tree before saving. **Manager → Security re-scan** cleans content saved earlier.
 - Public pages carry a hash-based **Content-Security-Policy** (Settings), so script that slips past the sanitizer, inline event handlers included, doesn't run.
 - Imported SVG and XML files are made inert; frames may only show pages or PDFs from this site.
 - The editor can run on its own origin (`WYSITE_EDITOR_ORIGIN`, see DEPLOYMENT.md).

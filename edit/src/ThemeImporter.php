@@ -396,7 +396,7 @@ final class ThemeImporter
     private function inside(\DOMElement $element, array $containers): bool
     {
         foreach ($containers as $container) {
-            if ($container->isSameNode($element) || $container->contains($element)) {
+            if ($container->isSameNode($element) || HtmlDocument::contains($container, $element)) {
                 return true;
             }
         }

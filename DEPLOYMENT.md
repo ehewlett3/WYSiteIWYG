@@ -4,7 +4,7 @@ WYSiteIWYG is one folder, `/edit/`. Put it in your site's web root, open `/edit/
 
 ## 1. Check the server
 
-- PHP 8.2 or newer with `ext-dom`. PHP 8.4 is recommended: its HTML5 parser lets the sanitizer keep untouched markup byte-for-byte.
+- PHP 8.2 or newer with `ext-dom`. PHP 8.4 is recommended for its browser-compatible HTML5 parser. Saved content is serialized from the sanitized tree on every supported version.
 - Recommended: `ext-curl`, `ext-openssl`, `ext-fileinfo`, `ext-zip`, and `ext-mbstring`.
 - The web server's PHP user must be able to write to the web root, `/assets/`, and `/edit/storage/`, `/edit/templates/`, and `/edit/themes/`.
 

@@ -5,6 +5,7 @@ use WYSiteIWYG\Sanitizer;
 use function WYSiteIWYG\Tests\assert_contains;
 use function WYSiteIWYG\Tests\assert_not_contains;
 use function WYSiteIWYG\Tests\assert_same;
+use function WYSiteIWYG\Tests\assert_true;
 use function WYSiteIWYG\Tests\test;
 
 test('SEC-4: active content is removed', function (): void {
@@ -52,7 +53,7 @@ test('SEC-4: safe content survives', function (): void {
     assert_contains('src="assets/uploads/x.png"', $out);
     assert_contains('srcset="assets/a.png 1x, assets/b.png 2x"', $out);
     assert_contains('data:image/png;base64', $out);
-    assert_contains('<iframe src="https://www.youtube.com/embed/abc" allowfullscreen></iframe>', $out);
+    assert_contains('<iframe src="https://www.youtube.com/embed/abc" allowfullscreen', $out);
     assert_contains('<figcaption>Cap</figcaption>', $out);
     assert_contains('<audio controls', $out);
     assert_contains('<dd>d</dd>', $out);
@@ -66,9 +67,10 @@ test('SEC-4: styling and structure round-trip unchanged', function (): void {
         . '<iframe src="https://maps.example.org/embed?q=1" width="600" height="450" style="border:0"></iframe>'
         . '<object data="assets/docs/menu.pdf" type="application/pdf"></object>'
         . '<form action="https://forms.example.com/submit" method="post"><input name="email" type="email"><button>Go</button></form>'
-        . '<!--[if lt IE 9]><p>old</p><![endif]-->'
         . '<p>Hi <span class="x" data-note="1">there</span></p></div>';
     assert_same($html, Sanitizer::html($html));
+    // Comments never survive in fragments (conditional comments included).
+    assert_same($html, Sanitizer::html(str_replace('<p>Hi', '<!--[if lt IE 9]><p>old</p><![endif]--><p>Hi', $html)));
 });
 
 test('SEC-4: document mode keeps head assets, markers and tokens', function (): void {
@@ -85,9 +87,91 @@ test('SEC-4: document mode keeps head assets, markers and tokens', function (): 
     assert_not_contains('onload', $out);
 });
 
-test('SEC-4: safe input is returned byte-for-byte (no libxml reformatting)', function (): void {
+test('SEC-1: clean input keeps its meaning on both sanitizer backends', function (): void {
     $html = "<figure class=\"wp-block-embed\">\n  <iframe allowfullscreen src=\"https://www.youtube.com/embed/x\"></iframe>\n</figure>\n<svg viewBox=\"0 0 10 10\"><circle r=\"1\"/></svg>\n<p>caf&eacute; &nbsp; <br/></p>";
-    assert_same($html, Sanitizer::html($html));
     $doc = "<!DOCTYPE html>\n<html lang=\"en\"><head><title>{{TITLE}}</title></head><body class=\"{{BODY_CLASS}}\">{{MAIN_MENU}}</body></html>\n";
-    assert_same($doc, Sanitizer::document($doc));
+    $out = Sanitizer::html($html);
+    assert_contains('<iframe allowfullscreen', $out);
+    assert_contains('src="https://www.youtube.com/embed/x"></iframe>', $out);
+    assert_contains('<circle r="1"', $out);
+    assert_contains('café', $out);
+    $outDoc = Sanitizer::document($doc);
+    assert_contains('<title>{{TITLE}}</title>', $outDoc);
+    assert_contains('class="{{BODY_CLASS}}"', $outDoc);
+    assert_contains('{{MAIN_MENU}}', $outDoc);
+});
+
+test('SEC-1: parser-differential (mXSS) vectors leave nothing executable after a second parse', function (): void {
+    $vectors = array_filter(explode("\n", (string) file_get_contents(__DIR__ . '/fixtures/mxss-vectors.txt')), static fn(string $line): bool => $line !== '');
+    assert_true(count($vectors) >= 40, 'vector corpus present');
+    foreach ($vectors as $vector) {
+        $out = Sanitizer::html($vector);
+        // What a browser would see: re-parse the output and inspect every element.
+        $dom = new DOMDocument();
+        libxml_use_internal_errors(true);
+        $dom->loadHTML('<?xml encoding="UTF-8"><body>' . $out . '</body>');
+        libxml_clear_errors();
+        foreach ((new DOMXPath($dom))->query('//*') as $element) {
+            assert_true(strtolower($element->nodeName) !== 'script', 'script survived: ' . $vector);
+            foreach ($element->attributes as $attribute) {
+                assert_true(!str_starts_with(strtolower($attribute->nodeName), 'on'), 'handler survived: ' . $vector . ' => ' . $out);
+            }
+        }
+        assert_not_contains('javascript:', strtolower(html_entity_decode($out)), $vector);
+        foreach (['<noscript', '<noembed', '<noframes', '<xmp', '<plaintext', '<template', '<!--', '<foreignobject', '<annotation-xml', '<mglyph'] as $needle) {
+            assert_not_contains($needle, strtolower($out), $vector);
+        }
+        // Re-sanitizing the output is a no-op (the output is stable).
+        assert_same($out, Sanitizer::html($out), 'unstable: ' . $vector);
+    }
+});
+
+test('SEC-2b: frames pointing back at the site may only show pages or PDFs', function (): void {
+    Sanitizer::setSiteHosts(['example.com']);
+    try {
+        assert_contains('<iframe src="about/"></iframe>', Sanitizer::html('<iframe src="about/"></iframe>'));
+        assert_contains('<iframe src="/blog/post.html"></iframe>', Sanitizer::html('<iframe src="/blog/post.html"></iframe>'));
+        assert_same('', Sanitizer::html('<iframe src="assets/imported/x/evil.svg"></iframe>'));
+        assert_same('', Sanitizer::html('<iframe src="https://example.com/feed/index.xml"></iframe>'));
+        assert_same('', Sanitizer::html('<embed src="assets/x.svg">'));
+        assert_same('', Sanitizer::html('<object data="//example.com/a.xml"></object>'));
+        assert_contains('menu.pdf', Sanitizer::html('<object data="assets/docs/menu.pdf" type="application/pdf"></object>'));
+        assert_contains('evil.example', Sanitizer::html('<iframe src="https://evil.example/x.svg"></iframe>'));
+    } finally {
+        Sanitizer::setSiteHosts([]);
+    }
+});
+
+test('SEC-1: documents keep only WYSITE marker comments', function (): void {
+    $doc = '<!doctype html><html><head><!-- WYSITE:META title="x" --></head><body><!-- note --><!-- WYSITE:BEGIN name="a" type="page" --><p>x</p><!-- WYSITE:END name="a" --><!-- WYSITE:BEGIN <img src=x onerror=alert(1)> --></body></html>';
+    $out = Sanitizer::document($doc);
+    assert_contains('<!-- WYSITE:META title="x" -->', $out);
+    assert_contains('<!-- WYSITE:BEGIN name="a" type="page" -->', $out);
+    assert_not_contains('note', $out);
+    assert_not_contains('onerror', $out);
+});
+
+test('SEC-6: CSS sanitizer resists nesting and escapes', function (): void {
+    foreach (['</sty</stylele>', '\\3c /style>', 'a{background:url(java\\script:alert(1))}', '@im\\port url(https://evil.example/x.css);', 'x{behavior:url(a.htc)}', '<!--', '</scr<scriptipt'] as $css) {
+        $out = strtolower(Sanitizer::css($css));
+        foreach (['</style', '<script', 'javascript:', '@import', 'behavior:', '<!--'] as $needle) {
+            assert_not_contains($needle, $out, $css);
+        }
+    }
+    $ok = Sanitizer::css('.card{background:url(data:image/png;base64,AAA);font-family:x} @import url(https://fonts.googleapis.com/css2?family=A);', ['assets/']);
+    assert_contains('data:image/png', $ok);
+    assert_contains('@import url(https://fonts.googleapis.com/', $ok);
+    assert_contains('url(assets/uploads/a.png)', Sanitizer::css('a{background:url(assets/uploads/a.png)}', ['assets/']));
+    assert_not_contains('evil', Sanitizer::css('a{background:url(https://evil.example/x.png)}', ['assets/']));
+});
+
+test('Sanitizer serializes ignored fragment tokens and cleans document root attributes', function (): void {
+    foreach (['<img src=x onerror=alert(1)//', '<body onload=alert(1)>', '<html onmouseover=alert(1)>'] as $input) {
+        assert_not_contains('onerror', Sanitizer::html($input));
+        assert_not_contains('onload', Sanitizer::html($input));
+        assert_not_contains('onmouseover', Sanitizer::html($input));
+    }
+    $out = Sanitizer::document('<!doctype html><html onmouseover="alert(1)"><head><title>Test</title></head><body><p>Kept</p></body></html>');
+    assert_not_contains('onmouseover', $out);
+    assert_contains('<p>Kept</p>', $out);
 });

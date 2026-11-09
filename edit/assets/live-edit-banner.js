@@ -55,7 +55,8 @@ if (!previewContext && hinted) {
   };
 
   fetch(`${appUrl}/index.php?action=session-status&path=${encodeURIComponent(window.location.pathname)}`, {
-    credentials: "same-origin",
+    // A separate editor origin (SEC-3c) needs the session cookie sent cross-origin.
+    credentials: /^https?:\/\//.test(appUrl) && new URL(appUrl).origin !== location.origin ? "include" : "same-origin",
     headers: {
       Accept: "application/json",
     },

@@ -9,36 +9,51 @@ WYSiteIWYG is a PHP-powered static site editor that lives entirely inside the si
 - Preserves existing markup and styling. Blocks you don't touch are saved back byte-for-byte. Every attribute (`class`, `style`, `data-*`, `width`/`srcset`, `target`/`rel`, …) survives. Elements the visual editor can't model (iframes, video/audio, forms, `<details>`, SVG, custom elements) are kept verbatim as read-only "embedded content", editable in HTML mode. Before a save would drop anything, the editor asks first.
 - Selector edits splice only the edited element's bytes into the file, so doctypes, template tokens and HTML5 markup elsewhere are never rewritten.
 - Unsaved-changes guard, Ctrl/Cmd+S to save, Esc to cancel, and a link picker that lists the site's pages.
-- Refuses a save if someone else changed the page since you opened it.
+- Refuses a save if someone else changed the page since you opened it, and shows who else is editing a page.
+- Edits **in place**: the editor works on the element itself, so a card keeps its look while you type.
+- **Arrange** mode: pick any section (a card, column, paragraph, list) and duplicate, move, delete, copy or paste it. Ids stay unique, and a section pasted somewhere else, even on another page, can **keep its original look**: the CSS rules that styled it are re-scoped to the copy (media queries included) and saved to `/assets/wysite-components.css`.
+- **Saved sections**: save a section and insert it anywhere; the built-in themes ship starter sections.
+- Inside the editor: select the surrounding block, duplicate and move blocks (Ctrl/Cmd+D, Alt+Shift+↑/↓). Press `?` in the preview for every shortcut.
+- Preview at phone, tablet and desktop widths.
 
 **Pages and blog**
 - Creates pages and posts (optionally as private **drafts**, optionally added to the menu). Drafts are published now or on a scheduled date. Pages can be moved (the old address redirects), deleted, or unpublished.
 - Explicit page types (Home / Page / Blog post). Hashtags put posts on `/blog/` and on per-tag landing pages, paginated (`/blog/page/2/`).
 - RSS feeds (`/blog/feed.xml`, `/<tag>/feed.xml`), `sitemap.xml`, a default `robots.txt`, and SEO/Open Graph metadata on every page.
-- Revision history for every page (view/restore in Page details) and a full backup before every bulk operation (Manager → Backups).
+- Revision history for every page (view, compare with the current version, restore in Page details) and a full backup before every bulk operation (Manager → Backups); backups include custom themes.
+- Bulk actions on the page list, site-wide **search & replace** (text, alt text, links), a **media library** (where each file is used, unused files), and an **activity log** of who changed what.
 
 **Site, navigation, themes**
 - **Site settings**: site name, tagline, language, logo, favicon, footer, public URL, URL style, post permalinks. These survive theme changes.
 - One shared menu, with the current page's link marked `aria-current="page"`.
 - Theme preview (any page) and apply. Per-theme colour/font **customization**, an optional **Home** template, and blog templates synthesized from a theme's page template when it has none. A theme's `assets/` folder is published to `/assets/theme/<id>/`.
-- Builds a theme from imported pages by tagging their menu/content regions (optionally AI-assisted with your own API key).
+- Builds a theme from imported pages by tagging their menu/content regions (optionally AI-assisted with your own API key). Themes made this way are **self-contained**: stylesheets, fonts and images are copied into the theme (`{{THEME_ASSET_BASE}}`), never loaded from the source site.
+- **Import map**: compares every imported page to find the header, menu, footer and content automatically, groups pages by layout, shows how many pages each region selector matches and which pages need attention, lets you correct a selector, then creates a theme from the site and converts every page in one step. AI (when configured) only reviews regions the comparison was unsure about.
+- Themes can be exported and installed as zip files.
 - Optionally designs a whole new theme with AI from a brief, sample sites, and screenshots ("make it look like this"). It uses your own Anthropic or OpenAI-compatible API key, and you choose a model per task: a fast one for region detection, a capable one for theme design.
 
 **Migration from WordPress**
 - **Import a WordPress export** (Tools → Export → All content): posts, pages, dates, tags, authors, excerpts, drafts and permalinks, with media mirrored locally.
 - Or crawl a live site. The crawl runs in resumable batches and removes source scripts by default. It mirrors assets, detects posts (date, tags, body) when importing, keeps `/feed/` working, redirects old category/tag archives to tag pages, and redirects `?p=123`-style links.
-- A **Site report** lists broken links, missing assets, forms, search/comment forms and embeds, with one-click fixes.
+- **One file per resource**: www and apex hosts, cache-busting and tracking query strings, image CDN copies and redirects all resolve to the same file; a persistent, content-hashed index means re-runs download nothing twice and different files never overwrite each other. Pages that name another URL as canonical become redirects. **Manager → Find duplicate imported files** cleans up older imports (undoable).
+- Crawled pages are **staged** privately until you review them in the Import map or publish them.
+- Imported content keeps its own navs and headings, doesn't duplicate the page title, and can be cleaned of page-builder wrappers; `/assets/wysite-content.css` styles common CMS markup under any theme.
+- A **Site report** lists broken links, missing assets, forms, search/comment forms, embeds and accessibility problems, with one-click fixes.
+- A command line (`php edit/cli.php`) for long imports, scheduled publishing from cron, re-scans and clean-ups.
 
 **Security**
 - First-run install requires a setup token from the server's filesystem.
-- A server-side sanitizer removes scripts, event handlers and `javascript:` URLs from everything saved or imported; admins can mark specific blocks as raw HTML.
+- A server-side sanitizer removes scripts, event handlers and `javascript:` URLs from everything saved or imported; admins can mark specific blocks as raw HTML. It is tested against parser-differential (mXSS) payloads in a real browser. On PHP 8.4 it uses the HTML5 parser browsers use; on 8.2–8.3 it uses a compatibility parser. Every version serializes the cleaned tree before saving. **Manager → Security re-scan** cleans content saved earlier.
+- Public pages carry a hash-based **Content-Security-Policy** (Settings), so script that slips past the sanitizer, inline event handlers included, doesn't run.
+- Imported SVG and XML files are made inert; frames may only show pages or PDFs from this site.
+- The editor can run on its own origin (`WYSITE_EDITOR_ORIGIN`, see DEPLOYMENT.md).
 - Hardened sessions, throttled sign-in, re-authentication for account changes, a strict CSP, SSRF protection with DNS pinning on every outbound fetch, `0600` storage files, and an `.htaccess` that stops `/assets/` from ever executing PHP.
 
 ## Getting started
 
 See **[DEPLOYMENT.md](DEPLOYMENT.md)** for a step-by-step guide to dropping `/edit/` into a new or existing site.
 
-1. Copy `/edit/` into your site's web root (PHP 8.1+ with `ext-dom`; `ext-curl`, `ext-fileinfo`, `ext-zip` recommended).
+1. Copy `/edit/` into your site's web root (PHP 8.2+ with `ext-dom`, PHP 8.4 recommended; `ext-curl`, `ext-fileinfo`, `ext-zip` recommended).
 2. Visit `/edit/`. The install page runs a **server check** and asks for a **setup token**. Open `edit/storage/install-token.local.php` on the server (SSH, SFTP or your host's file manager) and copy the token, or set the `WYSITE_INSTALL_TOKEN` environment variable instead.
 3. Create the first administrator. Tick "install the demo site" only on an empty site; existing pages are never overwritten.
 4. Visit **Settings** to set the site name and public URL, then **Theme** to pick a look.
@@ -55,6 +70,7 @@ See **[DEPLOYMENT.md](DEPLOYMENT.md)** for a step-by-step guide to dropping `/ed
   location ~ ^/(\.git|doc)(/|$)                      { return 404; }
   location ~ ^/edit/(storage|tests|views)(/|$)        { return 404; }
   location ~ ^/assets/.*\.(php\d?|phtml|phar|phps)$  { return 403; }
+  location ~* \.(svg|xml)$ { add_header Content-Security-Policy "script-src 'none'; object-src 'none'"; }
   location ~ ^/edit/.*\.php$ { include fastcgi_params; fastcgi_param SCRIPT_FILENAME $document_root$fastcgi_script_name; fastcgi_pass php; }
   location = /edit/ { index index.php; }
   location /feed/ { index index.xml; }
@@ -85,6 +101,8 @@ Posts also carry `date`, and optionally `author` and `image`. Drafts carry `stat
 
 Scalar tokens are HTML-escaped: `{{TITLE}}`, `{{EXCERPT}}`, `{{DATE}}`, `{{DATE_HUMAN}}`, `{{AUTHOR}}`, `{{HASHTAGS}}`, `{{TAG}}`, `{{TAG_LABEL}}`, `{{BODY_CLASS}}`, `{{SITE_NAME}}`, `{{SITE_TAGLINE}}`, `{{SITE_LANG}}`.
 
+`{{THEME_ASSET_BASE}}` is the base URL of a theme's own `assets/` folder (used by imported themes).
+
 HTML tokens: `{{MAIN_MENU}}`, `{{PAGE_CONTENT_BLOCK}}`/`{{PAGE_CONTENT_BLOCKS}}`, `{{BLOG_POST_CONTENT}}`, `{{BLOG_INDEX_CONTENT}}`, `{{BLOG_ITEMS}}`, `{{PAGINATION}}`, `{{TAG_LINKS}}`, `{{SITE_LOGO}}`, `{{FOOTER}}`, `{{HEAD_META}}` (injected before `</head>` when a theme omits it), and `{{WYSITE_PUBLIC_BRIDGE}}`.
 
 ### Themes
@@ -94,6 +112,8 @@ A theme is a folder in `edit/themes/<id>/` with `theme.json`, `site.css`, and `p
 ```json
 { "name": "My Theme", "variables": [ { "name": "site-accent", "label": "Accent colour", "type": "color", "default": "#2d624a" } ] }
 ```
+
+Themes built from imported sites also record `regions` (CSS selectors of the menu and content per page kind), `content_scope` and `renders_title`. A template element marked `data-wysite-optional` is hidden while the editable blocks inside it are empty. Ready-made sections live in `components/*.html`, each starting with `<!-- WYSITE:COMPONENT name="…" -->`.
 
 Legacy `theme.php` manifests are still read, as plain data; they are never executed.
 
@@ -110,7 +130,10 @@ Legacy `theme.php` manifests are still read, as plain data; they are never execu
 /edit/assets/                    Editor, dashboard JS/CSS, vendored ProseMirror
 /edit/templates/                 Active templates (published from the applied theme)
 /edit/themes/                    Theme packages
-/edit/storage/                   Per-install state (git-ignored): users, settings, drafts, revisions, backups
+/edit/src/vendor/                Bundled third-party PHP (HTML5 parser; see manifest.json)
+/edit/cli.php                    Command line (imports, publish-due, rescan, dedupe, rebuild)
+/edit/storage/                   Per-install state (git-ignored): users, settings, drafts, revisions, backups,
+                                 import staging, the asset index, saved sections, trash, audit log
 /edit/tests/                     Test suites
 ```
 
@@ -119,9 +142,12 @@ Legacy `theme.php` manifests are still read, as plain data; they are never execu
 ```sh
 php edit/tests/run.php                   # PHP suite (uses throwaway site roots)
 cd edit/tests/js && npm install --no-save jsdom@24 && node run-node.mjs   # editor round-trip
+cd edit/tests/browser && npm install --no-save playwright@1 && npx playwright install chromium && node run.mjs   # Chromium checks
 ```
 
-CI runs both, plus `php -l` on every file, on PHP 8.1 and 8.3.
+The browser checks run every sanitizer vector in Chromium and cover DOM-path parity with the server, duplicating and pasting sections with their look, in-place editing, the editor's block commands and the public CSP.
+
+CI runs all three, plus `php -l` on every file, on PHP 8.2, 8.3 and 8.4.
 
 ## Runtime notes
 

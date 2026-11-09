@@ -95,6 +95,19 @@ use function WYSiteIWYG\h;
             <label><span>External search URL <em>(replaces WordPress search forms; e.g. https://duckduckgo.com/)</em></span><input type="url" name="search_url" value="<?= h((string) $current['search_url']) ?>"></label>
             <label><span>Form endpoint <em>(where migrated contact forms should post)</em></span><input type="url" name="form_endpoint" value="<?= h((string) $current['form_endpoint']) ?>"></label>
           </div>
+          <label><span>Ignore these query parameters when importing <em>(comma-separated; cache busters such as <code>ver</code> and tracking such as <code>utm_*</code> are always ignored)</em></span><input type="text" name="import_ignore_params" class="wysite-code-field" value="<?= h((string) $current['import_ignore_params']) ?>" placeholder="sessionid, lang"></label>
+          <label class="wysite-checkbox">
+            <input type="checkbox" name="stage_imports" value="1"<?= $current['stage_imports'] ? ' checked' : '' ?>>
+            <span>Keep crawled pages in a private staging area until you publish them (Manager → Import map)</span>
+          </label>
+          <label class="wysite-checkbox">
+            <input type="checkbox" name="public_csp" value="1"<?= $current['public_csp'] ? ' checked' : '' ?>>
+            <span>Protect public pages with a Content-Security-Policy (blocks injected scripts and inline event handlers; scripts in templates and raw-HTML blocks keep working)</span>
+          </label>
+          <label class="wysite-checkbox">
+            <input type="checkbox" name="import_prefer_originals" value="1"<?= $current['import_prefer_originals'] ? ' checked' : '' ?>>
+            <span>Download original images instead of resized copies from image CDNs (i0.wp.com and similar), so each image is stored once</span>
+          </label>
           <label class="wysite-checkbox">
             <input type="checkbox" name="keep_imported_scripts" value="1"<?= $current['keep_imported_scripts'] ? ' checked' : '' ?>>
             <span>Keep the original site's scripts when crawling an external site (off: scripts are removed, since they run with the editor's privileges)</span>

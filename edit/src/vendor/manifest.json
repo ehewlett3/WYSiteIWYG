@@ -1,0 +1,10 @@
+{
+  "masterminds/html5": {
+    "version": "2.9.0",
+    "commit": "f5ac2c0b0a2eefca70b2ce32a5809992227e75a6",
+    "source": "https://github.com/Masterminds/html5-php",
+    "license": "MIT",
+    "path": "masterminds-html5/src",
+    "purpose": "HTML5 parsing for DOM paths, region selectors and the site structure analyzer (the browser and the server must agree on the tree)."
+  }
+}

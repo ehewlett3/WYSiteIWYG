@@ -169,10 +169,23 @@ use function WYSiteIWYG\h;
             </select>
           </div>
         </div>
+        <form method="post" action="<?= h($appUrl) ?>/index.php?action=bulk-pages" id="bulk-pages" class="wysite-inline-form wysite-bulk-form" data-wysite-confirm="Apply this action to the selected pages? A backup is taken first.">
+          <input type="hidden" name="csrf_token" value="<?= h(Csrf::token()) ?>">
+          <label><span class="wysite-muted">With selected pages:</span>
+            <select name="bulk" class="wysite-theme-select" aria-label="Bulk action">
+              <option value="rebuild">Rebuild with the current template</option>
+              <option value="exclude">Exclude from template rebuilds</option>
+              <option value="include">Include in template rebuilds</option>
+              <option value="delete">Delete</option>
+            </select>
+          </label>
+          <button class="wysite-button wysite-button--ghost" type="submit">Apply</button>
+        </form>
         <div class="wysite-table-wrap">
           <table class="wysite-table" id="managed-pages">
             <thead>
               <tr>
+                <th><span class="wysite-visually-hidden">Select</span></th>
                 <th>Page</th>
                 <th>Type</th>
                 <th>Hashtags</th>
@@ -184,6 +197,7 @@ use function WYSiteIWYG\h;
               <?php foreach ($pages as $page): ?>
                 <?php $isGenerated = ($page['generated'] ?? '') === 'tag-index'; ?>
                 <tr data-kind="<?= h($page['kind']) ?>" data-search="<?= h(strtolower($page['title'] . ' ' . $page['path'] . ' ' . $page['hashtags'])) ?>">
+                  <td><?php if (!$isGenerated): ?><input type="checkbox" name="paths[]" value="<?= h($page['path']) ?>" form="bulk-pages" aria-label="Select <?= h($page['title']) ?>"><?php endif; ?></td>
                   <td>
                     <strong><?= h($page['title']) ?></strong>
                     <div class="wysite-muted"><?= h($page['path']) ?><?= !empty($page['exclude_template']) ? ' · excluded from template rebuilds' : '' ?></div>

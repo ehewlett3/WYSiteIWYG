@@ -24,9 +24,17 @@ final class SystemCheck
     {
         $rows = [];
 
-        $rows[] = version_compare(PHP_VERSION, '8.1.0', '>=')
+        $rows[] = version_compare(PHP_VERSION, '8.2.0', '>=')
             ? $this->row('pass', 'PHP version', PHP_VERSION)
-            : $this->row('fail', 'PHP version', PHP_VERSION . ' — PHP 8.1 or newer is required.');
+            : $this->row(version_compare(PHP_VERSION, '8.1.0', '>=') ? 'warn' : 'fail', 'PHP version', PHP_VERSION . ' — PHP 8.2 or newer is required (8.1 no longer gets security fixes).');
+
+        $rows[] = class_exists(\Dom\HTMLDocument::class)
+            ? $this->row('pass', 'HTML sanitizer', 'HTML5 parser (PHP 8.4+): saved content is serialized from the cleaned browser-compatible tree.')
+            : $this->row('warn', 'HTML sanitizer', 'Compatibility mode: saved blocks are sanitized and serialized. PHP 8.4 provides the browser-compatible HTML5 parser.');
+
+        $rows[] = class_exists(\Masterminds\HTML5::class)
+            ? $this->row('pass', 'HTML5 parser', 'Bundled parser loaded (region detection and section paths match the browser).')
+            : $this->row('warn', 'HTML5 parser', 'edit/src/vendor/ is missing: region detection falls back to the HTML4 parser. Re-upload the edit/ folder.');
 
         $extensions = [
             'dom' => ['fail', 'required for page editing, imports, and the sanitizer'],

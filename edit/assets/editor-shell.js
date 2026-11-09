@@ -1,4 +1,5 @@
 import { DropInWysiwyg } from "./dropin-wysiwyg.js";
+import { setupSectionTools } from "./section-tools.js";
 
 const context = window.WYSITE_PREVIEW_CONTEXT || null;
 
@@ -14,6 +15,147 @@ if (context) {
 
   setupBlockBadges();
   setupSelectorMode();
+  setupLogout();
+  setupPreviewWidths();
+  setupShortcutHelp();
+  setupEditLock();
+  setupSectionTools({
+    context,
+    toast,
+    saveBlock,
+    postJson,
+    fetchJson,
+    isEditorOpen: () => Boolean(currentInstance || opening),
+    openEditor: (target) => openSelectedElementEditor(target).catch((error) => toast(error.message || "The editor could not be opened.", true)),
+  });
+
+  // UX-7: see the page at phone, tablet and desktop widths.
+  function setupPreviewWidths() {
+    const actions = document.querySelector(".wysite-admin-bar__actions");
+    if (!actions || new URLSearchParams(location.search).get("frame") === "1") return;
+    const select = document.createElement("select");
+    select.className = "wysite-admin-link wysite-preview-width";
+    select.setAttribute("aria-label", "Preview width");
+    [["", "Full width"], ["375", "Phone (375px)"], ["768", "Tablet (768px)"], ["1280", "Desktop (1280px)"]].forEach(([value, label]) => {
+      const option = document.createElement("option");
+      option.value = value;
+      option.textContent = label;
+      select.appendChild(option);
+    });
+    actions.prepend(select);
+    let overlay = null;
+    select.addEventListener("change", () => {
+      overlay?.remove();
+      overlay = null;
+      if (!select.value) return;
+      overlay = document.createElement("div");
+      overlay.className = "wysite-width-overlay";
+      const frame = document.createElement("iframe");
+      const url = new URL(location.href);
+      url.searchParams.set("frame", "1");
+      frame.src = url.toString();
+      frame.style.width = `${select.value}px`;
+      frame.title = `Page at ${select.value}px`;
+      const close = document.createElement("button");
+      close.type = "button";
+      close.textContent = "Close";
+      close.addEventListener("click", () => {
+        select.value = "";
+        overlay.remove();
+        overlay = null;
+      });
+      overlay.append(close, frame);
+      document.body.appendChild(overlay);
+    });
+  }
+
+  // UX-11: "?" shows the keyboard shortcuts.
+  function setupShortcutHelp() {
+    document.addEventListener("keydown", (event) => {
+      if (event.key !== "?" || currentInstance || event.target.closest?.("input, textarea, select, [contenteditable=true]")) return;
+      const existing = document.querySelector(".wysite-shortcuts");
+      if (existing) {
+        existing.remove();
+        return;
+      }
+      const panel = document.createElement("div");
+      panel.className = "wysite-shortcuts";
+      panel.setAttribute("role", "dialog");
+      panel.setAttribute("aria-label", "Keyboard shortcuts");
+      const rows = [
+        ["?", "Show or hide this list"],
+        ["Ctrl/Cmd+S", "Save the open editor"],
+        ["Esc", "Cancel the open editor or selection"],
+        ["Ctrl/Cmd+D", "Duplicate the selected block or section"],
+        ["Alt+Shift+↑ / ↓", "Move the block up or down (in the editor)"],
+        ["Ctrl/Cmd+Alt+↑", "Select the surrounding block (in the editor)"],
+        ["Alt+↑ / Alt+↓", "Select the parent or first child (Arrange)"],
+        ["Tab / Shift+Tab", "Next or previous section (Arrange)"],
+        ["Ctrl/Cmd+C / V", "Copy / paste a section with its look (Arrange)"],
+        ["Delete, Ctrl/Cmd+Z", "Delete a section, undo (Arrange)"],
+      ];
+      panel.innerHTML = "<h2>Keyboard shortcuts</h2>";
+      const list = document.createElement("dl");
+      for (const [keys, what] of rows) {
+        const dt = document.createElement("dt");
+        dt.textContent = keys;
+        const dd = document.createElement("dd");
+        dd.textContent = what;
+        list.append(dt, dd);
+      }
+      panel.appendChild(list);
+      panel.addEventListener("click", () => panel.remove());
+      document.body.appendChild(panel);
+    });
+  }
+
+  // UX-10: tell others this page is being edited (renewed every minute).
+  function setupEditLock() {
+    const bar = document.querySelector(".wysite-admin-bar__meta");
+    if (context.lockHolder && bar) {
+      const note = document.createElement("span");
+      note.className = "wysite-lock-note";
+      note.textContent = `${context.lockHolder} is editing this page`;
+      bar.appendChild(note);
+    }
+    let timer = 0;
+    const lock = (release = false) => postJson(`${context.appUrl}/index.php?action=edit-lock`, { csrfToken: context.csrfToken, path: context.pagePath, release })
+      .then((data) => {
+        if (data.holder) toast(`${data.holder} is editing this page too. Saving will refuse to overwrite their changes.`, true);
+      })
+      .catch(() => {});
+    const observer = new MutationObserver(() => {
+      const open = Boolean(document.querySelector(".pm-dropin"));
+      if (open && !timer) {
+        lock();
+        timer = window.setInterval(() => lock(), 60000);
+      } else if (!open && timer) {
+        window.clearInterval(timer);
+        timer = 0;
+        lock(true);
+      }
+    });
+    observer.observe(document.body, { childList: true, subtree: true });
+  }
+
+  // The admin bar's Log out button carries no token in the markup; build the
+  // form only when it is used.
+  function setupLogout() {
+    document.querySelectorAll("[data-wysite-logout]").forEach((button) => {
+      button.addEventListener("click", () => {
+        const form = document.createElement("form");
+        form.method = "post";
+        form.action = `${context.appUrl}/index.php?action=logout`;
+        const input = document.createElement("input");
+        input.type = "hidden";
+        input.name = "csrf_token";
+        input.value = context.csrfToken;
+        form.appendChild(input);
+        document.body.appendChild(form);
+        form.submit();
+      });
+    });
+  }
 
   function setupBlockBadges() {
     document.querySelectorAll(".wysite-edit-button").forEach((button) => {
@@ -48,13 +190,19 @@ if (context) {
     opening = true;
     try {
       const frameAdapter = useFrameAdapter ? createFrameAdapter(slot, blockType) : null;
-      if (frameAdapter) {
+      // EDT-E: edit in place (real WYSIWYG) except the menu, whose editor needs
+      // room the header doesn't have. In place, the block's wrapper stays in the
+      // page and the editor works on its content element directly.
+      const inPlace = blockType !== "menu";
+      const mountTarget = inPlace && frameAdapter?.liveElement ? frameAdapter.liveElement : target;
+      if (frameAdapter && !inPlace) {
         slot.innerHTML = frameAdapter.initialHTML;
       }
 
-      currentInstance = await DropInWysiwyg.mount(target, {
-        initialHTML: frameAdapter?.initialHTML,
-        restoreHTML: frameAdapter?.restoreHTML ?? target.innerHTML,
+      currentInstance = await DropInWysiwyg.mount(mountTarget, {
+        inPlace,
+        initialHTML: inPlace ? undefined : frameAdapter?.initialHTML,
+        restoreHTML: inPlace ? mountTarget.innerHTML : (frameAdapter?.restoreHTML ?? target.innerHTML),
         rootClassName: blockType === "menu" ? "pm-dropin--menu" : "",
         rootStyle: blockType === "menu" ? getMenuEditorStyle(slot) : null,
         mountAfterTarget: blockType === "menu" ? getMenuMountAnchor(slot) : null,
@@ -65,7 +213,7 @@ if (context) {
         },
         onSave: async ({ html, target: savedTarget }) => {
           try {
-            if (frameAdapter) {
+            if (frameAdapter && !inPlace) {
               const wrappedHtml = frameAdapter.wrap(html);
               if (savedTarget) {
                 savedTarget.innerHTML = wrappedHtml;
@@ -129,6 +277,13 @@ if (context) {
       toast("Template sections are admin-only.", true);
       return;
     }
+    // THM-H: template elements carry their id in the preview; anything without
+    // one was produced by a token (footer, logo, menu) and is edited elsewhere.
+    const tid = target.closest("[data-wysite-tid]") === target ? target.dataset.wysiteTid : undefined;
+    if (scope === "template" && context.templateHash && tid === undefined) {
+      toast(target.closest(".site-footer, footer") ? "This part comes from Settings → Footer." : "This part is generated (site name, logo, menu or footer) and is edited in Settings or its own block.", true);
+      return;
+    }
     if (scope === "template" && !confirmTemplateEdit(target)) {
       return;
     }
@@ -136,6 +291,7 @@ if (context) {
     opening = true;
     try {
       currentInstance = await DropInWysiwyg.mount(target, {
+        inPlace: true,
         restoreHTML: target.innerHTML,
         uploadImage: uploadImageFile,
         linkSuggestions: loadPageIndex,
@@ -152,6 +308,8 @@ if (context) {
                 kind: context.pageKind || "page",
                 scope,
                 domPath,
+                tid,
+                templateHash: context.templateHash || "",
                 html,
                 baseHash: scope === "page" ? context.fileHash || "" : "",
               }
@@ -571,9 +729,13 @@ if (context) {
       ? outerChildren[0]
       : null;
 
+    const liveOuter = Array.from(slot.children).find((child) => child.matches(".content-block, .blog-card")) || null;
+    const liveInner = liveOuter && liveOuter.children.length === 1 && liveOuter.firstElementChild.matches(".content-stack, .post-body") ? liveOuter.firstElementChild : null;
+
     if (inner && inner.matches(".content-stack, .post-body")) {
       const innerTemplate = inner.cloneNode(false);
       return {
+        liveElement: liveInner || liveOuter,
         initialHTML: inner.innerHTML,
         restoreHTML: originalHtml,
         wrap(html) {
@@ -587,6 +749,7 @@ if (context) {
     }
 
     return {
+      liveElement: liveOuter,
       initialHTML: outer.innerHTML,
       restoreHTML: originalHtml,
       wrap(html) {

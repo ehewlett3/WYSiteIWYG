@@ -1,6 +1,7 @@
 // dropin-wysiwyg.js
 import * as pm from "./pm-bundle.js";
 import { buildSchema, createDocument, serializeDocument, schemaLoss } from "./html-fidelity.js";
+import { duplicateBlock, moveBlock, selectParentBlock } from "./block-commands.js";
 
 function buildUI({ onSave, onCancel }) {
   const root = document.createElement("div");
@@ -651,8 +652,31 @@ export const DropInWysiwyg = {
 
     const mountAfterTarget = opts.mountAfterTarget || el;
 
-    el.style.display = "none";
-    mountAfterTarget.insertAdjacentElement("afterend", ui.root);
+    // EDT-E: in place, ProseMirror edits the element itself, so every site CSS
+    // rule (the card's background, `.grid > .card h3`, ...) keeps applying while
+    // typing; the toolbar becomes a sticky bar above it.
+    const inPlace = Boolean(opts.inPlace);
+    const savedAttrs = inPlace ? Array.from(el.attributes, (attr) => [attr.name, attr.value]) : null;
+    if (inPlace) {
+      ui.root.classList.add("pm-dropin--inplace");
+      ui.editorHost.style.display = "none";
+      el.insertAdjacentElement("beforebegin", ui.root);
+    } else {
+      el.style.display = "none";
+      mountAfterTarget.insertAdjacentElement("afterend", ui.root);
+    }
+
+    // Put the element back exactly as it was (attributes PM added removed).
+    function restoreElement(html) {
+      try {
+        view.destroy();
+      } catch {}
+      if (inPlace) {
+        for (const attr of Array.from(el.attributes)) el.removeAttribute(attr.name);
+        for (const [name, value] of savedAttrs) el.setAttribute(name, value);
+      }
+      el.innerHTML = html;
+    }
 
     const plugins = [
       history(),
@@ -661,6 +685,11 @@ export const DropInWysiwyg = {
       richListKeymapPlugin(),
 
       keymap({
+        // EDT-B: whole-block operations (a card, a column, a paragraph).
+        "Mod-d": duplicateBlock,
+        "Alt-Shift-ArrowUp": moveBlock(-1),
+        "Alt-Shift-ArrowDown": moveBlock(1),
+        "Mod-Alt-ArrowUp": selectParentBlock,
         "Mod-z": undo,
         "Shift-Mod-z": redo,
         "Mod-y": redo,
@@ -730,7 +759,11 @@ export const DropInWysiwyg = {
       }
       sourceMode = nextMode;
       ui.sourceHost.classList.toggle("is-active", sourceMode);
-      ui.editorHost.style.display = sourceMode ? "none" : "";
+      if (inPlace) {
+        el.style.display = sourceMode ? "none" : "";
+      } else {
+        ui.editorHost.style.display = sourceMode ? "none" : "";
+      }
       (sourceMode ? ui.sourceEditor : view).focus();
       instance?.updateToolbar?.();
     }
@@ -750,6 +783,10 @@ export const DropInWysiwyg = {
         link: svg('<path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/>'),
         image: svg('<rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="9" cy="9" r="2"/><path d="m21 15-3.1-3.1a2 2 0 0 0-2.8 0L6 21"/>'),
         source: svg('<polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/><line x1="13" y1="4" x2="11" y2="20"/>'),
+        duplicate: svg('<rect x="9" y="9" width="12" height="12" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>'),
+        moveUp: svg('<polyline points="18 15 12 9 6 15"/>'),
+        moveDown: svg('<polyline points="6 9 12 15 18 9"/>'),
+        parent: svg('<rect x="3" y="3" width="18" height="18" rx="2"/><rect x="7" y="7" width="10" height="10" rx="1"/>'),
       };
 
       const registerControl = (control, allowWhenSource = false) => {
@@ -917,6 +954,12 @@ export const DropInWysiwyg = {
       ui.toolbar.appendChild(imgBtn);
       registerControl(imgBtn);
 
+      addSep();
+      add("parent", "Select the surrounding block (Ctrl/Cmd+Alt+↑)", () => selectParentBlock);
+      add("duplicate", "Duplicate block (Ctrl/Cmd+D)", () => duplicateBlock);
+      add("moveUp", "Move block up (Alt+Shift+↑)", () => moveBlock(-1));
+      add("moveDown", "Move block down (Alt+Shift+↓)", () => moveBlock(1));
+
       function updateToolbar() {
         controls.forEach(({ control, allowWhenSource }) => {
           control.disabled = sourceMode && !allowWhenSource;
@@ -945,7 +988,8 @@ export const DropInWysiwyg = {
       return updateToolbar;
     }
 
-    view = new EditorView(ui.editorHost, {
+    view = new EditorView(inPlace ? { mount: el } : ui.editorHost, {
+      attributes: inPlace ? { class: "wysite-inplace-editing" } : {},
       state,
       nodeViews: {
         raw_block: (node) => rawNodeView(node),
@@ -990,6 +1034,16 @@ export const DropInWysiwyg = {
           }
           html = result.html;
         }
+        if (inPlace) {
+          restoreElement(html);
+          try {
+            await opts.onSave?.({ html, target: el });
+          } finally {
+            instance.destroy();
+          }
+          el.style.display = "";
+          return true;
+        }
         el.innerHTML = html;
         await opts.onSave?.({ html, target: el });
         instance.destroy();
@@ -1001,7 +1055,11 @@ export const DropInWysiwyg = {
         if (confirmIfDirty && isDirty() && !window.confirm("Discard your unsaved changes to this section?")) {
           return false;
         }
-        el.innerHTML = originalHTML;
+        if (inPlace) {
+          restoreElement(originalHTML);
+        } else {
+          el.innerHTML = originalHTML;
+        }
         sourceMode = false;
         await opts.onCancel?.({ target: el });
         instance.destroy();

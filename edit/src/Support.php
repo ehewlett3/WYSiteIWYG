@@ -247,6 +247,97 @@ APACHE;
         return implode('/', $segments);
     }
 
+    /**
+     * SEC-2a: make a mirrored SVG inert. SVG documents run script when opened or
+     * framed from this origin, so scripts, foreignObject, embedded HTML, event
+     * handlers, unsafe links, href-rewriting animation and processing
+     * instructions (xml-stylesheet can load XSLT) are removed. Returns null when
+     * the file is not well-formed XML (the caller then stores it as text).
+     */
+    public static function sanitizeSvg(string $svg): ?string
+    {
+        $dom = self::loadXml($svg);
+        if ($dom === null || strtolower((string) $dom->documentElement?->localName) !== 'svg') {
+            return null;
+        }
+
+        self::stripActiveXml($dom, ['script', 'foreignobject', 'iframe', 'object', 'embed', 'html', 'body', 'handler', 'listener']);
+        return $dom->saveXML() ?: null;
+    }
+
+    /**
+     * SEC-2a: make an XML document (feed, sitemap) inert. With $requireFeedRoot,
+     * documents whose root is not a feed or sitemap return null so the caller can
+     * store them as text instead of a browser-renderable document.
+     */
+    public static function sanitizeXmlDocument(string $xml, bool $requireFeedRoot = true): ?string
+    {
+        $dom = self::loadXml($xml);
+        if ($dom === null) {
+            return null;
+        }
+
+        $root = strtolower((string) $dom->documentElement?->localName);
+        if ($requireFeedRoot && !in_array($root, ['rss', 'feed', 'rdf', 'urlset', 'sitemapindex', 'opml'], true)) {
+            return null;
+        }
+
+        self::stripActiveXml($dom, ['script', 'foreignobject', 'iframe', 'object', 'embed']);
+        return $dom->saveXML() ?: null;
+    }
+
+    private static function loadXml(string $xml): ?\DOMDocument
+    {
+        if (trim($xml) === '' || !class_exists(\DOMDocument::class) || preg_match('/<!ENTITY/i', $xml) === 1) {
+            return null;
+        }
+
+        $dom = new \DOMDocument();
+        $previous = libxml_use_internal_errors(true);
+        $ok = $dom->loadXML($xml, LIBXML_NONET);
+        libxml_clear_errors();
+        libxml_use_internal_errors($previous);
+
+        return $ok && $dom->documentElement !== null ? $dom : null;
+    }
+
+    /** @param string[] $dropLocalNames */
+    private static function stripActiveXml(\DOMDocument $dom, array $dropLocalNames): void
+    {
+        $xpath = new \DOMXPath($dom);
+        foreach (iterator_to_array($xpath->query('//processing-instruction()') ?: []) as $pi) {
+            $pi->parentNode?->removeChild($pi);
+        }
+
+        foreach (iterator_to_array($dom->getElementsByTagName('*')) as $element) {
+            if (!$element instanceof \DOMElement || $element->parentNode === null) {
+                continue;
+            }
+            $local = strtolower((string) $element->localName);
+            $isAnimation = in_array($local, ['set', 'animate'], true)
+                && in_array(strtolower((string) $element->getAttribute('attributeName')), ['href', 'xlink:href'], true);
+            if (in_array($local, $dropLocalNames, true) || $isAnimation) {
+                $element->parentNode->removeChild($element);
+                continue;
+            }
+
+            $remove = [];
+            foreach ($element->attributes as $attribute) {
+                $name = strtolower((string) $attribute->localName);
+                if (str_starts_with($name, 'on')) {
+                    $remove[] = $attribute;
+                    continue;
+                }
+                if (in_array($name, ['href', 'src', 'action', 'formaction', 'data'], true) && !Sanitizer::isSafeUrl((string) $attribute->value)) {
+                    $remove[] = $attribute;
+                }
+            }
+            foreach ($remove as $attribute) {
+                $element->removeAttributeNode($attribute);
+            }
+        }
+    }
+
     /** Create <root>/assets/.htaccess (PHP off, scripts blocked in SVG/HTML) if missing. */
     public static function ensureAssetsHtaccess(string $rootPath): void
     {
@@ -507,6 +598,7 @@ final class AuthManager
     private int $idleTimeout = 28800;
     private ?string $hintCookiePath = null;
     private bool $hintCookieSecure = false;
+    private string $hintCookieDomain = '';
 
     /**
      * Enable the editor hint cookie. It is deliberately readable by JavaScript and
@@ -514,8 +606,11 @@ final class AuthManager
      * /edit/ for the session status, so ordinary visitors never touch PHP or get a
      * session cookie.
      */
-    public function setHintCookie(string $path, bool $secure): void
+    public function setHintCookie(string $path, bool $secure, string $domain = ''): void
     {
+        // SEC-3c: with a separate editor origin, the hint must be readable on the
+        // public host too, so it can be scoped to the shared parent domain.
+        $this->hintCookieDomain = preg_match('/^\.?[a-z0-9.-]+$/i', $domain) === 1 ? $domain : '';
         $this->hintCookiePath = $path;
         $this->hintCookieSecure = $secure;
     }
@@ -529,6 +624,7 @@ final class AuthManager
         setcookie(self::HINT_COOKIE, $signedIn ? '1' : '', [
             'expires' => $signedIn ? 0 : time() - 42000,
             'path' => $this->hintCookiePath,
+            'domain' => $this->hintCookieDomain,
             'secure' => $this->hintCookieSecure,
             'httponly' => false,
             'samesite' => 'Lax',
@@ -1103,9 +1199,8 @@ function resolve_host_ips(string $host): array
 
 /**
  * Neutralize active content in an untrusted HTML document before it is rendered
- * in the app origin: remove <script> elements, strip on* event-handler attributes,
- * drop javascript: URLs, and remove iframe srcdoc. Used as defense-in-depth for the
- * template designer, alongside the strict preview CSP.
+ * in the app origin (template designer). Delegates to the shared document
+ * sanitizer, so the same parser-differential rules apply everywhere.
  */
 function strip_active_content(string $html): string
 {
@@ -1113,50 +1208,9 @@ function strip_active_content(string $html): string
         return $html;
     }
 
-    if (!class_exists(\DOMDocument::class)) {
-        return preg_replace('#<script\b[^>]*>.*?</script>#is', '', $html) ?? $html;
+    try {
+        return Sanitizer::document($html);
+    } catch (RuntimeException) {
+        return h(strip_tags($html));
     }
-
-    $dom = new \DOMDocument('1.0', 'UTF-8');
-    libxml_use_internal_errors(true);
-    $loaded = $dom->loadHTML('<?xml encoding="UTF-8">' . $html);
-    libxml_clear_errors();
-
-    if (!$loaded) {
-        return preg_replace('#<script\b[^>]*>.*?</script>#is', '', $html) ?? $html;
-    }
-
-    foreach (iterator_to_array($dom->getElementsByTagName('script')) as $script) {
-        $script->parentNode?->removeChild($script);
-    }
-
-    $urlAttrs = ['href', 'src', 'action', 'formaction', 'poster', 'data', 'background', 'xlink:href'];
-    $xpath = new \DOMXPath($dom);
-    foreach ($xpath->query('//*') as $element) {
-        if (!$element instanceof \DOMElement || !$element->hasAttributes()) {
-            continue;
-        }
-
-        $remove = [];
-        foreach ($element->attributes as $attribute) {
-            $name = strtolower($attribute->nodeName);
-            $value = html_entity_decode((string) $attribute->nodeValue, ENT_QUOTES | ENT_HTML5, 'UTF-8');
-
-            if (str_starts_with($name, 'on') || $name === 'srcdoc') {
-                $remove[] = $attribute->nodeName;
-                continue;
-            }
-
-            if (in_array($name, $urlAttrs, true) && preg_match('#^\s*javascript:#i', $value) === 1) {
-                $remove[] = $attribute->nodeName;
-            }
-        }
-
-        foreach ($remove as $name) {
-            $element->removeAttribute($name);
-        }
-    }
-
-    $out = $dom->saveHTML() ?: $html;
-    return preg_replace('/<\?xml\s+encoding=["\']UTF-8["\']\??>\s*/i', '', $out) ?? $out;
 }

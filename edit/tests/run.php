@@ -23,6 +23,7 @@ set_error_handler(static function (int $severity, string $message, string $file,
 });
 
 $editPath = dirname(__DIR__);
+require_once $editPath . '/src/vendor/autoload.php';
 foreach (['Support', 'UrlLocalizer', 'BlockRepository', 'ExternalSiteImporter', 'SiteGenerator', 'ThemeManager', 'AiAssistant'] as $class) {
     require_once $editPath . '/src/' . $class . '.php';
 }

@@ -45,6 +45,13 @@ test('THM-D/UX-12: themes round-trip as zip files; hostile zips are refused or c
 
     $site['generator']->applyTheme('verdant-sanctuary');
     $site['generator']->createPage('Hello', 'hello');
+    @mkdir($site['root'] . '/doc');
+    file_put_contents($site['root'] . '/doc/private.md', 'private review');
+    file_put_contents($site['root'] . '/HANDOFF.md', 'private notes');
+    file_put_contents($site['root'] . '/OPUS_PROMPT.md', 'private prompt');
+    file_put_contents($site['root'] . '/settings.local.php', '<?php // private');
+    file_put_contents($site['root'] . '/server.key', 'private key');
+    symlink($site['edit'] . '/storage/config.php', $site['root'] . '/linked-config.txt');
     $siteZip = $packages->exportSite();
     $zip = new ZipArchive();
     $zip->open($siteZip);
@@ -56,6 +63,9 @@ test('THM-D/UX-12: themes round-trip as zip files; hostile zips are refused or c
     @unlink($siteZip);
     assert_same([], array_values(array_filter($names, static fn(string $n): bool => str_starts_with($n, 'edit/'))));
     assert_true(in_array('hello/index.html', $names, true));
+    foreach (['doc/private.md', 'HANDOFF.md', 'OPUS_PROMPT.md', 'settings.local.php', 'server.key', 'linked-config.txt'] as $private) {
+        assert_true(!in_array($private, $names, true), 'Private file exported: ' . $private);
+    }
 });
 
 test('UX-9: the accessibility report finds missing alt text, unnamed links, skipped headings, unlabeled fields', function (): void {

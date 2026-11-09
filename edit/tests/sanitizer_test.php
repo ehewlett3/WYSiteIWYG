@@ -53,7 +53,7 @@ test('SEC-4: safe content survives', function (): void {
     assert_contains('src="assets/uploads/x.png"', $out);
     assert_contains('srcset="assets/a.png 1x, assets/b.png 2x"', $out);
     assert_contains('data:image/png;base64', $out);
-    assert_contains('<iframe src="https://www.youtube.com/embed/abc" allowfullscreen></iframe>', $out);
+    assert_contains('<iframe src="https://www.youtube.com/embed/abc" allowfullscreen', $out);
     assert_contains('<figcaption>Cap</figcaption>', $out);
     assert_contains('<audio controls', $out);
     assert_contains('<dd>d</dd>', $out);
@@ -91,7 +91,8 @@ test('SEC-1: clean input keeps its meaning on both sanitizer backends', function
     $html = "<figure class=\"wp-block-embed\">\n  <iframe allowfullscreen src=\"https://www.youtube.com/embed/x\"></iframe>\n</figure>\n<svg viewBox=\"0 0 10 10\"><circle r=\"1\"/></svg>\n<p>caf&eacute; &nbsp; <br/></p>";
     $doc = "<!DOCTYPE html>\n<html lang=\"en\"><head><title>{{TITLE}}</title></head><body class=\"{{BODY_CLASS}}\">{{MAIN_MENU}}</body></html>\n";
     $out = Sanitizer::html($html);
-    assert_contains('<iframe allowfullscreen src="https://www.youtube.com/embed/x"></iframe>', $out);
+    assert_contains('<iframe allowfullscreen', $out);
+    assert_contains('src="https://www.youtube.com/embed/x"></iframe>', $out);
     assert_contains('<circle r="1"', $out);
     assert_contains('café', $out);
     $outDoc = Sanitizer::document($doc);

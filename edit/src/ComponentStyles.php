@@ -66,6 +66,9 @@ final class ComponentStyles
     /** Make sure a page links the section stylesheet (spliced into <head>). */
     public function ensureLinked(string $pageFile): void
     {
+        if (!is_file($this->rootPath . '/' . self::FILE)) {
+            return;
+        }
         $html = (string) @file_get_contents($pageFile);
         if ($html === '' || str_contains($html, 'wysite-components.css') || stripos($html, '</head>') === false) {
             return;

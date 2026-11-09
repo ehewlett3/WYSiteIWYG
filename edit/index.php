@@ -769,6 +769,7 @@ try {
 
         $html = $generator->normalizeEditableBlockHtml((string) ($block['type'] ?? ''), $html);
         $repository->updateBlock($path, $name, $html);
+        $app['componentStyles']->ensureLinked($repository->resolvePath($path));
         $generator->refreshOptionalSlots($path);
         json_response(['ok' => true, 'message' => 'The page was saved.', 'fileHash' => sha1($repository->getPage($path)['html'])]);
     }
@@ -821,7 +822,6 @@ try {
             // EDT-C (editors too): only rules for this copied section's own classes pass.
             $page = $repository->getPage((string) ($data['path'] ?? ''));
             $app['componentStyles']->save((string) ($data['id'] ?? ''), (string) ($data['css'] ?? ''));
-            $app['componentStyles']->ensureLinked($repository->resolvePath($page['path']));
             json_response(['ok' => true, 'message' => 'Saved the section\'s look.']);
         }
         if ($action === 'component-save') {
@@ -2146,7 +2146,7 @@ try {
                     continue;
                 }
                 try {
-                    $html = (string) file_get_contents($rootPath . '/' . $cluster['representative']);
+                    $html = $externalImporter->importedPageHtml((string) $cluster['representative']);
                     $suggestions = $ai->suggestRoles($html, (string) $cluster['kind'], array_values($unsure));
                     $dom = \WYSiteIWYG\HtmlDocument::parse($html);
                     foreach ($suggestions as $roleId => $path) {

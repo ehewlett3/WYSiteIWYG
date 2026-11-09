@@ -74,7 +74,7 @@ final class MediaLibrary
         $moved = 0;
         foreach ($paths as $path) {
             $path = ltrim((string) $path, '/');
-            if (!in_array($path, $this->files(), true) || ($uses[$path] ?? 0) > 0) {
+            if (!in_array($path, $this->files(), true) || self::typeOf($path) === 'code' || ($uses[$path] ?? 0) > 0) {
                 continue;
             }
             Filesystem::ensureDirectory(dirname($trash . '/' . $path));
@@ -157,6 +157,24 @@ final class MediaLibrary
             } elseif (str_ends_with($name, '.css')) {
                 $scan((string) file_get_contents($file->getPathname()), true);
             }
+        }
+
+        // Private content can still need public media when it is published or
+        // inserted later. Site settings also hold the logo, favicon and footer.
+        foreach (['drafts', 'import-staging', 'components'] as $folder) {
+            $base = $this->editPath . '/storage/' . $folder;
+            if (!is_dir($base)) {
+                continue;
+            }
+            foreach (new \RecursiveIteratorIterator(new \RecursiveDirectoryIterator($base, \FilesystemIterator::SKIP_DOTS)) as $file) {
+                if ($file->isFile() && !$file->isLink() && preg_match('/\.(?:html?|json)$/i', $file->getFilename()) === 1) {
+                    $scan((string) file_get_contents($file->getPathname()), false);
+                }
+            }
+        }
+        $siteSettings = $this->editPath . '/storage/site.local.php';
+        if (is_file($siteSettings)) {
+            $scan((string) file_get_contents($siteSettings), false);
         }
 
         return $uses;

@@ -38,7 +38,7 @@ final class ThemePackage
             throw new RuntimeException('Unable to create the theme archive.');
         }
         foreach (new \RecursiveIteratorIterator(new \RecursiveDirectoryIterator($dir, \FilesystemIterator::SKIP_DOTS)) as $file) {
-            if ($file->isFile() && !str_starts_with($file->getFilename(), '.')) {
+            if ($file->isFile() && !$file->isLink() && !str_starts_with($file->getFilename(), '.')) {
                 $zip->addFile($file->getPathname(), $themeId . '/' . ltrim(substr(str_replace('\\', '/', $file->getPathname()), strlen($dir)), '/'));
             }
         }
@@ -148,7 +148,14 @@ final class ThemePackage
             new \RecursiveDirectoryIterator($this->rootPath, \FilesystemIterator::SKIP_DOTS),
             function (\SplFileInfo $file): bool {
                 $relative = ltrim(substr(str_replace('\\', '/', $file->getPathname()), strlen($this->rootPath)), '/');
-                return !str_starts_with($file->getFilename(), '.') && $relative !== 'edit';
+                $name = $file->getFilename();
+                // Match the server's private paths, and never follow a symlink
+                // that could package files outside the public site.
+                return !$file->isLink()
+                    && !str_starts_with($name, '.')
+                    && !in_array(strtolower($relative), ['edit', 'doc'], true)
+                    && preg_match('/^(?:HANDOFF(?:_[A-Z0-9_-]+)?|OPUS_PROMPT)\.md$/i', $name) !== 1
+                    && preg_match('/\.local\.|\.(?:pem|key|p12|pfx|jks|keystore)$/i', $name) !== 1;
             }
         ));
         foreach ($iterator as $file) {

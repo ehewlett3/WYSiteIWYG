@@ -37,3 +37,16 @@ test('UX-6: revision diff shows added and removed lines with context', function 
     assert_true(in_array('add', $kinds, true) && in_array('del', $kinds, true));
     assert_same([], MediaLibrary::diff('<p>Same</p>', '<p>Same</p>'));
 });
+
+test('Media cleanup protects draft images, settings media and code files', function (): void {
+    $site = make_site();
+    @mkdir($site['root'] . '/assets/uploads', 0775, true);
+    @mkdir($site['edit'] . '/storage/drafts', 0775, true);
+    foreach (['draft.png', 'logo.png', 'unused.css'] as $name) {
+        file_put_contents($site['root'] . '/assets/uploads/' . $name, 'fixture');
+    }
+    file_put_contents($site['edit'] . '/storage/drafts/example.html', '<img src="assets/uploads/draft.png">');
+    file_put_contents($site['edit'] . '/storage/site.local.php', "<?php return ['logo' => 'assets/uploads/logo.png'];");
+    $library = new MediaLibrary($site['root'], $site['edit']);
+    assert_same(0, $library->trashUnused(['assets/uploads/draft.png', 'assets/uploads/logo.png', 'assets/uploads/unused.css']));
+});
